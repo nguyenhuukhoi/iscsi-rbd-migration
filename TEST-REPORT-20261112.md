@@ -39,6 +39,14 @@ cold migrate `--ip same` + rollback nguyên luồng **chạy lọt**, VM về AC
 phải Nova-owned (nhánh tái tạo port cần `--mac-address` vẫn đòi admin/chủ network ở nguồn) và
 đích vẫn admin (tạo port giữ MAC/IP).
 
+### Option mới `--az` (17/11, cho cloud đích 2 AZ backend riêng, cross_az_attach=false)
+
+Một giá trị áp cho cả `volume create` lẫn `server create`; preflight kiểm AZ tồn tại ở cả
+compute lẫn volume service. Opus review diff: đạt, không bug (đã thử expansion rỗng/space/glob
+dưới `set -euo pipefail`, eval lồng nháy, nhánh ephemeral/live/rollback). Test lab: `--az fake`
+→ preflight FAIL cả 2; `--az nova` → full migrate PASS, server + cả 2 volume đích đều AZ nova,
+rollback sạch. Giới hạn ghi ở GUIDE: pool map theo type chứ không theo AZ.
+
 ### Option mới `--keep-source-ports` (17/11, theo yêu cầu vận hành)
 
 Với `--ip same` nhưng không tháo port nguồn — người vận hành nhận rủi ro: chỉ còn SHUTOFF+lock

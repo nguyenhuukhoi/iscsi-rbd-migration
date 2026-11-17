@@ -12,6 +12,9 @@
 #                           syncs the final delta, so downtime tracks the write rate, not the size.
 #   --volume-type <type>    Cinder volume type for every destination volume (default: cloud default).
 #                           RBD_POOL_MAP="typeA:poolA,typeB:poolB" maps types to RBD pools.
+#   --az <zone>             destination availability zone for BOTH the volumes and the server
+#                           (for clouds with per-AZ backends / cross_az_attach=false).
+#                           Default: let the destination schedulers pick.
 #   --flavor <name>         flavor for the destination VM (default: same name as the source).
 #   --security-group <sgs>  comma-separated security groups for every destination port
 #                           (default: the same group names the source ports carry).
@@ -62,7 +65,7 @@ log() { echo "[$(date +%T)] $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # --- options -------------------------------------------------------------------
-MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
+MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
 OV_FLAVOR="" OV_SG="" EPHEMERAL=0
 
 parse_options() {
@@ -70,6 +73,7 @@ parse_options() {
     case $1 in
       --mode)        MODE=$2; shift 2;;
       --volume-type) VOLUME_TYPE=$2; shift 2;;
+      --az)          DEST_AZ=$2; shift 2;;
       --ip)          if [ "$2" = same ] || [ "$2" = new ]; then IPMODE=$2
                      elif [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then IPMODE=addr; IPADDR=$2
                      else die "--ip takes same, new or an IPv4 address"; fi; shift 2;;
@@ -163,7 +167,11 @@ preflight() {
   local flavor key
   flavor=${OV_FLAVOR:-$(jq -r '.flavor | if type=="object" then (.original_name // .name) else (. | split(" ")[0]) end' "$dir/server.json")}
   key=$(jq -r '.key_name // empty' "$dir/server.json")
-  echo "Destination preflight (mode=$MODE ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}):"
+  echo "Destination preflight (mode=$MODE ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}):"
+  if [ -n "$DEST_AZ" ]; then
+    check "compute AZ $DEST_AZ" "dst availability zone list --compute -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
+    check "volume AZ $DEST_AZ"  "dst availability zone list --volume  -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
+  fi
   # A same-named server already on the destination means an earlier migration of
   # this VM (finished, or interrupted after create). Proceeding would duplicate it.
   local vmname dsid
@@ -253,6 +261,7 @@ create_dest_volume() {  # source-volume-id dir ; sets DVID, appends to volume-ma
   size=$(jq -r .size <<<"$vj"); bootable=$(jq -r .bootable <<<"$vj")
 
   DVID=$(dst volume create "$name" --size "$size" ${VOLUME_TYPE:+--type "$VOLUME_TYPE"} \
+         ${DEST_AZ:+--availability-zone "$DEST_AZ"} \
          --description "migrated from $vid" -f value -c id)
   wait_volume dst "$DVID" available
   rbd -c "$CEPH_CONF" --id "$RBD_USER" -p "$POOL" info "volume-$DVID" >/dev/null 2>&1 \
@@ -486,6 +495,7 @@ EOF
   done < <(jq -r '.[] | "\(."Volume ID") \(.Device)"' "$dir/attachments.json")
 
   dst server create "$vm" --flavor "$flavor" "${nics[@]}" "${args[@]}" --user-data "$ud" \
+    ${DEST_AZ:+--availability-zone "$DEST_AZ"} \
     ${key:+--key-name "$key"} "${prop_args[@]}" -f value -c id > "$dir/dst-server-id"
   wait_server dst "$(cat "$dir/dst-server-id")" ACTIVE
 }
@@ -496,8 +506,8 @@ cmd_migrate() {
   export_definition "$vm" "$dir"
   detect_boot "$dir"
   preflight "$dir"
-  printf 'MODE=%s IPMODE=%s IPADDR=%s VOLUME_TYPE=%s POOL=%s VERIFY=%s FLAVOR=%s SG=%s EPHEMERAL=%s\n' \
-    "$MODE" "$IPMODE" "$IPADDR" "$VOLUME_TYPE" "$POOL" "$VERIFY" "$OV_FLAVOR" "$OV_SG" "$EPHEMERAL" > "$dir/options"
+  printf 'MODE=%s IPMODE=%s IPADDR=%s VOLUME_TYPE=%s POOL=%s VERIFY=%s FLAVOR=%s SG=%s EPHEMERAL=%s AZ=%s\n' \
+    "$MODE" "$IPMODE" "$IPADDR" "$VOLUME_TYPE" "$POOL" "$VERIFY" "$OV_FLAVOR" "$OV_SG" "$EPHEMERAL" "$DEST_AZ" > "$dir/options"
   trap cleanup_attach EXIT
   sid=$(jq -r .id "$dir/server.json")
   : > "$dir/volume-map"
