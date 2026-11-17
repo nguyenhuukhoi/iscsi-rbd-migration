@@ -71,6 +71,25 @@ migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]]
 | Tên volume/port đích | **Chốt cuối 17/11 (user)**: áp MẶC ĐỊNH cho migrate thường lẫn volumes-only, không flag, không tiền tố/hậu tố. Volume: `<instance>-<device>` (vd `app-vm01-vda`, `app-vm01-vdb`). Port: `<instance>-<ip>` (vd `app-vm01-192.168.120.50`); với `--ip new` tạo port xong đọc IP được cấp rồi `port set --name` lại cho đúng quy tắc. Flag `--name-from-instance` bỏ hẳn. Description volume giữ `migrated from <src-vol-id>`. Test cũ assert tên cũ (`demo-root`, `mig-<vm>-<i>`) sửa đúng các dòng đó theo cơ chế gate §5 |
 | Tên instance trùng → arg là ID | Tên dùng cho đặt tên lấy từ `server.json .name` (đã có từ fix 6174780) |
 
+## 4b. Convert toàn bộ volume của một project (chốt thêm 17/11)
+
+Batch mode volume: `migrate-batch.sh --project <p> --volumes attached|available|all`.
+
+| Scope | Cách làm | Naming đích |
+|---|---|---|
+| `attached` | Liệt kê VM của project có volume → chạy từng VM bằng `migrate-vm.sh migrate <id> --volumes-only` (stop + lock VM như thiết kế volumes-only) | `<instance>-<device>` |
+| `available` | Liệt kê `volume list --project <p> --status available` → lệnh mới `migrate-vm.sh migrate-volume <vol-id>`: clone nguồn → attach clone ro → copy → verify — volume gốc không bị đụng, KHÔNG dừng gì | **Giữ nguyên tên nguồn** (kể cả rỗng); mọi volume đích mang description `migrated from <src-vol-id>` |
+| `all` | Cả hai scope trên, attached trước, available sau | Theo từng scope |
+| Danh sách instance tự chọn | `migrate-batch.sh --vm vm1,vm2[,...] -- --volumes-only` (selector `--vm` sẵn có + passthrough) — convert volume của đúng các instance chỉ định | `<instance>-<device>` |
+
+- Volume trạng thái khác (error, reserved, in-use mơ hồ…) → liệt kê SKIP(status) trong bảng.
+- Guard trùng ở đích cho available: tra theo **description** `migrated from <src-id>` (tên volume
+  Cinder không unique nên không tra theo tên) — đã có thì FAIL con đó, gợi ý xóa/rollback.
+- Rollback `migrate-volume`: xóa volume đích theo state (`/var/lib/mig-migrate/vol-<id>/`);
+  nguồn nguyên vẹn suốt quá trình.
+- Giới hạn nói trước: snapshot của volume KHÔNG đi theo (chỉ copy dữ liệu hiện tại);
+  volume available đang có snapshot vẫn clone được nhưng cây snapshot ở lại nguồn.
+
 ## 5. Cam kết tương thích ngược (user yêu cầu 17/11: không phá logic/tính năng cũ)
 
 - **Mọi option hiện có dùng được trong thiết kế mới**, cả gọi lẻ lẫn truyền qua batch sau `--`:
