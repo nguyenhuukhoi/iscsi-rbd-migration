@@ -15,6 +15,14 @@ choose volume type / flavor / security group, ephemeral VMs via Glance, full rol
 Tool = 3 files installed to `/usr/local/bin`: `migrate-vm.sh`, `brick_attach.py`, `blocksync.py`.
 Everything in `0*-*.sh`, `kolla/`, `lab.sh`, `tests/` is lab scaffolding (see DEPLOY.md §0).
 
+Install on the convert host (full prerequisites in [DEPLOY.md](DEPLOY.md)):
+
+```bash
+git clone https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
+cd iscsi-rbd-migration
+install -m 0755 migrate-vm.sh brick_attach.py blocksync.py /usr/local/bin/
+```
+
 Quick start:
 
 ```bash

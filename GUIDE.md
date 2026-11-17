@@ -275,6 +275,16 @@ Cấu hình bắt buộc cho iSCSI trên mạng riêng, đã có sẵn trong `ko
 
 ### 5.5. Cài công cụ và test
 
+Cách chuẩn (mọi host, kể cả production — chi tiết: [DEPLOY.md](DEPLOY.md)):
+
+```bash
+git clone https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
+cd iscsi-rbd-migration
+install -m 0755 migrate-vm.sh brick_attach.py blocksync.py /usr/local/bin/
+```
+
+Hoặc đẩy từ workstation vào lab như lần dựng gốc:
+
 ```bash
 scp -i key.txt iscsi-rbd-migration/{migrate-vm.sh,brick_attach.py,blocksync.py} root@192.0.2.109:/usr/local/bin/
 scp -i key.txt iscsi-rbd-migration/tests/*.sh root@192.0.2.109:/root/mig-lab/tests/
