@@ -115,6 +115,41 @@ check_project_scope() {  # an application credential cannot be rescoped: fail be
   fi
 }
 
+# Neutron shows an admin the security groups of every project, even through a project-scoped
+# token, so a name such as "default" matches one group per project: names are resolved to IDs
+# inside the destination token's own project.
+DST_PID=""
+dst_project_id() {  # caches DST_PID, the destination token's project; call it outside $(...)
+  [ -n "$DST_PID" ] || DST_PID=$(dst token issue -f value -c project_id) || die "cannot get a destination token"
+  [ -n "$DST_PID" ] || die "the destination token is not scoped to a project"
+}
+dst_sg_id() {  # name-or-id ; prints the group's ID in the destination project, nothing when absent
+  local json ids n
+  if [[ $1 =~ ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$ ]]; then echo "$1"; return; fi
+  dst_project_id
+  json=$(dst security group list --project "$DST_PID" -f json) || die "cannot list the security groups of destination project $DST_PID"
+  ids=$(jq -r --arg n "$1" '.[] | select((.Name // .name) == $n) | (.ID // .id)' <<<"$json")
+  n=$(grep -c . <<<"$ids" || true)
+  [ "$n" -le 1 ] || die "$n security groups are named '$1' in destination project ${DST_PROJECT:-$DST_PID}: ${ids//$'\n'/ } — pass the ID to --security-group"
+  echo "$ids"
+}
+# The same on the source side (reserve ports re-created while the VM is cut over).
+SRC_PID=""
+src_project_id() {  # caches SRC_PID, the source token's project; call it outside $(...)
+  [ -n "$SRC_PID" ] || SRC_PID=$(src token issue -f value -c project_id) || die "cannot get a source token"
+  [ -n "$SRC_PID" ] || die "the source token is not scoped to a project"
+}
+src_sg_id() {  # name-or-id ; prints the group's ID in the source project, nothing when absent
+  local json ids n
+  if [[ $1 =~ ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$ ]]; then echo "$1"; return; fi
+  src_project_id
+  json=$(src security group list --project "$SRC_PID" -f json) || die "cannot list the security groups of source project $SRC_PID"
+  ids=$(jq -r --arg n "$1" '.[] | select((.Name // .name) == $n) | (.ID // .id)' <<<"$json")
+  n=$(grep -c . <<<"$ids" || true)
+  [ "$n" -le 1 ] || die "$n security groups are named '$1' in source project ${SRC_PROJECT:-$SRC_PID}: ${ids//$'\n'/ }"
+  echo "$ids"
+}
+
 # --- options -------------------------------------------------------------------
 MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
 OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0
@@ -340,11 +375,18 @@ preflight() {
     fi
   fi
   [ -z "$VOLUME_TYPE" ] || check "volume type $VOLUME_TYPE" "dst volume type show '$VOLUME_TYPE'"
+  check_sg() {  # label name-or-id ; exactly one group of that name in the destination project
+    local id err=$STATE_ROOT/sg-resolve.err
+    if id=$(dst_sg_id "$2" 2>"$err") && [ -n "$id" ]; then echo "  OK    $1 ($id)"
+    elif grep -q '^ERROR: ' "$err"; then echo "  FAIL  $1: $(sed -n 's/^ERROR: //p' "$err" | tail -1)"; fail=1
+    else echo "  FAIL  $1 not found in destination project ${DST_PROJECT:-$DST_PID}"; fail=1; fi
+  }
+  [ "$VOLUMES_ONLY" = 1 ] || dst_project_id
   if [ "$VOLUMES_ONLY" = 0 ] && [ -n "$OV_SG" ]; then
     local osg
     IFS=, read -ra _ovsgs <<<"$OV_SG"
     for osg in "${_ovsgs[@]}"; do
-      check "override security group $osg" "dst security group show '$osg'"
+      check_sg "override security group $osg" "$osg"
     done
   fi
 
@@ -371,7 +413,7 @@ preflight() {
     local sg
     if [ -z "$OV_SG" ]; then
       while read -r sg; do
-        [ -n "$sg" ] && check "security group $sg" "dst security group show '$sg'"
+        [ -n "$sg" ] && check_sg "security group $sg" "$sg"
       done < <(jq -r ".[$i].security_groups[]" "$dir/ports.json")
     fi
   done
@@ -590,15 +632,28 @@ detach_source_ports() {  # vm dir server-id
     [ -z "$dev" ] || die "port $pid still attached to $dev"
     if [ -n "$gone" ]; then
       # Nova deletes ports it created itself. Re-create at once to hold the IP and MAC for rollback.
-      local net ip mac sg sg_args=()
+      # Groups go by ID (an admin sees every project's "default"). This runs mid-cutover and the
+      # port's job is holding the address, so a group that does not resolve is left out, not fatal.
+      local net ip mac sg sgid sg_args=() missed=() err=$dir/sg-resolve.err
       net=$(jq -r ".[$i].network" "$dir/ports.json"); ip=$(jq -r ".[$i].ip" "$dir/ports.json")
       mac=$(jq -r ".[$i].mac" "$dir/ports.json")
-      while read -r sg; do [ -n "$sg" ] && sg_args+=(--security-group "$sg"); done \
-        < <(jq -r ".[$i].security_groups[]" "$dir/ports.json")
+      [ -n "$SRC_PID" ] || SRC_PID=$(src token issue -f value -c project_id 2>/dev/null) || true
+      while read -r sg; do
+        [ -n "$sg" ] || continue
+        if sgid=$(src_sg_id "$sg" 2>"$err") && [ -n "$sgid" ]; then
+          sg_args+=(--security-group "$sgid")
+        else
+          missed+=("$sg")
+          log "WARN source security group $sg not resolved in source project ${SRC_PROJECT:-${SRC_PID:-?}}: $(sed -n 's/^ERROR: //p' "$err" | tail -1 | grep . || echo "not found")"
+        fi
+      done < <(jq -r ".[$i].security_groups[]" "$dir/ports.json")
       [ ${#sg_args[@]} -gt 0 ] || sg_args=(--no-security-group)
       pid=$(src port create "mig-reserve-$vm-$i" --network "$net" --mac-address "$mac" \
-            --fixed-ip "ip-address=$ip" "${sg_args[@]}" -f value -c id)
+            --fixed-ip "ip-address=$ip" "${sg_args[@]}" -f value -c id) \
+        || die "could not re-create a port holding $ip $mac on $net: that address is no longer reserved for rollback"
       log "Nova removed its own port; reserved $ip $mac again as $pid"
+      # Rollback reattaches this very port to the source VM, so it comes back without these groups.
+      [ ${#missed[@]} -eq 0 ] || log "WARN reserve port $pid has no security group ${missed[*]}; after a rollback re-add them: openstack port set$(printf ' --security-group %q' "${missed[@]}") $pid"
     fi
     echo "$pid" >> "$dir/source-ports"
     i=$((i+1))
@@ -611,18 +666,24 @@ create_destination() {  # vm dir
   # VM, its ports and volumes carry the real name, as the preflight duplicate guard assumes.
   vmname=$(jq -r .name "$dir/server.json")
   n=$(jq length "$dir/ports.json")
+  [ "$n" = 0 ] || dst_project_id
   for ((i=0; i<n; i++)); do
-    local net ip mac cidr subnet pname pid pinfo sg_args=() sg
+    local net ip mac cidr subnet pname pid pinfo sg_args=() sg sgs=() sgid
     net=$(jq -r ".[$i].network" "$dir/ports.json"); ip=$(jq -r ".[$i].ip" "$dir/ports.json")
     mac=$(jq -r ".[$i].mac" "$dir/ports.json"); cidr=$(jq -r ".[$i].cidr" "$dir/ports.json")
     subnet=$(dst subnet list --network "$net" -f json | jq -r --arg c "$cidr" '.[] | select(.Subnet==$c) | .ID')
     if [ -n "$OV_SG" ]; then
-      IFS=, read -ra _ovsgs <<<"$OV_SG"
-      for sg in "${_ovsgs[@]}"; do sg_args+=(--security-group "$sg"); done
+      IFS=, read -ra sgs <<<"$OV_SG"
     else
-      while read -r sg; do [ -n "$sg" ] && sg_args+=(--security-group "$sg"); done \
+      while read -r sg; do [ -n "$sg" ] && sgs+=("$sg"); done \
         < <(jq -r ".[$i].security_groups[]" "$dir/ports.json")
     fi
+    # By ID: a name such as "default" exists once per project and an admin sees them all.
+    for sg in "${sgs[@]}"; do
+      sgid=$(dst_sg_id "$sg")
+      [ -n "$sgid" ] || die "security group $sg not found in destination project ${DST_PROJECT:-$DST_PID}"
+      sg_args+=(--security-group "$sgid")
+    done
     [ ${#sg_args[@]} -gt 0 ] || sg_args=(--no-security-group)
     # Ports are named <vm>-<ip> but used and rolled back by ID: a name is not unique across
     # projects, and an admin's name lookup sees every project.
