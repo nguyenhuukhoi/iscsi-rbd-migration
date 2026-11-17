@@ -87,7 +87,36 @@ ceph auth get client.mig-xfer   # dán vào /etc/ceph/ceph.client.mig-xfer.keyri
 /opt/mig/dst/admin-openrc.sh    # cloud đích (Ceph)
 ```
 
-`chmod 600` cả hai. Cần quyền admin (tool đọc/tạo port, reset state volume, lock server).
+`chmod 600` cả hai. Cần quyền admin — cụ thể vì Neutron chỉ cho admin/chủ network tạo port với
+`--mac-address`/`--fixed-ip` (bắt buộc cho `--ip same`), và vì migrate nhiều project cần nhìn
+cross-project. VM nằm trên tenant network của chính project thì member của project đó là đủ
+(đã verify từng lệnh, chưa test e2e).
+
+**Khuyến nghị: dùng application credential thay vì password** — gắn hạn dùng, thu hồi độc lập,
+không lộ password admin. Tool hỗ trợ sẵn (e2e 50/0 ngày 17/11 chạy hoàn toàn bằng appcred):
+
+```bash
+# đăng nhập bằng user admin của từng cloud, chạy cho cả src lẫn dst:
+openstack application credential create mig-appcred \
+  --description "VM migration tool" --expiration 2027-06-30T00:00:00
+# Secret chỉ hiện MỘT lần ở output — ghi ngay vào file rc:
+```
+
+```bash
+# /opt/mig/{src,dst}/admin-openrc.sh dạng application credential:
+unset OS_USERNAME OS_PASSWORD OS_PROJECT_NAME OS_PROJECT_ID \
+      OS_USER_DOMAIN_NAME OS_PROJECT_DOMAIN_NAME OS_TENANT_NAME
+export OS_AUTH_TYPE=v3applicationcredential
+export OS_AUTH_URL=https://<keystone>:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_REGION_NAME=RegionOne
+export OS_APPLICATION_CREDENTIAL_ID=<id>
+export OS_APPLICATION_CREDENTIAL_SECRET=<secret>
+```
+
+Lưu ý appcred: kế thừa đúng role của user tạo ra nó trên project đó (user admin → appcred đủ
+quyền admin); hết hạn hoặc user bị disable là chết theo; dòng `unset` bắt buộc để biến password
+cũ không lẫn vào. Xong đợt migrate: `openstack application credential delete mig-appcred`.
 
 ## 7. Cấu hình iSCSI 1 path
 

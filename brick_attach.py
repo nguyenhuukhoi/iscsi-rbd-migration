@@ -36,15 +36,30 @@ class WrongDevice(Exception):
 
 
 def cinder():
-    loader = loading.get_plugin_loader("password")
-    auth = loader.load_from_options(
-        auth_url=os.environ["OS_AUTH_URL"],
-        username=os.environ["OS_USERNAME"],
-        password=os.environ["OS_PASSWORD"],
-        project_name=os.environ["OS_PROJECT_NAME"],
-        user_domain_name=os.environ.get("OS_USER_DOMAIN_NAME", "Default"),
-        project_domain_name=os.environ.get("OS_PROJECT_DOMAIN_NAME", "Default"),
-    )
+    # Auth plugin is chosen via OS_AUTH_TYPE, like openstackclient.
+    auth_type = os.environ.get("OS_AUTH_TYPE", "password")
+    if auth_type == "v3applicationcredential":
+        # An application credential is already bound to one user and project.
+        loader = loading.get_plugin_loader("v3applicationcredential")
+        auth = loader.load_from_options(
+            auth_url=os.environ["OS_AUTH_URL"],
+            application_credential_id=os.environ["OS_APPLICATION_CREDENTIAL_ID"],
+            application_credential_secret=os.environ["OS_APPLICATION_CREDENTIAL_SECRET"],
+        )
+    elif auth_type == "password":
+        loader = loading.get_plugin_loader("password")
+        auth = loader.load_from_options(
+            auth_url=os.environ["OS_AUTH_URL"],
+            username=os.environ["OS_USERNAME"],
+            password=os.environ["OS_PASSWORD"],
+            project_name=os.environ["OS_PROJECT_NAME"],
+            user_domain_name=os.environ.get("OS_USER_DOMAIN_NAME", "Default"),
+            project_domain_name=os.environ.get("OS_PROJECT_DOMAIN_NAME", "Default"),
+        )
+    else:
+        raise SystemExit(
+            "unsupported OS_AUTH_TYPE %r (expected password or v3applicationcredential)" % auth_type
+        )
     return cinder_client.Client(API_VERSION, session=session.Session(auth=auth))
 
 

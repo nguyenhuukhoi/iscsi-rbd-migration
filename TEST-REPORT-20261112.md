@@ -1,4 +1,20 @@
-# Kết quả test tool v2 (live mode, volume type, chọn IP) — 2026-11-12, bổ sung v2.1 ngày 13/11
+# Kết quả test tool v2 (live mode, volume type, chọn IP) — 2026-11-12, bổ sung v2.1 ngày 13/11, appcred 17/11
+
+## Bổ sung 17/11: xác thực bằng application credential
+
+`brick_attach.py` chọn auth plugin theo `OS_AUTH_TYPE` (mặc định `password` — hành vi cũ nguyên
+vẹn; `v3applicationcredential` dùng `OS_APPLICATION_CREDENTIAL_ID/SECRET`; giá trị khác dừng ngay).
+`migrate-vm.sh` không cần sửa. Kiểm chứng:
+
+| Test | Kết quả |
+|---|---|
+| `openstack token issue` qua appcred, cả 2 cloud | OK |
+| `brick_attach.py attach <uuid giả>` qua appcred | 404 từ Cinder (auth qua, không phải 401) |
+| `e2e-migrate.sh` với `SRC_RC`/`DST_RC` đều là rc appcred — migrate cold + rollback đầy đủ | **50 PASS / 0 FAIL** |
+
+Kèm theo (verify policy bằng user member thật trên network shared): member tạo port thường OK,
+nhưng `--mac-address` và `--fixed-ip` bị 403 (`admin_or_network_owner`) — trên network thuộc
+chính project thì member đặt được cả hai. Kết luận quyền tối thiểu ghi ở DEPLOY.md §6.
 
 ## Bổ sung 13/11: multi-NIC, override flavor/SG, server properties, VM ephemeral
 
