@@ -33,8 +33,8 @@ assert "migrate rc=0" "[ $RC = 0 ]"
 [ "$RC" = 0 ] || { say "ABORT: migrate failed"; exit 1; }
 
 say "=== destination got a new identity on the wire"
-NEWIP=$(dst port show mig-$VM-0 -f json | jq -r '.fixed_ips[0].ip_address')
-NEWMAC=$(dst port show mig-$VM-0 -f json | jq -r '.mac_address')
+NEWIP=$(dst port show $VM-nic0 -f json | jq -r '.fixed_ips[0].ip_address')
+NEWMAC=$(dst port show $VM-nic0 -f json | jq -r '.mac_address')
 say "INFO  destination $NEWIP $NEWMAC (source kept $OLDIP $OLDMAC)"
 assert "new IP differs from the source IP" "[ -n '$NEWIP' ] && [ '$NEWIP' != '$OLDIP' ]"
 assert "new IP from the destination pool (.100-.199)" "awk -F. '{exit !(\$4 >= 100 && \$4 <= 199)}' <<<'$NEWIP'"
@@ -65,7 +65,7 @@ say "=== rollback removes the destination and keeps the source running"
 migrate-vm.sh rollback $VM 2>&1 | tee -a "$REPORT"
 assert "destination server removed" "! dst server show $VM"
 assert "destination volumes removed" "! dst volume list -f value -c Name | grep -q demo-"
-assert "destination port removed" "! dst port show mig-$VM-0"
+assert "destination port removed" "! dst port show $VM-nic0"
 assert "RBD pool empty" "[ -z \"\$(rbd --id mig-xfer -p mig-volumes ls)\" ]"
 assert "source still ACTIVE" "[ \"\$(src server show $VM -f value -c status)\" = ACTIVE ]"
 for t in $(seq 1 30); do ossh true 2>/dev/null && break; sleep 3; done

@@ -23,11 +23,16 @@
 #                           new: destination allocates a new MAC+IP, source ports stay attached.
 #                           <addr>: that address with a new MAC (single-NIC VMs only).
 #   --start-source          after a successful migrate, unlock and start the source VM again.
-#                           Only with --ip new|<addr>; both VMs then run with the same hostname.
+#                           Only with --ip new|<addr> (both VMs then run with the same hostname),
+#                           or with --volumes-only, where any --ip is fine (no destination VM).
 #   --keep-source-ports     with --ip same: do NOT detach the source ports. UNSAFE: the only
 #                           thing keeping the old VM off the wire is then its SHUTOFF+lock state;
 #                           anyone who powers it on puts two machines with the same MAC+IP on the
 #                           VLAN (split-brain). Rollback then needs no port reattach.
+#   --server-group <name>   destination server group the new VM joins (--hint group=<id>). It must
+#                           already exist in the destination project; it is never created.
+#   --volumes-only          cold only: copy the volumes, create no destination port or server.
+#                           The source is stopped and locked as usual; its ports stay attached.
 #   --max-passes <n>        live: maximum pre-sync passes (default 5).
 #   --delta-limit <MB>      live: cut over once a pass changed at most this much (default 64).
 #   --verify readback|full|none
@@ -39,8 +44,28 @@
 # disk is migrated cold through a Glance snapshot: snapshot -> download -> upload -> boot; its
 # attached data volumes still go the volume way. Server properties and description are copied.
 # Source volumes are never modified or deleted; rollback restores everything.
+# Destination volumes are named <vm>-<device> (app01-vda, app01-vdb), ports <vm>-nic<i>.
 # Environment overrides: SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP COPY_STREAMS
+# MIG_MULTIPATH; the same keys may be set in $MIG_CONF (default /opt/mig/migrate.conf), and the
+# environment wins over that file. SRC_PROJECT / DST_PROJECT run each side in that project of the
+# openrc's account (password openrc only: an application credential is bound to one project).
 set -euo pipefail
+
+# Precedence: CLI option > environment > $MIG_CONF > defaults below. Variables already set in the
+# environment are put back after sourcing the file, so export-based runs behave exactly as before.
+MIG_CONF=${MIG_CONF:-/opt/mig/migrate.conf}
+if [ -r "$MIG_CONF" ]; then
+  declare -A _env_saved=()
+  for _v in SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH \
+            COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT; do
+    [ -z "${!_v+x}" ] || _env_saved[$_v]=${!_v}
+  done
+  source "$MIG_CONF"
+  for _v in "${!_env_saved[@]}"; do printf -v "$_v" '%s' "${_env_saved[$_v]}"; done
+  unset _v _env_saved
+fi
+# brick_attach.py reads it from its environment; a value from the file is not exported by itself.
+[ -z "${MIG_MULTIPATH+x}" ] || export MIG_MULTIPATH
 
 SRC_RC=${SRC_RC:-/opt/mig/src/admin-openrc.sh}
 DST_RC=${DST_RC:-/opt/mig/dst/admin-openrc.sh}
@@ -60,14 +85,35 @@ SYS_PY=${SYS_PY:-/usr/bin/python3}
 source /opt/mig-venv/bin/activate
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 
-src() { ( source "$SRC_RC"; openstack "$@" ); }
-dst() { ( source "$DST_RC"; openstack "$@" ); }
+# Every use of the openrc files goes through src_env/dst_env (inside a subshell), so that
+# SRC_PROJECT/DST_PROJECT put clones, volumes, ports and the server in the VM's own project.
+scope_project() {  # project-name ; no-op when empty
+  [ -n "$1" ] || return 0
+  export OS_PROJECT_NAME=$1
+  unset OS_PROJECT_ID OS_TENANT_NAME OS_TENANT_ID
+}
+src_env() { source "$SRC_RC"; scope_project "${SRC_PROJECT:-}"; }
+dst_env() { source "$DST_RC"; scope_project "${DST_PROJECT:-}"; }
+src() { ( src_env; openstack "$@" ); }
+dst() { ( dst_env; openstack "$@" ); }
 log() { echo "[$(date +%T)] $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+check_project_scope() {  # an application credential cannot be rescoped: fail before touching anything
+  local auth
+  if [ -n "${SRC_PROJECT:-}" ]; then
+    auth=$( source "$SRC_RC" >/dev/null 2>&1; echo "${OS_AUTH_TYPE:-}" )
+    [[ $auth != *applicationcredential* ]] || die "SRC_PROJECT/DST_PROJECT needs a password openrc: an application credential is bound to one project ($SRC_RC)"
+  fi
+  if [ -n "${DST_PROJECT:-}" ]; then
+    auth=$( source "$DST_RC" >/dev/null 2>&1; echo "${OS_AUTH_TYPE:-}" )
+    [[ $auth != *applicationcredential* ]] || die "SRC_PROJECT/DST_PROJECT needs a password openrc: an application credential is bound to one project ($DST_RC)"
+  fi
+}
+
 # --- options -------------------------------------------------------------------
 MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
-OV_FLAVOR="" OV_SG="" EPHEMERAL=0
+OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0
 
 parse_options() {
   while [ $# -gt 0 ]; do
@@ -82,6 +128,8 @@ parse_options() {
       --keep-source-ports) KEEP_PORTS=1; shift;;
       --flavor)       OV_FLAVOR=$2; shift 2;;
       --security-group) OV_SG=$2; shift 2;;
+      --server-group) SERVER_GROUP=$2; shift 2;;
+      --volumes-only) VOLUMES_ONLY=1; shift;;
       --max-passes)  MAX_PASSES=$2; shift 2;;
       --delta-limit) DELTA_LIMIT_MB=$2; shift 2;;
       --verify)      VERIFY=$2; shift 2;;
@@ -90,7 +138,9 @@ parse_options() {
   done
   case $MODE in cold|live) ;; *) die "--mode takes cold or live";; esac
   case $VERIFY in readback|full|none) ;; *) die "--verify takes readback, full or none";; esac
-  [ "$START_SOURCE" = 0 ] || [ "$IPMODE" != same ] || die "--start-source needs --ip new or --ip <addr>: with the same MAC and IP both VMs cannot be up at once"
+  [ "$VOLUMES_ONLY" = 0 ] || [ "$MODE" = cold ] || die "--volumes-only is cold only: drop --mode live"
+  # --volumes-only creates no destination VM, so a restarted source cannot clash on MAC/IP.
+  [ "$START_SOURCE" = 0 ] || [ "$IPMODE" != same ] || [ "$VOLUMES_ONLY" = 1 ] || die "--start-source needs --ip new or --ip <addr>: with the same MAC and IP both VMs cannot be up at once"
 }
 
 pool_for_type() {  # prints the RBD pool backing $VOLUME_TYPE
@@ -207,31 +257,86 @@ export_definition() {
   done | jq -s . > "$dir/volumes.json"
 }
 
+dest_volume_name() {  # source-volume-id dir ; prints <instance-name>-<device>, e.g. app01-vdb
+  local dev
+  dev=$(jq -r --arg v "$1" '[.[] | select(."Volume ID"==$v) | .Device][0] // empty' "$2/attachments.json")
+  [ -n "$dev" ] || dev=$1
+  echo "$(jq -r .name "$2/server.json")-${dev##*/}"
+}
+
 preflight() {
   local dir=$1 fail=0
   check() { if eval "$2" >/dev/null 2>&1; then echo "  OK    $1"; else echo "  FAIL  $1"; fail=1; fi; }
 
-  local flavor key
+  # Here rather than in cmd_migrate so that plan reports it too.
+  [ "$VOLUMES_ONLY" = 0 ] || [ "$EPHEMERAL" = 0 ] || die "ephemeral VM has no volume to migrate: its root disk is image-backed and --volumes-only copies Cinder volumes only"
+  local flavor key vo=""
   flavor=${OV_FLAVOR:-$(jq -r '.flavor | if type=="object" then (.original_name // .name) else (. | split(" ")[0]) end' "$dir/server.json")}
   key=$(jq -r '.key_name // empty' "$dir/server.json")
-  echo "Destination preflight (mode=$MODE ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}):"
+  [ "$VOLUMES_ONLY" = 0 ] || vo=" volumes-only"
+  echo "Destination preflight (mode=$MODE$vo ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}${SERVER_GROUP:+ server-group=$SERVER_GROUP}):"
   if [ -n "$DEST_AZ" ]; then
-    check "compute AZ $DEST_AZ" "dst availability zone list --compute -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
+    [ "$VOLUMES_ONLY" = 1 ] || check "compute AZ $DEST_AZ" "dst availability zone list --compute -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
     check "volume AZ $DEST_AZ"  "dst availability zone list --volume  -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
   fi
-  # A same-named server already on the destination means an earlier migration of
-  # this VM (finished, or interrupted after create). Proceeding would duplicate it.
-  local vmname dsid
-  vmname=$(jq -r .name "$dir/server.json")
-  dsid=$(dst server list --name "^${vmname}\$" -f value -c ID | head -1)
-  if [ -n "$dsid" ] && [ "$dsid" != "$(cat "$dir/dst-server-id" 2>/dev/null)" ]; then
-    echo "  FAIL  destination already has a server named $vmname ($dsid) from an earlier migration — inspect it; to redo the migration run: $0 rollback $(basename "$dir") (DELETES that destination server and its volumes)"
-    fail=1
+  if [ "$VOLUMES_ONLY" = 1 ]; then
+    # No server is created, so the guard against a second copy is on the destination volume names.
+    # Volumes recorded in this VM's own state are not a clash (plan run after a migrate).
+    [ -z "$SERVER_GROUP" ] || echo "  INFO  --server-group $SERVER_GROUP ignored: --volumes-only creates no server"
+    local svid dname dids did clash
+    for svid in $(jq -r '.[]."Volume ID"' "$dir/attachments.json"); do
+      dname=$(dest_volume_name "$svid" "$dir")
+      if ! dids=$(dst volume list --name "$dname" -f value -c ID); then
+        echo "  FAIL  cannot list destination volumes named $dname"; fail=1; continue
+      fi
+      clash=""
+      for did in $dids; do grep -qs " $did\$" "$dir/volume-map" || clash+=" $did"; done
+      if [ -z "$clash" ]; then
+        echo "  OK    volume name $dname free"
+      else
+        echo "  FAIL  destination already has a volume named $dname (${clash# }) — rename or delete it first, the migrated volume must be unambiguous"
+        fail=1
+      fi
+    done
+  else
+    # A same-named server already on the destination means an earlier migration of
+    # this VM (finished, or interrupted after create). Proceeding would duplicate it.
+    local vmname dsid
+    vmname=$(jq -r .name "$dir/server.json")
+    dsid=$(dst server list --name "^${vmname}\$" -f value -c ID | head -1)
+    if [ -n "$dsid" ] && [ "$dsid" != "$(cat "$dir/dst-server-id" 2>/dev/null)" ]; then
+      echo "  FAIL  destination already has a server named $vmname ($dsid) from an earlier migration — inspect it; to redo the migration run: $0 rollback $(basename "$dir") (DELETES that destination server and its volumes)"
+      fail=1
+    fi
+    check "flavor $flavor" "dst flavor show '$flavor'"
+    # Nova cannot assign another user's keypair; the key itself is inside the disk anyway.
+    if [ -n "$key" ]; then
+      if dst keypair show "$key" >/dev/null 2>&1; then
+        echo "  OK    keypair $key"
+      else
+        echo "  INFO  keypair $key not at destination: the VM will be created without key_name (add it back later)"
+      fi
+    fi
+    if [ -n "$SERVER_GROUP" ]; then
+      local sgj sgn
+      if ! sgj=$(dst server group list -f json); then
+        echo "  FAIL  cannot list destination server groups"; fail=1
+      else
+        sgn=$(jq --arg g "$SERVER_GROUP" '[.[] | select(.Name==$g or .ID==$g)] | length' <<<"$sgj")
+        case $sgn in
+          1) echo "  OK    server group $SERVER_GROUP"
+             echo "  INFO  server group $SERVER_GROUP policy: $(jq -r --arg g "$SERVER_GROUP" '.[] | select(.Name==$g or .ID==$g)
+                    | (.Policy // .Policies // "unknown") | if type=="array" then join(",") else tostring end' <<<"$sgj")";;
+          0) echo "  FAIL  server group $SERVER_GROUP not found in the destination project — create it first: openstack server group create --policy anti-affinity $SERVER_GROUP"
+             fail=1;;
+          *) echo "  FAIL  $sgn server groups are named $SERVER_GROUP in the destination project — pass the ID to --server-group"
+             fail=1;;
+        esac
+      fi
+    fi
   fi
-  check "flavor $flavor" "dst flavor show '$flavor'"
-  [ -n "$key" ] && check "keypair $key" "dst keypair show '$key'"
   [ -z "$VOLUME_TYPE" ] || check "volume type $VOLUME_TYPE" "dst volume type show '$VOLUME_TYPE'"
-  if [ -n "$OV_SG" ]; then
+  if [ "$VOLUMES_ONLY" = 0 ] && [ -n "$OV_SG" ]; then
     local osg
     IFS=, read -ra _ovsgs <<<"$OV_SG"
     for osg in "${_ovsgs[@]}"; do
@@ -239,9 +344,12 @@ preflight() {
     done
   fi
 
-  local n i net cidr mac ip
-  n=$(jq length "$dir/ports.json")
-  [ "$IPMODE" != addr ] || [ "$n" = 1 ] || { echo "  FAIL  --ip <addr> works only for single-NIC VMs (this one has $n ports)"; fail=1; }
+  # --volumes-only creates no destination port: no network, address or security group check.
+  local n=0 i net cidr mac ip
+  if [ "$VOLUMES_ONLY" = 0 ]; then
+    n=$(jq length "$dir/ports.json")
+    [ "$IPMODE" != addr ] || [ "$n" = 1 ] || { echo "  FAIL  --ip <addr> works only for single-NIC VMs (this one has $n ports)"; fail=1; }
+  fi
   for ((i=0; i<n; i++)); do
     net=$(jq -r ".[$i].network" "$dir/ports.json"); cidr=$(jq -r ".[$i].cidr" "$dir/ports.json")
     mac=$(jq -r ".[$i].mac" "$dir/ports.json"); ip=$(jq -r ".[$i].ip" "$dir/ports.json")
@@ -298,13 +406,14 @@ cmd_plan() {
 
 # --- migrate -----------------------------------------------------------------
 ATTACHED=""
-cleanup_attach() { stop_watch; [ -z "$ATTACHED" ] || ( source "$SRC_RC"; "$BRICK" detach "$ATTACHED" ) || true; }
+cleanup_attach() { stop_watch; [ -z "$ATTACHED" ] || ( src_env; "$BRICK" detach "$ATTACHED" ) || true; }
 
 create_dest_volume() {  # source-volume-id dir ; sets DVID, appends to volume-map
   local vid=$1 dir=$2 vj name size bootable
   vj=$(src volume show "$vid" -f json)
-  # Volumes made by "server create --boot-from-volume" have no name.
-  name=$(jq -r '.name // ""' <<<"$vj"); name=${name:-mig-$vid}
+  # Named after the instance, not the source volume: BFV volumes usually have no name, and the
+  # device tells several volumes of one VM apart.
+  name=$(dest_volume_name "$vid" "$dir")
   size=$(jq -r .size <<<"$vj"); bootable=$(jq -r .bootable <<<"$vj")
 
   DVID=$(dst volume create "$name" --size "$size" ${VOLUME_TYPE:+--type "$VOLUME_TYPE"} \
@@ -333,13 +442,13 @@ attach_clone() {  # source-volume-id ; sets CLONE and DEVICE
   wait_volume src "$CLONE" available
   # stderr goes to a file, not /dev/null: brick_attach's own guard messages (multipath,
   # size/LUN mismatch) are the whole point of having it.
-  DEVICE=$( source "$SRC_RC"; "$BRICK" attach "$CLONE" 2>"$STATE_ROOT/brick-attach.err" )
+  DEVICE=$( src_env; "$BRICK" attach "$CLONE" 2>"$STATE_ROOT/brick-attach.err" )
   ATTACHED=$CLONE
   [ -b "$DEVICE" ] || die "no block device for clone $CLONE: $(tail -2 "$STATE_ROOT/brick-attach.err" 2>/dev/null | tr '\n' ' ')"
 }
 
 drop_clone() {
-  ( source "$SRC_RC"; "$BRICK" detach "$CLONE" 2>/dev/null )
+  ( src_env; "$BRICK" detach "$CLONE" 2>/dev/null )
   ATTACHED=""
   wait_volume src "$CLONE" available
   src volume delete "$CLONE"
@@ -405,14 +514,14 @@ migrate_ephemeral_root() {  # vm dir server-id
   fmt=$(src image show "$simg" -f value -c disk_format)
   log "snapshot ready in $((SECONDS-t0))s (format $fmt); download"
   t0=$SECONDS
-  ( source "$SRC_RC"; openstack image save --file "$dir/root.img" "$simg" )
+  ( src_env; openstack image save --file "$dir/root.img" "$simg" )
   log "downloaded $(du -h "$dir/root.img" | cut -f1) in $((SECONDS-t0))s; upload to destination"
   t0=$SECONDS
   # Create and upload with plain REST. openstackclient is unusable for this step: with --file it
   # PATCHes attributes again after a long upload (Glance: 400 once active), and without --file it
   # reads image data from stdin whenever stdin is not a tty (nohup: /dev/null -> 415).
   local tok url
-  tok=$( source "$DST_RC"; openstack token issue -f value -c id )
+  tok=$( dst_env; openstack token issue -f value -c id )
   url=$( dst endpoint list --service image --interface internal -f value -c URL | head -1 )
   dimg=$(curl -sfS -X POST -H "X-Auth-Token: $tok" -H "Content-Type: application/json" \
          -d "{\"name\":\"$snap\",\"disk_format\":\"$fmt\",\"container_format\":\"bare\"}" \
@@ -490,10 +599,13 @@ detach_source_ports() {  # vm dir server-id
 }
 
 create_destination() {  # vm dir
-  local vm=$1 dir=$2 n i nics=() flavor key
+  local vm=$1 dir=$2 n i nics=() flavor key vmname
+  # The argument may be a server ID (used to disambiguate duplicate names); the destination
+  # VM, its ports and volumes carry the real name, as the preflight duplicate guard assumes.
+  vmname=$(jq -r .name "$dir/server.json")
   n=$(jq length "$dir/ports.json")
   for ((i=0; i<n; i++)); do
-    local net ip mac cidr subnet pname sg_args=() sg
+    local net ip mac cidr subnet pname pid sg_args=() sg
     net=$(jq -r ".[$i].network" "$dir/ports.json"); ip=$(jq -r ".[$i].ip" "$dir/ports.json")
     mac=$(jq -r ".[$i].mac" "$dir/ports.json"); cidr=$(jq -r ".[$i].cidr" "$dir/ports.json")
     subnet=$(dst subnet list --network "$net" -f json | jq -r --arg c "$cidr" '.[] | select(.Subnet==$c) | .ID')
@@ -505,21 +617,37 @@ create_destination() {  # vm dir
         < <(jq -r ".[$i].security_groups[]" "$dir/ports.json")
     fi
     [ ${#sg_args[@]} -gt 0 ] || sg_args=(--no-security-group)
-    pname="mig-$vm-$i"
+    # Ports are used and rolled back by ID: <vm>-nic<i> is not unique across projects, and an
+    # admin's name lookup sees every project.
+    pname="$vmname-nic$i"
     case $IPMODE in
-      same) dst port create "$pname" --network "$net" --mac-address "$mac" \
-              --fixed-ip "subnet=$subnet,ip-address=$ip" "${sg_args[@]}" -f value -c id >/dev/null;;
-      new)  dst port create "$pname" --network "$net" \
-              --fixed-ip "subnet=$subnet" "${sg_args[@]}" -f value -c id >/dev/null;;
-      addr) dst port create "$pname" --network "$net" \
-              --fixed-ip "subnet=$subnet,ip-address=$IPADDR" "${sg_args[@]}" -f value -c id >/dev/null;;
+      same) pid=$(dst port create "$pname" --network "$net" --mac-address "$mac" \
+              --fixed-ip "subnet=$subnet,ip-address=$ip" "${sg_args[@]}" -f value -c id);;
+      new)  pid=$(dst port create "$pname" --network "$net" \
+              --fixed-ip "subnet=$subnet" "${sg_args[@]}" -f value -c id);;
+      addr) pid=$(dst port create "$pname" --network "$net" \
+              --fixed-ip "subnet=$subnet,ip-address=$IPADDR" "${sg_args[@]}" -f value -c id);;
     esac
-    log "destination port $pname $(dst port show "$pname" -f json | jq -r '"\(.fixed_ips[0].ip_address) \(.mac_address)"')"
-    nics+=(--port "$pname")
+    echo "$pid" >> "$dir/dst-ports"
+    log "destination port $pname $pid $(dst port show "$pid" -f json | jq -r '"\(.fixed_ips[0].ip_address) \(.mac_address)"')"
+    nics+=(--port "$pid")
   done
 
   flavor=${OV_FLAVOR:-$(jq -r '.flavor | if type=="object" then (.original_name // .name) else (. | split(" ")[0]) end' "$dir/server.json")}
   key=$(jq -r '.key_name // empty' "$dir/server.json")
+  # Nova cannot assign another user's keypair: create without it; the key is inside the disk anyway.
+  if [ -n "$key" ] && ! dst keypair show "$key" >/dev/null 2>&1; then
+    log "WARN keypair $key not at destination: the VM is created without key_name (add it back later)"
+    key=""
+  fi
+  local hint=()
+  if [ -n "$SERVER_GROUP" ]; then
+    local sgid
+    sgid=$(dst server group list -f json | jq -r --arg g "$SERVER_GROUP" \
+           '[.[] | select(.Name==$g or .ID==$g) | .ID] | if length==1 then .[0] else empty end')
+    [ -n "$sgid" ] || die "server group $SERVER_GROUP is missing or ambiguous in the destination project"
+    hint=(--hint "group=$sgid")
+  fi
 
   # Server metadata travels with the VM: properties and description. Assigned first so a jq
   # failure inside a process substitution cannot slip past set -e.
@@ -550,13 +678,9 @@ EOF
     esac
   done < <(jq -r '.[] | "\(."Volume ID") \(.Device)"' "$dir/attachments.json")
 
-  # The argument may be a server ID (used to disambiguate duplicate names); the
-  # destination VM must carry the real name, as the preflight duplicate guard assumes.
-  local vmname
-  vmname=$(jq -r .name "$dir/server.json")
   dst server create "$vmname" --flavor "$flavor" "${nics[@]}" "${args[@]}" --user-data "$ud" \
     ${DEST_AZ:+--availability-zone "$DEST_AZ"} \
-    ${key:+--key-name "$key"} "${prop_args[@]}" -f value -c id > "$dir/dst-server-id"
+    ${key:+--key-name "$key"} "${hint[@]}" "${prop_args[@]}" -f value -c id > "$dir/dst-server-id"
   wait_server dst "$(cat "$dir/dst-server-id")" ACTIVE
 }
 
@@ -610,12 +734,15 @@ cmd_migrate() {
   # ephemeral snapshot) must happen BEFORE the lock: Nova's lock blocks these
   # calls for non-admin credentials (admins silently bypass it, which is why
   # the admin-only lab never caught this ordering).
-  if [ "$IPMODE" = same ] && [ "$KEEP_PORTS" = 0 ]; then
+  # --volumes-only never detaches: no destination port will take over the MAC+IP.
+  if [ "$VOLUMES_ONLY" = 0 ] && [ "$IPMODE" = same ] && [ "$KEEP_PORTS" = 0 ]; then
     detach_source_ports "$vm" "$dir" "$sid"
   fi
   [ "$EPHEMERAL" = 0 ] || migrate_ephemeral_root "$vm" "$dir" "$sid"
   src server lock "$sid"
-  if [ "$IPMODE" != same ]; then
+  if [ "$VOLUMES_ONLY" = 1 ]; then
+    log "source stopped and locked; ports left attached (--volumes-only creates no destination port)"
+  elif [ "$IPMODE" != same ]; then
     log "source stopped and locked; ports left attached (--ip $IPMODE keeps them out of conflict)"
   elif [ "$KEEP_PORTS" = 1 ]; then
     log "WARN --keep-source-ports: source ports stay attached with the same MAC+IP as the destination VM. Only SHUTOFF+lock keeps it off the wire — powering it on causes split-brain. Do not start it; delete it once the migration is accepted."
@@ -634,16 +761,33 @@ cmd_migrate() {
     fi
   done
 
-  create_destination "$vm" "$dir"
-  log "destination VM ACTIVE; control-plane downtime so far $((SECONDS-t_start))s"
+  if [ "$VOLUMES_ONLY" = 1 ]; then
+    log "volumes copied; source down for $((SECONDS-t_start))s so far"
+  else
+    create_destination "$vm" "$dir"
+    log "destination VM ACTIVE; control-plane downtime so far $((SECONDS-t_start))s"
+  fi
   trap - EXIT
 
   if [ "$START_SOURCE" = 1 ]; then
-    log "WARN --start-source: both VMs will run with the same hostname and SSH host key; their data diverges from this cutover"
+    if [ "$VOLUMES_ONLY" = 1 ]; then
+      log "WARN --start-source: the source VM runs again; its data diverges from the copied volumes from now on"
+    else
+      log "WARN --start-source: both VMs will run with the same hostname and SSH host key; their data diverges from this cutover"
+    fi
     src server unlock "$sid"
     src server start "$sid"
     wait_server src "$sid" ACTIVE
     log "source VM started again"
+  fi
+  if [ "$VOLUMES_ONLY" = 1 ]; then
+    echo "Volumes migrated (--volumes-only, no destination server or port created):"
+    local svid dvid
+    while read -r svid dvid; do
+      echo "  $(dest_volume_name "$svid" "$dir")  $dvid  (from $svid)"
+    done < "$dir/volume-map"
+    echo "Source VM: $( [ "$START_SOURCE" = 1 ] && echo "running again (--start-source)" || echo "kept SHUTOFF and locked" ). Rollback: $0 rollback $vm"
+    return
   fi
   echo "Migrated. Source VM: $( [ "$START_SOURCE" = 1 ] && echo "running again (--start-source)" || echo "kept SHUTOFF and locked" ). Rollback: $0 rollback $vm"
 }
@@ -658,7 +802,18 @@ cmd_rollback() {
     log "delete destination server"
     dst server delete "$(cat "$dir/dst-server-id")" --wait || true
   fi
-  local i n pname
+  # Destination ports go by the IDs create_destination recorded. State written by an older
+  # version has no dst-ports file and named its ports mig-<arg>-<i>: that sweep stays for it.
+  local i n pname pid
+  if [ -s "$dir/dst-ports" ]; then
+    while read -r pid; do
+      [ -n "$pid" ] || continue
+      if dst port show "$pid" >/dev/null 2>&1; then
+        dst port delete "$pid"
+        log "deleted destination port $pid"
+      fi
+    done < "$dir/dst-ports"
+  fi
   n=$(jq length "$dir/ports.json")
   for ((i=0; i<n; i++)); do
     pname="mig-$vm-$i"
@@ -687,7 +842,7 @@ cmd_rollback() {
   for vid in $(jq -r '.[]."Volume ID"' "$dir/attachments.json"); do
     cid=$(src volume list --name "mig-clone-$vid" -f value -c ID)
     [ -z "$cid" ] && continue
-    [ -e "/var/lib/mig-attach/$cid.json" ] && ( source "$SRC_RC"; "$BRICK" detach "$cid" 2>/dev/null ) || true
+    [ -e "/var/lib/mig-attach/$cid.json" ] && ( src_env; "$BRICK" detach "$cid" 2>/dev/null ) || true
     wait_volume src "$cid" available 300
     src volume delete "$cid"
     log "deleted leftover clone $cid"
@@ -716,11 +871,11 @@ cmd_rollback() {
   log "source VM ACTIVE again"
 }
 
-[ $# -ge 2 ] || { sed -n '2,35p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '2,41p' "$0"; exit 2; }
 CMD=$1 VM=$2; shift 2
 case $CMD in
-  plan|migrate) parse_options "$@"; POOL=$(pool_for_type);;
-  rollback) [ $# -eq 0 ] || die "rollback takes no options";;
+  plan|migrate) parse_options "$@"; POOL=$(pool_for_type); check_project_scope;;
+  rollback) [ $# -eq 0 ] || die "rollback takes no options"; check_project_scope;;
   *) die "unknown command $CMD";;
 esac
 case $CMD in
