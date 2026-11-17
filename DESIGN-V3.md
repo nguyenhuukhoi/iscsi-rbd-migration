@@ -85,9 +85,13 @@ migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]]
   preflight mà bỏ `key_name` + báo; và tên volume/port ở đích theo instance nguồn (trước đây
   volume đích lấy tên volume nguồn — thường rỗng với BFV — và port tên `mig-*`). Rollback xóa
   theo ID trong state nên đổi tên không ảnh hưởng rollback.
-- **Regression gate bắt buộc trước khi merge**: trên bản nhánh, chạy KHÔNG SỬA các bộ test cũ —
-  `blocksync-unit.sh` 8/0, `e2e-migrate.sh` 50/0 (không conf, chạy bằng env như cũ),
-  `live-migrate.sh` 26/0 — rồi mới chạy test mới (mục 7).
+- **Regression gate bắt buộc trước khi merge** (cơ chế do thiết kế đặt ra để chứng minh cam kết,
+  không phải nguyên văn yêu cầu của user): chạy lại các bộ test cũ — `blocksync-unit.sh` 8/0,
+  `e2e-migrate.sh` 50/0 (không conf, chạy bằng env như cũ), `live-migrate.sh` 26/0 — trên bản
+  nhánh, rồi mới test tính năng mới (mục 7). Test cũ **chỉ được sửa đúng các assert dính tới
+  thay đổi đã duyệt** (naming volume/port ở đích), liệt kê từng dòng trong commit; mọi assert
+  khác giữ nguyên từng chữ. Đã xác định 3 chỗ: `live-migrate.sh:75` (demo-root → tên mới),
+  `extras.sh:87,93` và `newip-voltype.sh:36-37,68` (port `mig-*` → `<vm>-nic<i>`).
 
 ## 6. Giới hạn nói trước
 
