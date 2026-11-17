@@ -531,15 +531,20 @@ cmd_migrate() {
     src server stop "$sid"
     wait_server src "$sid" SHUTOFF
   fi
-  src server lock "$sid"
+  # Everything that still mutates the source server through Nova (port detach,
+  # ephemeral snapshot) must happen BEFORE the lock: Nova's lock blocks these
+  # calls for non-admin credentials (admins silently bypass it, which is why
+  # the admin-only lab never caught this ordering).
   if [ "$IPMODE" = same ]; then
     detach_source_ports "$vm" "$dir" "$sid"
-    log "source stopped, locked and its ports detached"
+  fi
+  [ "$EPHEMERAL" = 0 ] || migrate_ephemeral_root "$vm" "$dir" "$sid"
+  src server lock "$sid"
+  if [ "$IPMODE" = same ]; then
+    log "source stopped, its ports detached, now locked"
   else
     log "source stopped and locked; ports left attached (--ip $IPMODE keeps them out of conflict)"
   fi
-
-  [ "$EPHEMERAL" = 0 ] || migrate_ephemeral_root "$vm" "$dir" "$sid"
 
   for vid in $vids; do
     if [ "$MODE" = live ]; then

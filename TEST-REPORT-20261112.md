@@ -27,6 +27,18 @@ Ghi chú vận hành từ sự cố này: sau cold migrate nguồn để **SHUTO
 admin bypass được lock của Nova (start được VM đang lock), user thường thì không — gặp 409
 khi stop tức là creds đang dùng không phải admin đầy đủ, hoặc VM đã convert rồi mà chạy lại.
 
+### Fix thứ ba cùng ngày: lock phải nằm SAU mọi thao tác Nova lên nguồn
+
+Production chạy creds không-admin lộ tiếp lỗi thứ tự: tool lock xong mới tháo port →
+chính cái lock chặn `server remove port` (409 ở os-interface). Lab toàn admin nên không
+bao giờ lộ (admin bypass lock). Sửa: stop → tháo port → snapshot ephemeral → **rồi mới lock**.
+
+Kiểm chứng bằng user **member thật** trên nguồn (không bypass lock) + appcred admin ở đích:
+cold migrate `--ip same` + rollback nguyên luồng **chạy lọt**, VM về ACTIVE hết lock. Kèm theo
+đây là lần đầu xác nhận nguồn chạy được bằng member end-to-end — với điều kiện port nguồn không
+phải Nova-owned (nhánh tái tạo port cần `--mac-address` vẫn đòi admin/chủ network ở nguồn) và
+đích vẫn admin (tạo port giữ MAC/IP).
+
 ## Bổ sung 13/11: multi-NIC, override flavor/SG, server properties, VM ephemeral
 
 `tests/extras.sh` chạy sạch **30 PASS / 0 FAIL** (lần chạy nguyên vẹn cuối, sau 4 lần fail có lý do ở mục sự cố):
