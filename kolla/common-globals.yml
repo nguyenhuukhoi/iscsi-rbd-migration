@@ -1,0 +1,23 @@
+---
+# Shared by both nested clouds. Minimal, but control/compute/storage stay on separate hosts.
+kolla_base_distro: "ubuntu"
+openstack_release: "2026.1"
+docker_registry: "198.51.100.109"
+docker_namespace: "openstack.kolla"
+
+# One controller, so no VIP layer: the internal "VIP" is the controller address.
+enable_haproxy: "no"
+enable_proxysql: "no"
+
+network_interface: "eth0"
+neutron_external_interface: "eth1"
+neutron_plugin_agent: "ovn"
+enable_neutron_provider_networks: "yes"
+
+nova_compute_virt_type: "kvm"
+
+enable_cinder: "yes"
+enable_cinder_backup: "no"
+enable_fluentd: "no"
+enable_horizon: "no"
+enable_heat: "no"

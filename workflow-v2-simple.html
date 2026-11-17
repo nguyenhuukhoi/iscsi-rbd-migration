@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow migrate-vm v2</title>
+<style>
+  :root{
+    --bg:#0e1320; --card:#161d2e; --text:#e8ecf5; --muted:#9aa7bd; --line:#2a3550;
+    --common:#4da3ff;      /* xanh dương: bước CHUNG cả cold lẫn live */
+    --live:#ffa94d;        /* cam: chỉ LIVE */
+    --cold:#c084fc;        /* tím: chỉ COLD */
+    --down-bg:#2a1518; --down-bd:#e5484d; --down-tx:#ff8f93;  /* đỏ: vùng downtime */
+    --run-bg:#10241a; --run-bd:#2f9e68; --run-tx:#5dd39e;     /* xanh lá: VM vẫn chạy */
+    --rb:#eab308;          /* vàng: rollback */
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#f4f6fb; --card:#ffffff; --text:#1a2233; --muted:#5b6880; --line:#c9d3e6;
+      --down-bg:#fdeaea; --down-tx:#b3261e; --run-bg:#e8f6ee; --run-tx:#1c7c4d;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.5 "Segoe UI",system-ui,sans-serif;padding:28px 16px 60px}
+  .wrap{max-width:860px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 18px;font-size:13.5px}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px 18px;background:var(--card);
+          border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:26px;font-size:13.5px}
+  .legend span{display:flex;align-items:center;gap:7px}
+  .dot{width:14px;height:14px;border-radius:4px;display:inline-block}
+
+  .step{display:flex;gap:14px;background:var(--card);border:1px solid var(--line);
+        border-radius:10px;padding:12px 16px;align-items:flex-start}
+  .step .no{min-width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+            font-weight:700;font-size:16px;color:#08101f;margin-top:2px}
+  .step h3{margin:0 0 2px;font-size:15.5px}
+  .step p{margin:0;color:var(--muted);font-size:13.5px}
+  .step p b{color:var(--text)}
+  .common{border-left:5px solid var(--common)} .common .no{background:var(--common)}
+  .livebox{border-left:5px solid var(--live)}  .livebox .no{background:var(--live)}
+  .coldbox{border-left:5px solid var(--cold)}  .coldbox .no{background:var(--cold)}
+
+  .arrow{display:flex;justify-content:center;color:var(--muted);font-size:20px;line-height:1;margin:6px 0}
+
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:6px 0}
+  .branch{border-radius:12px;padding:12px;border:2px dashed}
+  .branch h4{margin:0 0 10px;font-size:14px;text-align:center;letter-spacing:.4px}
+  .branch.cold{border-color:var(--cold)} .branch.cold h4{color:var(--cold)}
+  .branch.live{border-color:var(--live)} .branch.live h4{color:var(--live)}
+  .runtag{display:block;text-align:center;margin:0 auto 10px;max-width:260px;background:var(--run-bg);
+          border:1px solid var(--run-bd);color:var(--run-tx);border-radius:999px;padding:3px 12px;font-size:12.5px;font-weight:600}
+  .loop{display:flex;justify-content:center;align-items:center;gap:6px;color:var(--live);font-size:13px;margin:6px 0}
+  .skip{display:flex;height:100%;min-height:150px;align-items:center;justify-content:center;
+        color:var(--cold);font-size:13.5px;text-align:center;padding:0 8px}
+
+  .downzone{background:var(--down-bg);border:2px solid var(--down-bd);border-radius:14px;
+            padding:14px;margin:6px 0}
+  .downzone>.zlabel{color:var(--down-tx);font-weight:700;font-size:13px;letter-spacing:.8px;
+            text-align:center;margin-bottom:12px}
+  .downzone .step{margin-bottom:0}
+  .downzone .arrow{color:var(--down-tx)}
+
+  .mode{display:inline-block;border-radius:5px;padding:0 7px;font-size:12px;font-weight:700;margin-right:6px}
+  .mcold{background:var(--cold);color:#08101f} .mlive{background:var(--live);color:#08101f}
+  .mgrey{background:var(--line);color:var(--text)}
+
+  .rollback{border:2px solid var(--rb);border-radius:12px;padding:14px 16px;margin-top:28px}
+  .rollback h3{margin:0 0 6px;color:var(--rb);font-size:15px}
+  .rollback p{margin:0 0 4px;color:var(--muted);font-size:13.5px}
+  .rollback b{color:var(--text)}
+
+  .nums{margin-top:26px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:12px}
+  @media (max-width:640px){ .split{grid-template-columns:1fr} .skip{min-height:70px} }
+</style>
+</head>
+<body><div class="wrap">
+  <h1>migrate-vm.sh v2 — chuyển VM giữa 2 cloud OpenStack (iSCSI → Ceph RBD)</h1>
+  <p class="sub">Đọc từ trên xuống. Cold và Live đi chung mọi bước, chỉ khác <b>bước 3</b> (live có, cold bỏ qua) và lượng dữ liệu phải copy ở <b>bước 6</b>.</p>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--common)"></i>Bước chung cả 2 mode</span>
+    <span><i class="dot" style="background:var(--live)"></i>Chỉ LIVE</span>
+    <span><i class="dot" style="background:var(--cold)"></i>Chỉ COLD</span>
+    <span><i class="dot" style="background:var(--down-bd)"></i>Vùng DOWNTIME</span>
+    <span><i class="dot" style="background:var(--run-bd)"></i>VM nguồn vẫn chạy</span>
+    <span><i class="dot" style="background:var(--rb)"></i>Rollback</span>
+  </div>
+
+  <span class="runtag">VM nguồn ĐANG CHẠY, dịch vụ bình thường</span>
+
+  <div class="step common"><div class="no">0</div><div>
+    <h3>Chạy lệnh migrate</h3>
+    <p><code>migrate-vm.sh migrate &lt;vm&gt;</code> với <b>--mode cold|live · --ip same|new|&lt;addr&gt; · --volume-type · --flavor · --security-group</b></p>
+  </div></div>
+  <div class="arrow">↓</div>
+
+  <div class="step common"><div class="no">1</div><div>
+    <h3>Preflight phía đích — chỉ đọc</h3>
+    <p>Kiểm flavor, network, security group, IP/MAC còn trống, volume type. <b>FAIL là dừng ngay, chưa tạo gì.</b></p>
+  </div></div>
+  <div class="arrow">↓</div>
+
+  <div class="step common"><div class="no">2</div><div>
+    <h3>Tạo volume rỗng ở cloud đích</h3>
+    <p>Đúng <b>--volume-type</b>, tool kiểm image nằm đúng pool RBD (map qua <code>RBD_POOL_MAP</code>).</p>
+  </div></div>
+  <div class="arrow">↓ &nbsp;chọn mode&nbsp; ↓</div>
+
+  <div class="split">
+    <div class="branch cold">
+      <h4>— COLD —</h4>
+      <div class="skip">Không có bước 3.<br>VM còn chạy tới tận bước 4,<br>toàn bộ copy làm trong downtime.</div>
+    </div>
+    <div class="branch live">
+      <h4>— LIVE: bước 3, VM vẫn chạy —</h4>
+      <div class="step livebox"><div class="no">3a</div><div>
+        <h3>Clone volume nguồn</h3>
+        <p>Bản chụp crash-consistent, 5–10 s; volume gốc không bị đụng.</p>
+      </div></div>
+      <div class="arrow" style="color:var(--live)">↓</div>
+      <div class="step livebox"><div class="no">3b</div><div>
+        <h3>blocksync — copy sang RBD đích</h3>
+        <p>Hash từng chunk 4 MiB, <b>chỉ ghi phần thay đổi</b> so với lượt trước.</p>
+      </div></div>
+      <div class="loop">⟲ lặp 3a ↔ 3b tới khi delta ≤ --delta-limit (hoặc đủ --max-passes)</div>
+    </div>
+  </div>
+  <div class="arrow">↓ &nbsp;hai đường nhập lại&nbsp; ↓</div>
+
+  <div class="downzone">
+    <div class="zlabel">⏱ DOWNTIME — dịch vụ gián đoạn từ đây tới khi VM đích boot xong</div>
+
+    <div class="step common"><div class="no">4</div><div>
+      <h3>Tắt + lock VM nguồn</h3>
+      <p>Bắt buộc với cả 2 mode: dữ liệu phải đứng yên thì bản copy cuối mới đúng 100%.</p>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step common"><div class="no">5</div><div>
+      <h3>Xử lý port nguồn</h3>
+      <p><b>--ip same</b>: tháo port (giữ chỗ IP/MAC, chống 2 VM trùng nhau trên dây) · <b>--ip new/&lt;addr&gt;</b>: giữ nguyên, không đụng.</p>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step common"><div class="no">6</div><div>
+      <h3>Copy cuối + verify</h3>
+      <p><span class="mode mcold">COLD</span>copy <b>toàn bộ</b> volume (qemu-img) + so <b>từng byte</b></p>
+      <p><span class="mode mlive">LIVE</span>chỉ sync <b>delta cuối</b> + đọc lại từng chunk vừa ghi (readback)</p>
+      <p><span class="mode mgrey">EPHEMERAL</span>VM không có volume: snapshot Glance → tải về → đẩy lên đích</p>
+    </div></div>
+    <div class="arrow">↓</div>
+
+    <div class="step common"><div class="no">7</div><div>
+      <h3>Tạo port + VM ở cloud đích</h3>
+      <p>MAC/IP theo <b>--ip</b>; flavor/SG theo override nếu có; copy server properties + description; giữ SSH host key + hostname.</p>
+    </div></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step common"><div class="no">8</div><div>
+    <h3>Hoàn tất — VM chạy ở cloud đích</h3>
+    <p>VM nguồn giữ <b>SHUTOFF + lock</b> để còn rollback. Riêng <b>--ip new/&lt;addr&gt;</b> thêm <b>--start-source</b> thì bật lại VM nguồn, 2 VM chạy song song (bước 8b).</p>
+  </div></div>
+
+  <div class="rollback">
+    <h3>⟲ Rollback — chạy được ở BẤT KỲ bước nào: <code>migrate-vm.sh rollback &lt;vm&gt;</code></h3>
+    <p><b>R1</b> gọi lệnh (khi lỗi hoặc đổi ý) → <b>R2</b> dọn phía đích (xóa VM, volume, port, image, clone sót) → <b>R3</b> trả nguồn (gắn lại port nếu đã tháo, unlock, start).</p>
+    <p><b>Volume gốc không bao giờ bị sửa hay xóa</b>, nên rollback luôn về được trạng thái ban đầu.</p>
+  </div>
+
+  <div class="nums">
+    Số đo lab 12–13/11/2026 (VM 10 GB + 2 GB, guest ghi 4 MB/s): COLD downtime <b>276,8 s</b> ·
+    LIVE downtime <b>250,5 s</b> (pre-sync 2 268 MB khi VM còn chạy, cutover chỉ còn 104 + 140 MB).
+    Volume càng lớn, ghi càng thưa thì live càng lợi — downtime theo lượng ghi, không theo cỡ đĩa.
+  </div>
+</div></body>
+</html>

@@ -1,0 +1,63 @@
+#cloud-config
+# Rendered by 01-outer-infra.sh. The netplan block pins NIC names to the Neutron port MACs
+# so Kolla can rely on eth0 (mgmt), eth1 (provider) and eth2 (iSCSI). Reboots once at the end.
+hostname: __HOST__
+manage_etc_hosts: false
+ssh_pwauth: true
+disable_root: false
+
+users:
+  - name: ubuntu
+    groups: [sudo, adm]
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    lock_passwd: false
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAA_REPLACE_WITH_YOUR_PUBLIC_KEY admin@workstation
+
+chpasswd:
+  expire: false
+  users:
+    - {name: ubuntu, password: "CHANGE_ME_LAB_PASSWORD", type: text}
+    - {name: root, password: "CHANGE_ME_LAB_PASSWORD", type: text}
+
+write_files:
+  - path: /etc/environment
+    permissions: '0644'
+    content: |
+      PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      http_proxy="http://proxy.example.com:80"
+      https_proxy="http://proxy.example.com:80"
+      HTTP_PROXY="http://proxy.example.com:80"
+      HTTPS_PROXY="http://proxy.example.com:80"
+      no_proxy="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.169.254,.lab.local,.example.com"
+      NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.169.254,.lab.local,.example.com"
+  - path: /etc/apt/apt.conf.d/95proxy
+    permissions: '0644'
+    content: |
+      Acquire::http::Proxy "http://proxy.example.com:80";
+      Acquire::https::Proxy "http://proxy.example.com:80";
+      Acquire::http::Proxy::169.254.169.254 "DIRECT";
+  - path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+    permissions: '0644'
+    content: |
+      network: {config: disabled}
+  - path: /etc/netplan/60-lab.yaml
+    permissions: '0600'
+    content: |
+__NETPLAN__
+
+runcmd:
+  - [ bash, -c, "rm -f /etc/netplan/50-cloud-init.yaml" ]
+  - [ bash, -c, "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/; s/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config" ]
+  - [ bash, -c, "rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf" ]
+  - [ bash, -c, "mkdir -p /root/.ssh && cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/ && chmod 600 /root/.ssh/authorized_keys" ]
+  - [ systemctl, disable, --now, apt-daily.timer, apt-daily-upgrade.timer ]
+  - [ timedatectl, set-timezone, Asia/Ho_Chi_Minh ]
+  - [ bash, -c, "fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab" ]
+
+power_state:
+  mode: reboot
+  message: apply pinned NIC names
+  timeout: 30
+  condition: true

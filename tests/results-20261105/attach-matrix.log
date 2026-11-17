@@ -1,0 +1,18 @@
+== stop VM
+[{'id': 'd20b5922-6356-4a13-98d9-3c93ee11d07b', 'attachment_id': '56ecd2c8-7fdb-4509-87ee-61932765bf98', 'volume_id': 'd
+in-use
+== T1 connector of this host
+== T2 detach root volume from the stopped server through Nova
+BadRequestException: 400: Client Error for url: http://192.0.2.103:8774/v2.1/servers/bd809b39-98e2-491a-8891-844f8a12d342/os-volume_attachments/d20b5922-6356-4a13-98d9-3c93ee11d07b, Cannot detach a 
+rc=1
+== T3 second attachment on the in-use root volume
+ERROR: 'FileFinder' object has no attribute 'find_module'
+rc=1
+== T4 clone the in-use root volume, then attach the clone
+51268565-ddf3-43c6-929d-b7c5555ca31a
+clone status=available seconds=8
+ERROR: 'FileFinder' object has no attribute 'find_module'
+attach rc=1
+iscsiadm: No active sessions.
+volume status: available
+source status: in-use

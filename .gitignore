@@ -1,0 +1,9 @@
+# Never commit credentials
+key.txt
+*.pem
+*.key
+*openrc*
+*.keyring
+passwords.yml
+clouds.yaml
+secrets*

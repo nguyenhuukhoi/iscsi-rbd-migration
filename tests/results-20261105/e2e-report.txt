@@ -1,0 +1,97 @@
+=== baseline on source
+instance-id=bd809b39-98e2-491a-8891-844f8a12d342 hostname=demo-vm mac=fa:16:3e:91:5b:1f
+=== migrate
+Destination preflight:
+[17:38:38] stop source VM
+[17:39:04] source stopped, locked and its ports detached
+[17:39:06] clone demo-root (10 GB)
+[17:39:16] clone ready in 10s
+[17:39:21] clone attached at /dev/sda
+[17:39:25] copy /dev/sda -> mig-volumes/volume-13a3c464-815c-4600-8727-0caca60bd58c
+[17:40:22] copy done in 57s (179 MB/s logical)
+[17:40:22] verify byte-for-byte
+Images are identical.
+[17:41:35] verify OK in 73s
+[17:41:49] clone demo-data (2 GB)
+[17:41:58] clone ready in 9s
+[17:42:03] clone attached at /dev/sda
+[17:42:08] copy /dev/sda -> mig-volumes/volume-91da7850-557b-490d-ba5b-3332b3506ea9
+[17:42:17] copy done in 9s (227 MB/s logical)
+[17:42:17] verify byte-for-byte
+Images are identical.
+[17:42:31] verify OK in 14s
+[17:42:43] destination port mig-demo-vm-0 192.168.120.50 fa:16:3e:91:5b:1f
+[17:43:05] destination VM ACTIVE; control-plane downtime so far 269s
+Migrated. Source VM is kept SHUTOFF, locked and without ports. Rollback: /usr/local/bin/migrate-vm.sh rollback demo-vm
+PASS  migrate rc=0
+PASS  guest SSH after migrate
+=== downtime (guest's own write log)
+app outage 293.3s; last write 1793875121.466, resumed 1793875414.730, stop requested 1793875116
+PASS  writes continued until the stop request
+PASS  resumed after the stop request
+=== data integrity
+PASS  data checksum unchanged
+PASS  fstab unchanged
+PASS  root filesystem rw
+PASS  /data mounted
+PASS  no filesystem errors in kernel log
+=== guest identity
+PASS  instance-id changed to the destination UUID
+PASS  same interface, MAC and IP
+PASS  SSH host key preserved
+PASS  hostname preserved
+PASS  metadata served by destination cloud
+=== destination storage is really RBD
+PASS  libvirt root disk uses rbd
+PASS  libvirt data disk uses rbd
+PASS  image property copied to destination volume
+PASS  property effective in libvirt
+INFO  RBD usage: volume-13a3c464-815c-4600-8727-0caca60bd58c 10 GiB 2.1 GiB
+=== source preserved
+PASS  source SHUTOFF and locked
+PASS  source volumes still in-use
+PASS  source port detached but still allocated
+PASS  source VM has no NIC with this MAC
+PASS  no clone left
+PASS  no iSCSI session on transfer host
+=== mixed-phase network: peer VM still on source cloud
+INFO  peer on source cloud got 192.168.120.57 from its own pool
+PASS  peer got its address by DHCP from the source cloud
+PASS  peer (source cloud) reaches migrated VM (destination cloud)
+PASS  migrated VM reaches peer
+PASS  peer sees the migrated VM's MAC
+INFO  arping replies for 4 requests: 4
+PASS  exactly one ARP answer per request
+=== reboot on destination: fresh DHCP
+PASS  guest really rebooted
+PASS  DHCP from destination cloud after reboot
+PASS  data checksum after reboot
+PASS  SSH host key kept after reboot
+=== admin powers on the locked source while the destination VM runs
+INFO  start as admin: rc=0 status=ACTIVE 
+INFO  arping replies with both VMs powered on: 4
+PASS  still one ARP answer per request
+PASS  SSH still lands on the destination VM
+PASS  powered-on source has no NIC on the wire
+PASS  peer still reaches the destination VM
+PASS  source SHUTOFF again before continuing
+=== rollback
+[17:48:37] delete destination server
+[17:48:55] deleted destination volume 13a3c464-815c-4600-8727-0caca60bd58c
+[17:48:59] deleted destination volume 91da7850-557b-490d-ba5b-3332b3506ea9
+[17:49:24] reattached source port a33eb4b1-a74d-4568-aa7d-dd75ad41ef05
+[17:49:44] source VM ACTIVE again
+PASS  source reachable after rollback
+PASS  running on the original instance
+PASS  destination-only write absent
+PASS  data checksum on source
+PASS  destination server removed
+PASS  destination volumes removed
+PASS  destination port removed
+PASS  RBD pool empty
+PASS  source unlocked
+PASS  source port reattached
+PASS  same interface, MAC and IP after reattach
+PASS  peer reaches the restored source VM
+=== summary
+PASS=50 FAIL=0 WARN=0

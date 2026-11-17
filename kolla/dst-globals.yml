@@ -1,0 +1,9 @@
+---
+# Destination cloud: Cinder and Nova on the external Ceph lab cluster.
+kolla_internal_vip_address: "192.0.2.107"
+cinder_backend_ceph: "yes"
+nova_backend_ceph: "yes"
+ceph_cinder_user: "mig-cinder"
+ceph_nova_user: "mig-cinder"
+ceph_cinder_pool_name: "mig-volumes"
+ceph_nova_pool_name: "mig-vms"

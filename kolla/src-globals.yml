@@ -1,0 +1,8 @@
+---
+# Source cloud: Cinder LVM exported over iSCSI (tgtd) from a dedicated storage node.
+kolla_internal_vip_address: "192.0.2.103"
+enable_cinder_backend_lvm: "yes"
+cinder_target_helper: "lioadm"   # 13/11: PowerStore-sim, LIO 2 portal
+# Harbor only holds the RBD image set. These two are pre-pulled from quay.io on the source nodes.
+iscsid_image: "quay.io/openstack.kolla/iscsid"
+tgtd_image: "quay.io/openstack.kolla/tgtd"

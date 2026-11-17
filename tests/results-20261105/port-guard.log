@@ -1,0 +1,12 @@
+source server: SHUTOFF  peer: 192.168.120.57
+port now: admin_up=False device=bd809b39
+A disabled, attached               peer->migrated=FAIL  migrated->peer=FAIL  wire-arp=4/4
+B enabled, attached, VM off        peer->migrated=OK    migrated->peer=OK    wire-arp=4/4
+remove port rc=0  device_id='bd809b39-98e2-491a-8891-844f8a12d342' status=DOWN
+C enabled, detached from VM        peer->migrated=OK    migrated->peer=OK    wire-arp=4/4
+--- C + admin powers on the source VM
+source status: ACTIVE
+C with source VM powered on        peer->migrated=OK    migrated->peer=OK    wire-arp=4/4
+source status: SHUTOFF
+--- does C keep the address reserved on the source?
+ConflictException: 409: Client Error for url: http://192.0.2.103:9696/v2.0/ports, IP address 192.168.120.50 already allocated in subnet c9c868b8-31e

@@ -1,0 +1,22 @@
+ip=192.168.120.23 mac=fa:16:3e:85:d6:8e volume-name='' payload=payload-1793876037
+=== migrate
+[17:55:29] Nova removed its own port; reserved 192.168.120.23 fa:16:3e:85:d6:8e again as dcf0326f-55f3-4d6a-a3e9-f79fe42ce782
+Migrated. Source VM is kept SHUTOFF, locked and without ports. Rollback: /usr/local/bin/migrate-vm.sh rollback demo-auto
+PASS  migrate rc=0
+PASS  guest is the destination instance
+PASS  payload intact
+PASS  same MAC and IP
+PASS  IP and MAC still reserved on source
+PASS  reservation is not attached to any VM
+PASS  unnamed volume received a generated name
+=== rollback
+[18:00:24] reattached source port dcf0326f-55f3-4d6a-a3e9-f79fe42ce782
+[18:00:44] source VM ACTIVE again
+PASS  rollback rc=0
+PASS  source reachable
+PASS  guest is the source instance
+PASS  same MAC and IP on the re-created port
+PASS  payload intact on source
+=== cleanup of this test VM
+=== summary
+PASS=12 FAIL=0
