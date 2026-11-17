@@ -5,9 +5,11 @@
 #   migrate-vm.sh plan     <vm> [options]  read-only: export source definition, destination preflight
 #   migrate-vm.sh migrate  <vm> [options]  migrate; cold stops the VM first, live only at cutover
 #   migrate-vm.sh rollback <vm>            delete destination objects, restore and start the source VM
-#   migrate-vm.sh migrate-volume <volume> [--volume-type t] [--az z] [--verify v]
+#   migrate-vm.sh migrate-volume <volume> [--volume-type t] [--az z] [--verify v] [--in-use]
 #                                          copy one available volume (name or ID) through a clone: the
-#                                          source is never touched, the copy keeps the source name
+#                                          source is never touched, the copy keeps the source name.
+#                                          --in-use also takes an attached volume: copied from a clone
+#                                          taken while the VM runs (crash-consistent), nothing detached
 #   migrate-vm.sh rollback <volume>        delete that copy (a VM state of the same name wins: use the ID)
 #
 # Options (migrate and plan):
@@ -35,6 +37,9 @@
 #                           VLAN (split-brain). Rollback then needs no port reattach.
 #   --server-group <name>   destination server group the new VM joins (--hint group=<id>). It must
 #                           already exist in the destination project; it is never created.
+#   --keep-server-group     the new VM joins az-<source group name> in the destination project, with
+#                           the source group's policy (and rules). migrate creates it when missing,
+#                           plan never does; rollback never deletes it. Not with --server-group.
 #   --volumes-only          cold only: copy the volumes, create no destination port or server.
 #                           The source is stopped and locked as usual; its ports stay attached.
 #   --max-passes <n>        live: maximum pre-sync passes (default 5).
@@ -153,6 +158,7 @@ src_sg_id() {  # name-or-id ; prints the group's ID in the source project, nothi
 # --- options -------------------------------------------------------------------
 MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
 OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0
+KEEP_SG=0 IN_USE=0
 
 parse_options() {
   while [ $# -gt 0 ]; do
@@ -168,6 +174,8 @@ parse_options() {
       --flavor)       OV_FLAVOR=$2; shift 2;;
       --security-group) OV_SG=$2; shift 2;;
       --server-group) SERVER_GROUP=$2; shift 2;;
+      --keep-server-group) KEEP_SG=1; shift;;
+      --in-use)       IN_USE=1; shift;;
       --volumes-only) VOLUMES_ONLY=1; shift;;
       --max-passes)  MAX_PASSES=$2; shift 2;;
       --delta-limit) DELTA_LIMIT_MB=$2; shift 2;;
@@ -180,6 +188,7 @@ parse_options() {
   [ "$VOLUMES_ONLY" = 0 ] || [ "$MODE" = cold ] || die "--volumes-only is cold only: drop --mode live"
   # --volumes-only creates no destination VM, so a restarted source cannot clash on MAC/IP.
   [ "$START_SOURCE" = 0 ] || [ "$IPMODE" != same ] || [ "$VOLUMES_ONLY" = 1 ] || die "--start-source needs --ip new or --ip <addr>: with the same MAC and IP both VMs cannot be up at once"
+  [ -z "$SERVER_GROUP" ] || [ "$KEEP_SG" = 0 ] || die "choose one: --server-group <name> or --keep-server-group"
 }
 
 pool_for_type() {  # prints the RBD pool backing $VOLUME_TYPE
@@ -303,6 +312,86 @@ dest_volume_name() {  # source-volume-id dir ; prints <instance-name>-<device>, 
   echo "$(jq -r .name "$2/server.json")-${dev##*/}"
 }
 
+# --keep-server-group: the source VM's group (source project) maps to az-<name> in the destination
+# project. Preflight only reads; migrate creates a missing group right before the server.
+KSG_DST="" KSG_POLICY="" KSG_RULES="{}" KSG_ID=""
+dst_server_groups_named() {  # name ; one "<id> <policy>" line per destination group of that name
+  local sgj
+  sgj=$(dst server group list -f json) || return 1
+  jq -r --arg g "$1" '.[] | select(.Name==$g)
+      | "\(.ID) \((.Policy // .Policies // "unknown") | if type=="array" then (.[0] // "unknown") else . end)"' <<<"$sgj"
+}
+
+keep_sg_preflight() {  # dir ; called from preflight, sets its fail
+  local sid sgj gid n gj sname rtxt dlist
+  sid=$(jq -r .id "$1/server.json")
+  if ! sgj=$(src server group list --long -f json); then
+    echo "  FAIL  cannot list source server groups"; fail=1; return 0
+  fi
+  gid=$(jq -r --arg s "$sid" '.[] | select(any((.Members // [])[]; . == $s)) | .ID' <<<"$sgj")
+  n=$(grep -c . <<<"$gid" || true)
+  case $n in
+    0) echo "  INFO  source VM is in no server group"; return 0;;
+    1) ;;
+    *) echo "  FAIL  source VM is in $n server groups (${gid//$'\n'/ }): drop --keep-server-group and pass --server-group <id>"
+       fail=1; return 0;;
+  esac
+  if ! gj=$(src server group show "$gid" -f json); then
+    echo "  FAIL  cannot read source server group $gid"; fail=1; return 0
+  fi
+  # Compute API < 2.64 has a "policies" list and no rules.
+  sname=$(jq -r .name <<<"$gj")
+  KSG_POLICY=$(jq -r '(.policy // .policies // empty) | if type=="array" then (.[0] // empty) else . end' <<<"$gj")
+  KSG_RULES=$(jq -c '.rules // {} | if type=="object" then . else {} end' <<<"$gj")
+  KSG_DST=az-$sname
+  rtxt=$(jq -r 'to_entries | map("\(.key)=\(.value)") | join(",")' <<<"$KSG_RULES")
+  echo "  INFO  source server group $sname ($gid, policy ${KSG_POLICY:-unknown}${rtxt:+, rules $rtxt}) -> destination $KSG_DST"
+  [ -n "$KSG_POLICY" ] || { echo "  FAIL  cannot read the policy of source server group $sname ($gid)"; fail=1; return 0; }
+  if ! dlist=$(dst_server_groups_named "$KSG_DST"); then
+    echo "  FAIL  cannot list destination server groups"; fail=1; return 0
+  fi
+  n=$(grep -c . <<<"$dlist" || true)
+  case $n in
+    0) echo "  OK    will create $KSG_DST (policy $KSG_POLICY)";;
+    1) if [ "${dlist#* }" = "$KSG_POLICY" ]; then
+         echo "  OK    server group $KSG_DST exists (${dlist%% *}, policy $KSG_POLICY): reused"
+       else
+         echo "  FAIL  server group $KSG_DST has policy ${dlist#* } at the destination, source group $sname has $KSG_POLICY — to use it anyway drop --keep-server-group and pass --server-group ${dlist%% *}"
+         fail=1
+       fi;;
+    *) echo "  FAIL  $n server groups are named $KSG_DST in the destination project (ambiguous): $(cut -d' ' -f1 <<<"$dlist" | tr '\n' ' ')— drop --keep-server-group and pass --server-group <id>"
+       fail=1;;
+  esac
+}
+
+keep_sg_ensure() {  # dir ; finds or creates $KSG_DST at the destination, sets KSG_ID, records it
+  local dir=$1 dlist n created=no rules k v rule_args=() err=$1/server-group.err
+  dlist=$(dst_server_groups_named "$KSG_DST") || die "cannot list destination server groups"
+  n=$(grep -c . <<<"$dlist" || true)
+  case $n in
+    0) rules=$(jq -r 'to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$KSG_RULES")
+       while IFS=$'\t' read -r k v; do
+         [ -z "$k" ] || rule_args+=(--rule "$k=$v")
+       done <<<"$rules"
+       # An older client, or a compute API version pinned below 2.64, refuses --rule before any API call.
+       if ! KSG_ID=$(dst server group create --policy "$KSG_POLICY" "${rule_args[@]}" "$KSG_DST" -f value -c id 2>"$err"); then
+         [ ${#rule_args[@]} -gt 0 ] && grep -q -- '--rule' "$err" \
+           || die "cannot create server group $KSG_DST in the destination project: $(tail -1 "$err")"
+         log "WARN openstackclient refused --rule ($(tail -1 "$err")): $KSG_DST is created without the source rules $KSG_RULES"
+         KSG_ID=$(dst server group create --policy "$KSG_POLICY" "$KSG_DST" -f value -c id)
+       fi
+       [ -n "$KSG_ID" ] || die "server group create returned no ID for $KSG_DST"
+       created=yes
+       log "created destination server group $KSG_DST ($KSG_ID, policy $KSG_POLICY)";;
+    1) [ "${dlist#* }" = "$KSG_POLICY" ] \
+         || die "server group $KSG_DST has policy ${dlist#* } at the destination, the source group has $KSG_POLICY"
+       KSG_ID=${dlist%% *}
+       log "destination server group $KSG_DST ($KSG_ID) exists: the VM joins it";;
+    *) die "$n server groups are named $KSG_DST in the destination project: drop --keep-server-group and pass --server-group <id>";;
+  esac
+  echo "$KSG_ID created=$created" > "$dir/dst-server-group"
+}
+
 preflight() {
   local dir=$1 fail=0
   check() { if eval "$2" >/dev/null 2>&1; then echo "  OK    $1"; else echo "  FAIL  $1"; fail=1; fi; }
@@ -313,7 +402,9 @@ preflight() {
   flavor=${OV_FLAVOR:-$(jq -r '.flavor | if type=="object" then (.original_name // .name) else (. | split(" ")[0]) end' "$dir/server.json")}
   key=$(jq -r '.key_name // empty' "$dir/server.json")
   [ "$VOLUMES_ONLY" = 0 ] || vo=" volumes-only"
-  echo "Destination preflight (mode=$MODE$vo ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}${SERVER_GROUP:+ server-group=$SERVER_GROUP}):"
+  local ksg=""
+  [ "$KEEP_SG" = 0 ] || ksg=" keep-server-group"
+  echo "Destination preflight (mode=$MODE$vo ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}${SERVER_GROUP:+ server-group=$SERVER_GROUP}$ksg):"
   if [ -n "$DEST_AZ" ]; then
     [ "$VOLUMES_ONLY" = 1 ] || check "compute AZ $DEST_AZ" "dst availability zone list --compute -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
     check "volume AZ $DEST_AZ"  "dst availability zone list --volume  -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
@@ -322,6 +413,7 @@ preflight() {
     # No server is created, so the guard against a second copy is on the destination volume names.
     # Volumes recorded in this VM's own state are not a clash (plan run after a migrate).
     [ -z "$SERVER_GROUP" ] || echo "  INFO  --server-group $SERVER_GROUP ignored: --volumes-only creates no server"
+    [ "$KEEP_SG" = 0 ] || echo "  INFO  --keep-server-group ignored: --volumes-only creates no server"
     local svid dname dids did clash
     for svid in $(jq -r '.[]."Volume ID"' "$dir/attachments.json"); do
       dname=$(dest_volume_name "$svid" "$dir")
@@ -373,6 +465,7 @@ preflight() {
         esac
       fi
     fi
+    [ "$KEEP_SG" = 0 ] || keep_sg_preflight "$dir"
   fi
   [ -z "$VOLUME_TYPE" ] || check "volume type $VOLUME_TYPE" "dst volume type show '$VOLUME_TYPE'"
   check_sg() {  # label name-or-id ; exactly one group of that name in the destination project
@@ -485,8 +578,10 @@ copy_volume_props() {  # source-volume-json dest-volume-id ; boot and guest meta
   done <<<"$props"
 }
 
-attach_clone() {  # source-volume-id ; sets CLONE and DEVICE
+CLONE_TIME=""
+attach_clone() {  # source-volume-id ; sets CLONE, CLONE_TIME (UTC, clone request) and DEVICE
   local vid=$1
+  CLONE_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   CLONE=$(src volume create "mig-clone-$vid" --source "$vid" -f value -c id)
   wait_volume src "$CLONE" available
   # stderr goes to a file, not /dev/null: brick_attach's own guard messages (multipath,
@@ -724,6 +819,11 @@ create_destination() {  # vm dir
     [ -n "$sgid" ] || die "server group $SERVER_GROUP is missing or ambiguous in the destination project"
     hint=(--hint "group=$sgid")
   fi
+  # Set by preflight only with --keep-server-group and a source VM that is in a group.
+  if [ -n "$KSG_DST" ]; then
+    keep_sg_ensure "$dir"
+    hint=(--hint "group=$KSG_ID")
+  fi
 
   # Server metadata travels with the VM: properties and description. Assigned first so a jq
   # failure inside a process substitution cannot slip past set -e.
@@ -878,6 +978,8 @@ cmd_rollback() {
     log "delete destination server"
     dst server delete "$(cat "$dir/dst-server-id")" --wait || true
   fi
+  # Other migrated VMs may be members; an empty group is harmless and a later migrate reuses it.
+  [ ! -s "$dir/dst-server-group" ] || log "INFO destination server group kept ($(cat "$dir/dst-server-group")): rollback never deletes a server group"
   # Destination ports go by the IDs create_destination recorded, whatever their name. The
   # mig-<arg>-<i> name sweep below also covers state written before dst-ports existed.
   local i n pname pid
@@ -955,7 +1057,7 @@ cmd_rollback() {
 volume_options_only() {  # raw options ; refuse the options that only make sense with a server
   local a prev="" bad=""
   for a in "$@"; do
-    case $a in --ip|--flavor|--security-group|--server-group|--start-source|--keep-source-ports|--volumes-only) bad+=" $a";; esac
+    case $a in --ip|--flavor|--security-group|--server-group|--keep-server-group|--start-source|--keep-source-ports|--volumes-only) bad+=" $a";; esac
     [ "$prev" != --mode ] || [ "$a" != live ] || bad+=" --mode live"
     prev=$a
   done
@@ -988,6 +1090,14 @@ volume_preflight() {  # dir ; destination checks for the volume in $dir/volume.j
   check() { if eval "$2" >/dev/null 2>&1; then echo "  OK    $1"; else echo "  FAIL  $1"; fail=1; fi; }
   vid=$(jq -r .id "$dir/volume.json")
   echo "Destination preflight (migrate-volume type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}):"
+  if [ "$IN_USE" = 1 ]; then
+    if [ "$(jq -r .status "$dir/volume.json")" = available ]; then
+      echo "  INFO  --in-use ignored: $vid is available, copied as usual"
+    else
+      echo "  INFO  $vid is in-use: copied from a clone taken while attached (crash-consistent); its VM keeps running"
+      check "volume not multiattach" "jq -e '.multiattach != true' '$dir/volume.json'"
+    fi
+  fi
   [ -z "$DEST_AZ" ] || check "volume AZ $DEST_AZ" "dst availability zone list --volume -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
   [ -z "$VOLUME_TYPE" ] || check "volume type $VOLUME_TYPE" "dst volume type show '$VOLUME_TYPE'"
   check "volume not encrypted" "jq -e '.encrypted != true' '$dir/volume.json'"
@@ -1037,7 +1147,7 @@ cmd_migrate_volume() {  # volume name or ID
   status=$(jq -r .status <<<"$vj")
   case $status in
     available) ;;
-    in-use) die "volume $arg ($vid) is in-use: an attached volume goes with its VM ($0 migrate <vm> --volumes-only)";;
+    in-use) [ "$IN_USE" = 1 ] || die "volume $arg ($vid) is in-use: an attached volume goes with its VM ($0 migrate <vm> --volumes-only), or copy it live with --in-use (crash-consistent)";;
     *) die "volume $arg ($vid) is $status: migrate-volume copies available volumes only";;
   esac
   mkdir -p "$dir"; chmod 700 "$dir"
@@ -1053,7 +1163,13 @@ cmd_migrate_volume() {  # volume name or ID
   log "destination volume $DVID created; copying from a clone of $vid"
   copy_volume_cold "$vid" "$DVID" "$size" "$dir"
   trap - EXIT
-  echo "Volume migrated: ${name:-(no name)} $vid -> $DVID. Source volume untouched (still available). Rollback: $0 rollback $vid"
+  if [ "$status" = in-use ]; then
+    echo "$CLONE_TIME" > "$dir/clone-time"
+    echo "Volume copied crash-consistent as of $CLONE_TIME: data written after that moment"
+    echo "is NOT in the copy (like a sudden power-off; a busy DB will need crash recovery on first mount)."
+    echo "Source VM and volume untouched."
+  fi
+  echo "Volume migrated: ${name:-(no name)} $vid -> $DVID. Source volume untouched (still $status). Rollback: $0 rollback $vid"
 }
 
 drop_volume() {  # src|dst volume-id label ; deletes it once settled; gone is fine, in-use is refused
@@ -1097,10 +1213,12 @@ cmd_rollback_volume() {  # volume name, ID or vol-<id> ; deletes the copy, never
   log "rollback done; source volume $vid was never modified"
 }
 
-[ $# -ge 2 ] || { sed -n '2,45p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '2,50p' "$0"; exit 2; }
 CMD=$1 VM=$2; shift 2
 case $CMD in
-  plan|migrate) parse_options "$@"; POOL=$(pool_for_type); check_project_scope;;
+  plan|migrate) parse_options "$@"
+                [ "$IN_USE" = 0 ] || die "--in-use belongs to migrate-volume: plan and migrate move a VM with its volumes (--mode live keeps it running until the cutover)"
+                POOL=$(pool_for_type); check_project_scope;;
   migrate-volume) volume_options_only "$@"; parse_options "$@"; POOL=$(pool_for_type); check_project_scope;;
   rollback) [ $# -eq 0 ] || die "rollback takes no options"; check_project_scope;;
   *) die "unknown command $CMD";;
