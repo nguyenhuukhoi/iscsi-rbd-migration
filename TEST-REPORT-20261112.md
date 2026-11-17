@@ -16,6 +16,17 @@ Kèm theo (verify policy bằng user member thật trên network shared): member
 nhưng `--mac-address` và `--fixed-ip` bị 403 (`admin_or_network_owner`) — trên network thuộc
 chính project thì member đặt được cả hai. Kết luận quyền tối thiểu ghi ở DEPLOY.md §6.
 
+### Hai fix từ lần chạy production đầu tiên (17/11, VM nguồn 409 "Instance is locked")
+
+| Fix | Kiểm chứng trên lab |
+|---|---|
+| VM nguồn bị lock sẵn (lần convert trước, hoặc operator): tool unlock kèm WARN + `locked_reason` rồi đi tiếp, thay vì chết 409 ở `server stop` | Lock sẵn demo-vm → migrate cold trọn vẹn (WARN in đúng) → rollback → ACTIVE, hết lock |
+| Preflight FAIL ngay nếu **đích đã có server trùng tên** không thuộc lần chạy dở này (tránh unlock rồi migrate đè VM đã convert xong) | Đích rỗng: guard im lặng; tạo server giả trùng tên: `plan` FAIL kèm hướng dẫn rollback; xóa server giả: `plan` 0 FAIL |
+
+Ghi chú vận hành từ sự cố này: sau cold migrate nguồn để **SHUTOFF + locked là thiết kế**;
+admin bypass được lock của Nova (start được VM đang lock), user thường thì không — gặp 409
+khi stop tức là creds đang dùng không phải admin đầy đủ, hoặc VM đã convert rồi mà chạy lại.
+
 ## Bổ sung 13/11: multi-NIC, override flavor/SG, server properties, VM ephemeral
 
 `tests/extras.sh` chạy sạch **30 PASS / 0 FAIL** (lần chạy nguyên vẹn cuối, sau 4 lần fail có lý do ở mục sự cố):

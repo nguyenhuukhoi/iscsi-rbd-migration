@@ -159,6 +159,15 @@ preflight() {
   flavor=${OV_FLAVOR:-$(jq -r '.flavor | if type=="object" then (.original_name // .name) else (. | split(" ")[0]) end' "$dir/server.json")}
   key=$(jq -r '.key_name // empty' "$dir/server.json")
   echo "Destination preflight (mode=$MODE ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}):"
+  # A same-named server already on the destination means an earlier migration of
+  # this VM (finished, or interrupted after create). Proceeding would duplicate it.
+  local vmname dsid
+  vmname=$(jq -r .name "$dir/server.json")
+  dsid=$(dst server list --name "^${vmname}\$" -f value -c ID | head -1)
+  if [ -n "$dsid" ] && [ "$dsid" != "$(cat "$dir/dst-server-id" 2>/dev/null)" ]; then
+    echo "  FAIL  destination already has a server named $vmname ($dsid) from an earlier migration — inspect it; to redo the migration run: $0 rollback $vmname (DELETES that destination server and its volumes)"
+    fail=1
+  fi
   check "flavor $flavor" "dst flavor show '$flavor'"
   [ -n "$key" ] && check "keypair $key" "dst keypair show '$key'"
   [ -z "$VOLUME_TYPE" ] || check "volume type $VOLUME_TYPE" "dst volume type show '$VOLUME_TYPE'"
@@ -510,6 +519,13 @@ cmd_migrate() {
   # Cutover: from here the service is down until the destination VM boots.
   local t_start=$SECONDS
   date +%s > "$dir/t-stop"
+  # A pre-existing lock (an interrupted earlier run, or an operator lock) makes
+  # "server stop" fail with 409. Migrating this VM is the operator's explicit
+  # intent, so lift the lock and continue; the tool re-locks right below.
+  if [ "$(src server show "$sid" -f value -c locked)" = True ]; then
+    log "WARN source VM is already locked (reason: $(src server show "$sid" -f value -c locked_reason 2>/dev/null || echo unknown)); unlocking to proceed"
+    src server unlock "$sid"
+  fi
   if [ "$(src server show "$sid" -f value -c status)" != SHUTOFF ]; then
     log "stop source VM"
     src server stop "$sid"
