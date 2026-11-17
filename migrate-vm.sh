@@ -5,6 +5,10 @@
 #   migrate-vm.sh plan     <vm> [options]  read-only: export source definition, destination preflight
 #   migrate-vm.sh migrate  <vm> [options]  migrate; cold stops the VM first, live only at cutover
 #   migrate-vm.sh rollback <vm>            delete destination objects, restore and start the source VM
+#   migrate-vm.sh migrate-volume <volume> [--volume-type t] [--az z] [--verify v]
+#                                          copy one available volume (name or ID) through a clone: the
+#                                          source is never touched, the copy keeps the source name
+#   migrate-vm.sh rollback <volume>        delete that copy (a VM state of the same name wins: use the ID)
 #
 # Options (migrate and plan):
 #   --mode cold|live        cold (default): stop the VM, qemu-img copy + full compare (unless
@@ -409,12 +413,12 @@ ATTACHED=""
 cleanup_attach() { stop_watch; [ -z "$ATTACHED" ] || ( src_env; "$BRICK" detach "$ATTACHED" ) || true; }
 
 create_dest_volume() {  # source-volume-id dir ; sets DVID, appends to volume-map
-  local vid=$1 dir=$2 vj name size bootable
+  local vid=$1 dir=$2 vj name size
   vj=$(src volume show "$vid" -f json)
   # Named after the instance, not the source volume: BFV volumes usually have no name, and the
   # device tells several volumes of one VM apart.
   name=$(dest_volume_name "$vid" "$dir")
-  size=$(jq -r .size <<<"$vj"); bootable=$(jq -r .bootable <<<"$vj")
+  size=$(jq -r .size <<<"$vj")
 
   DVID=$(dst volume create "$name" --size "$size" ${VOLUME_TYPE:+--type "$VOLUME_TYPE"} \
          ${DEST_AZ:+--availability-zone "$DEST_AZ"} \
@@ -423,16 +427,19 @@ create_dest_volume() {  # source-volume-id dir ; sets DVID, appends to volume-ma
   rbd -c "$CEPH_CONF" --id "$RBD_USER" -p "$POOL" info "volume-$DVID" >/dev/null 2>&1 \
     || die "volume-$DVID not visible in pool $POOL: wrong RBD_POOL_MAP for type '${VOLUME_TYPE:-default}', or $RBD_USER lacks caps on that pool"
   echo "$vid $DVID" >> "$dir/volume-map"
+  copy_volume_props "$vj" "$DVID"
+}
 
-  # Boot and guest metadata the destination Nova needs.
-  [ "$bootable" = true ] || [ "$bootable" = True ] && dst volume set "$DVID" --bootable
+copy_volume_props() {  # source-volume-json dest-volume-id ; boot and guest metadata the destination Nova needs
+  local vj=$1 dvid=$2 bootable k v props
+  bootable=$(jq -r .bootable <<<"$vj")
+  [ "$bootable" = true ] || [ "$bootable" = True ] && dst volume set "$dvid" --bootable
   # Assigned first: a jq failure inside a process substitution would not stop the script.
-  local k v props
   props=$(jq -r '(.volume_image_metadata // {}) | to_entries[]
       | select(.key | test("^(hw_|os_|hypervisor_type$|architecture$|vm_mode$)"))
       | [.key, (.value|tostring)] | @tsv' <<<"$vj")
   while IFS=$'\t' read -r k v; do
-    [ -z "$k" ] || dst volume set "$DVID" --image-property "$k=$v"
+    [ -z "$k" ] || dst volume set "$dvid" --image-property "$k=$v"
   done <<<"$props"
 }
 
@@ -879,15 +886,168 @@ cmd_rollback() {
   log "source VM ACTIVE again"
 }
 
-[ $# -ge 2 ] || { sed -n '2,41p' "$0"; exit 2; }
+# --- migrate-volume: one available volume, no server ----------------------------
+# The source is only read through a temporary clone, so it stays available and untouched.
+# State: $STATE_ROOT/vol-<source-id>. The copy keeps the source name; since Cinder names are
+# not unique, an earlier copy is recognised by its description "migrated from <source-id>".
+# Runs before parse_options, whose own --start-source/--volumes-only messages would mislead here.
+volume_options_only() {  # raw options ; refuse the options that only make sense with a server
+  local a prev="" bad=""
+  for a in "$@"; do
+    case $a in --ip|--flavor|--security-group|--server-group|--start-source|--keep-source-ports|--volumes-only) bad+=" $a";; esac
+    [ "$prev" != --mode ] || [ "$a" != live ] || bad+=" --mode live"
+    prev=$a
+  done
+  [ -z "$bad" ] || die "migrate-volume copies one available volume and creates no server or port:$bad cannot apply (it takes --volume-type, --az and --verify)"
+}
+
+resolve_volume() {  # name-or-id ; prints the source volume ID (source project), nothing when unknown
+  local ids n
+  ids=$(src volume list --name "$1" -f value -c ID)
+  n=$(grep -c . <<<"$ids" || true)
+  [ "$n" -le 1 ] || die "$n volumes are named '$1' in the source project: ${ids//$'\n'/ } — re-run with the volume ID"
+  if [ "$n" = 1 ]; then echo "$ids"
+  elif [[ $1 =~ ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$ ]]; then echo "$1"; fi
+}
+
+dst_volumes_described() {  # description ; IDs of the destination project's volumes carrying it
+  # openstackclient has no description column or filter: ask the SDK it is built on.
+  ( dst_env; python3 - "$1" <<'EOF'
+import sys
+import openstack
+for v in openstack.connect().block_storage.volumes(details=True):
+    if v.description == sys.argv[1]:
+        print(v.id)
+EOF
+  )
+}
+
+volume_preflight() {  # dir ; destination checks for the volume in $dir/volume.json
+  local dir=$1 vid dids fail=0
+  check() { if eval "$2" >/dev/null 2>&1; then echo "  OK    $1"; else echo "  FAIL  $1"; fail=1; fi; }
+  vid=$(jq -r .id "$dir/volume.json")
+  echo "Destination preflight (migrate-volume type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}):"
+  [ -z "$DEST_AZ" ] || check "volume AZ $DEST_AZ" "dst availability zone list --volume -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
+  [ -z "$VOLUME_TYPE" ] || check "volume type $VOLUME_TYPE" "dst volume type show '$VOLUME_TYPE'"
+  check "volume not encrypted" "jq -e '.encrypted != true' '$dir/volume.json'"
+  if ! dids=$(dst_volumes_described "migrated from $vid"); then
+    echo "  FAIL  cannot list destination volumes"; fail=1
+  elif [ -n "$dids" ]; then
+    echo "  FAIL  destination already has a copy of $vid: ${dids//$'\n'/ } — inspect it; roll back the run that made it ($0 rollback $vid, on the host holding its state) or delete it, then re-run"
+    fail=1
+  else
+    echo "  OK    no earlier copy of $vid at the destination"
+  fi
+  check "RBD access to pool $POOL" "rbd -c '$CEPH_CONF' --id '$RBD_USER' -p '$POOL' ls"
+  check "iSCSI daemon on transfer host" "systemctl is-active iscsid || systemctl start iscsid"
+  [ "${MIG_MULTIPATH:-0}" != 1 ] || check "multipathd on transfer host" "systemctl is-active multipathd"
+  [ "$fail" = 0 ]
+}
+
+create_volume_copy() {  # dir ; creates the destination volume for $dir/volume.json, sets DVID
+  local dir=$1 vj vid name args
+  vj=$(cat "$dir/volume.json")
+  vid=$(jq -r .id <<<"$vj"); name=$(jq -r '.name // empty' <<<"$vj")
+  args=(--size "$(jq -r .size <<<"$vj")" --description "migrated from $vid" -f value -c id)
+  [ -z "$VOLUME_TYPE" ] || args+=(--type "$VOLUME_TYPE")
+  [ -z "$DEST_AZ" ] || args+=(--availability-zone "$DEST_AZ")
+  # The source name verbatim, an empty one included (Cinder accepts it); the ID only as fallback.
+  if [ -n "$name" ]; then
+    DVID=$(dst volume create "$name" "${args[@]}")
+  elif ! DVID=$(dst volume create "" "${args[@]}" 2>"$dir/create.err"); then
+    log "WARN source volume $vid has no name and the destination refused an empty one ($(tail -1 "$dir/create.err")): the copy is named $vid"
+    DVID=$(dst volume create "$vid" "${args[@]}")
+  fi
+  # Recorded before the wait, so that rollback also removes a copy that never became available.
+  echo "$vid $DVID" >> "$dir/volume-map"
+  wait_volume dst "$DVID" available
+  rbd -c "$CEPH_CONF" --id "$RBD_USER" -p "$POOL" info "volume-$DVID" >/dev/null 2>&1 \
+    || die "volume-$DVID not visible in pool $POOL: wrong RBD_POOL_MAP for type '${VOLUME_TYPE:-default}', or $RBD_USER lacks caps on that pool"
+  copy_volume_props "$vj" "$DVID"
+}
+
+cmd_migrate_volume() {  # volume name or ID
+  local arg=$1 vid dir vj status name size
+  vid=$(resolve_volume "$arg")
+  [ -n "$vid" ] || die "no volume named '$arg' in the source project"
+  dir=$STATE_ROOT/vol-$vid
+  [ ! -e "$dir/volume-map" ] || die "state exists in $dir: run rollback first ($0 rollback $vid)"
+  vj=$(src volume show "$vid" -f json)
+  status=$(jq -r .status <<<"$vj")
+  case $status in
+    available) ;;
+    in-use) die "volume $arg ($vid) is in-use: an attached volume goes with its VM ($0 migrate <vm> --volumes-only)";;
+    *) die "volume $arg ($vid) is $status: migrate-volume copies available volumes only";;
+  esac
+  mkdir -p "$dir"; chmod 700 "$dir"
+  printf '%s\n' "$vj" > "$dir/volume.json"
+  name=$(jq -r '.name // empty' <<<"$vj"); size=$(jq -r .size <<<"$vj")
+  echo "Volume ${name:-(no name)} $vid  ${size}GB bootable=$(jq -r .bootable <<<"$vj") type=$(jq -r '.type // "-"' <<<"$vj")"
+  volume_preflight "$dir"
+  printf 'VOLUME_TYPE=%s POOL=%s VERIFY=%s AZ=%s SRC_PROJECT=%s DST_PROJECT=%s\n' \
+    "$VOLUME_TYPE" "$POOL" "$VERIFY" "$DEST_AZ" "${SRC_PROJECT:-}" "${DST_PROJECT:-}" > "$dir/options"
+  : > "$dir/volume-map"
+  trap cleanup_attach EXIT
+  create_volume_copy "$dir"
+  log "destination volume $DVID created; copying from a clone of $vid"
+  copy_volume_cold "$vid" "$DVID" "$size" "$dir"
+  trap - EXIT
+  echo "Volume migrated: ${name:-(no name)} $vid -> $DVID. Source volume untouched (still available). Rollback: $0 rollback $vid"
+}
+
+drop_volume() {  # src|dst volume-id label ; deletes it once settled; gone is fine, in-use is refused
+  local cloud=$1 id=$2 label=$3 s err=$STATE_ROOT/volume-show.err
+  if ! s=$($cloud volume show "$id" -f value -c status 2>"$err"); then
+    grep -qiE 'no volume with a name or id|not found|could not be found' "$err" \
+      || die "cannot read $label $id: $(tail -1 "$err")"
+    log "$label $id already gone"; return 0
+  fi
+  case $s in
+    in-use) die "$label $id is in-use: detach it first, then re-run the rollback";;
+    error*) ;;
+    *) wait_volume "$cloud" "$id" available 300;;
+  esac
+  $cloud volume delete "$id"
+  log "deleted $label $id"
+}
+
+cmd_rollback_volume() {  # volume name, ID or vol-<id> ; deletes the copy, never touches the source
+  local arg=$1 dir vid dvid cid
+  if [ -e "$STATE_ROOT/$arg/volume.json" ]; then dir=$STATE_ROOT/$arg
+  elif [ -e "$STATE_ROOT/vol-$arg/volume.json" ]; then dir=$STATE_ROOT/vol-$arg
+  else
+    vid=$(resolve_volume "$arg")
+    dir=$STATE_ROOT/vol-$vid
+    [ -n "$vid" ] && [ -e "$dir/volume.json" ] \
+      || die "no state for $arg: no VM state in $STATE_ROOT/$arg and no migrate-volume state for a source volume of that name or ID"
+  fi
+  vid=$(jq -r .id "$dir/volume.json")
+  if [ -e "$dir/volume-map" ]; then
+    for dvid in $(awk '{print $2}' "$dir/volume-map"); do
+      drop_volume dst "$dvid" "destination volume"
+    done
+  fi
+  # A run that died mid-copy leaves its clone behind, possibly still attached to this host.
+  for cid in $(src volume list --name "mig-clone-$vid" -f value -c ID); do
+    [ ! -e "/var/lib/mig-attach/$cid.json" ] || ( src_env; "$BRICK" detach "$cid" 2>/dev/null ) || true
+    drop_volume src "$cid" "leftover clone"
+  done
+  mv "$dir" "$dir.rolled-back.$(date +%s)"
+  log "rollback done; source volume $vid was never modified"
+}
+
+[ $# -ge 2 ] || { sed -n '2,45p' "$0"; exit 2; }
 CMD=$1 VM=$2; shift 2
 case $CMD in
   plan|migrate) parse_options "$@"; POOL=$(pool_for_type); check_project_scope;;
+  migrate-volume) volume_options_only "$@"; parse_options "$@"; POOL=$(pool_for_type); check_project_scope;;
   rollback) [ $# -eq 0 ] || die "rollback takes no options"; check_project_scope;;
   *) die "unknown command $CMD";;
 esac
 case $CMD in
   plan) cmd_plan "$VM";;
   migrate) cmd_migrate "$VM";;
-  rollback) cmd_rollback "$VM";;
+  migrate-volume) cmd_migrate_volume "$VM";;
+  # A VM state under that name wins, exactly as before; anything else is taken as a volume.
+  rollback) if [ -e "$STATE_ROOT/$VM/server.json" ]; then cmd_rollback "$VM"; else cmd_rollback_volume "$VM"; fi;;
 esac
