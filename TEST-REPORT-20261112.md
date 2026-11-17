@@ -47,6 +47,17 @@ dưới `set -euo pipefail`, eval lồng nháy, nhánh ephemeral/live/rollback).
 → preflight FAIL cả 2; `--az nova` → full migrate PASS, server + cả 2 volume đích đều AZ nova,
 rollback sạch. Giới hạn ghi ở GUIDE: pool map theo type chứ không theo AZ.
 
+### Trùng tên instance trong project nguồn (17/11 tối, câu hỏi của user)
+
+Nova cho phép nhiều server cùng tên trong một project; trước đây tool chết với lỗi OSC khó hiểu,
+và lách bằng ID thì VM đích bị đặt tên bằng chuỗi UUID. Fix (Opus): (1) đếm server trùng tên
+trước khi làm gì — ≥2 thì die kèm danh sách ID + hướng dẫn chạy lại bằng ID; (2) `dst server
+create` lấy tên thật từ `server.json` nên migrate bằng ID vẫn ra VM đích đúng tên; (3) gợi ý
+rollback trong guard chống trùng dùng đúng đối số của lần chạy. Test lab với 2 server cùng tên
+demo-vm: `plan`/`migrate` theo tên die đúng thông báo; migrate bằng ID → VM đích tên `demo-vm`,
+rollback bằng ID sạch. Lưu ý dọn lab: server BFV tạo bằng `--boot-from-volume` khi delete
+KHÔNG tự xóa volume — phải xóa volume mồ côi tay.
+
 ### `--verify none` cho cold + test tổ hợp production-shape (17/11 tối)
 
 Cold giờ tôn trọng `--verify none` (mặc định vẫn compare; Opus code, review sạch). Test tổ hợp

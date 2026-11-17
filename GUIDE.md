@@ -187,6 +187,7 @@ Khi chạy thật ổn định và không cần rollback nữa, tự xóa bằng
 | Port do Nova tạo (`--network`) | Bị xóa khi tháo, mất giữ chỗ IP | Công cụ tự tạo lại ngay với cùng MAC và IP |
 | Attachment `mode="ro"` | tgtadm không ép, kernel vẫn báo `ro=0` | `blockdev --setro` trên host chuyển |
 | CLI `cinder local-attach` | Lỗi `'FileFinder' object has no attribute 'find_module'` trên Python 3.12 | Dùng `brick_attach.py` |
+| Project nguồn có nhiều VM **trùng tên** | Nova cho phép trùng tên; tool die ngay từ đầu, liệt kê các ID | Chạy lại bằng **ID** (plan/migrate/rollback đều nhận). VM đích vẫn mang tên thật; nhớ rollback bằng đúng đối số đã migrate |
 
 ## 5. Dựng lại lab
 

@@ -136,6 +136,12 @@ wait_server() {  # src|dst server wanted-status [timeout-seconds]
 export_definition() {
   local vm=$1 dir=$2 sid
   mkdir -p "$dir"; chmod 700 "$dir"
+  # Nova allows duplicate names in a project; "server show <name>" then fails with an
+  # unhelpful OSC error. Zero matches is fine: the argument may itself be a server ID.
+  local ids n
+  ids=$(src server list --name "^${vm}\$" -f value -c ID)
+  n=$(grep -c . <<<"$ids" || true)
+  [ "$n" -le 1 ] || die "$n servers are named '$vm' in the source project: ${ids//$'\n'/ } — re-run with the server ID (migrate/plan/rollback all take it)"
   sid=$(src server show "$vm" -f value -c id)
   src server show "$sid" -f json > "$dir/server.json"
   src server volume list "$sid" -f json > "$dir/attachments.json"
@@ -179,7 +185,7 @@ preflight() {
   vmname=$(jq -r .name "$dir/server.json")
   dsid=$(dst server list --name "^${vmname}\$" -f value -c ID | head -1)
   if [ -n "$dsid" ] && [ "$dsid" != "$(cat "$dir/dst-server-id" 2>/dev/null)" ]; then
-    echo "  FAIL  destination already has a server named $vmname ($dsid) from an earlier migration — inspect it; to redo the migration run: $0 rollback $vmname (DELETES that destination server and its volumes)"
+    echo "  FAIL  destination already has a server named $vmname ($dsid) from an earlier migration — inspect it; to redo the migration run: $0 rollback $(basename "$dir") (DELETES that destination server and its volumes)"
     fail=1
   fi
   check "flavor $flavor" "dst flavor show '$flavor'"
@@ -499,7 +505,11 @@ EOF
     esac
   done < <(jq -r '.[] | "\(."Volume ID") \(.Device)"' "$dir/attachments.json")
 
-  dst server create "$vm" --flavor "$flavor" "${nics[@]}" "${args[@]}" --user-data "$ud" \
+  # The argument may be a server ID (used to disambiguate duplicate names); the
+  # destination VM must carry the real name, as the preflight duplicate guard assumes.
+  local vmname
+  vmname=$(jq -r .name "$dir/server.json")
+  dst server create "$vmname" --flavor "$flavor" "${nics[@]}" "${args[@]}" --user-data "$ud" \
     ${DEST_AZ:+--availability-zone "$DEST_AZ"} \
     ${key:+--key-name "$key"} "${prop_args[@]}" -f value -c id > "$dir/dst-server-id"
   wait_server dst "$(cat "$dir/dst-server-id")" ACTIVE
