@@ -44,13 +44,17 @@ Scope do người vận hành chốt 17/11. Ba chi tiết đánh dấu **[đề 
 ## 3. `migrate-batch.sh` (script mới, bọc ngoài migrate-vm.sh)
 
 ```
-migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]]
-                 [--plan-only] [--yes] [--continue-on-error]
+migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]] [--vm-file <file>]
+                 [--volumes attached|available|all] [--plan-only] [--yes] [--continue-on-error]
                  [-- <options chuyển nguyên vẹn cho từng migrate-vm.sh>]
 ```
 
-- Selector giao nhau khi dùng chung (`--host` ∩ `--project` ∩ `--vm`); phải có ít nhất một.
+- Selector giao nhau khi dùng chung (`--host` ∩ `--project` ∩ `--vm/--vm-file`); phải có ít nhất một.
   `--vm` nhận tên hoặc ID; tên trùng trong project thì bắt dùng ID (tool per-VM đã xử lý).
+- **`--vm-file <file>` (chốt thêm 17/11)**: đọc danh sách VM từ file text — mỗi dòng một tên hoặc
+  ID, `#` là comment, dòng trống bỏ qua, khoảng trắng đầu/cuối được trim. Dùng thay hoặc kèm
+  `--vm` (hai danh sách gộp lại). Dòng không resolve được VM nào → vào bảng là SKIP(not-found),
+  không chết cả batch.
 - Luồng: **liệt kê** (bảng ID / tên / trạng thái / project nguồn / project đích) → chạy `plan`
   cho TOÀN BỘ (bảng PLAN-OK / PLAN-FAIL kèm dòng lỗi) → `--plan-only` dừng ở đây → hỏi xác nhận
   (`--yes` bỏ qua; stdin không phải tty mà thiếu `--yes` thì die) → **migrate tuần tự bằng ID**
