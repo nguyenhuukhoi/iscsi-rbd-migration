@@ -14,6 +14,18 @@ Scope do người vận hành chốt 17/11. Ba chi tiết đánh dấu **[đề 
 6. Khi convert instance: **port và volume ở đích đặt tên theo instance nguồn**.
 7. Người vận hành cung cấp **một account thuộc tất cả các project** (mỗi cloud một account).
 
+## 1b. File cấu hình (chốt 17/11: thay export bằng .conf; map project file riêng)
+
+- **`/opt/mig/migrate.conf`** (đổi đường dẫn bằng `MIG_CONF=<file>`): bash `KEY=VALUE`, chứa các
+  giá trị trước đây truyền qua export: `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF
+  MIG_ISCSI_IP MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE`.
+- **Thứ tự ưu tiên: option CLI > biến env > migrate.conf > mặc định trong script.** Env vẫn đè
+  được conf (loader lưu các biến env đã set trước khi source conf rồi khôi phục lại) — script cũ,
+  test cũ, cách chạy cũ bằng export **không đổi hành vi**.
+- **`/opt/mig/project-map.conf`** (file riêng, trỏ qua `PROJECT_MAP_FILE` trong migrate.conf):
+  mỗi dòng `project-nguồn  project-đích` (phân cách khoảng trắng), `#` là comment. Project không
+  có trong file → dùng cùng tên. Không có file → toàn bộ map cùng tên.
+
 ## 2. Account và scope project
 
 - Account dạng **password openrc** (bắt buộc — application credential bị khóa vào đúng 1 project,
@@ -26,8 +38,8 @@ Scope do người vận hành chốt 17/11. Ba chi tiết đánh dấu **[đề 
 - **Mỗi VM được xử lý trong scope project của chính nó, ở cả 2 phía**: tool đè
   `OS_PROJECT_NAME` (env `SRC_PROJECT`/`DST_PROJECT`) sau khi source openrc. Nhờ đó clone tạm,
   volume, port, server đều nằm đúng project — quota và ownership đúng chỗ.
-- Map project nguồn→đích: **[đề xuất] cùng tên là mặc định**, cặp lệch tên khai
-  `PROJECT_MAP="srcA:dstA,srcB:dstB"`.
+- Map project nguồn→đích: **cùng tên là mặc định** (user đã duyệt), cặp lệch tên khai trong
+  `project-map.conf` (mục 1b).
 
 ## 3. `migrate-batch.sh` (script mới, bọc ngoài migrate-vm.sh)
 
@@ -60,11 +72,22 @@ migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]]
 | Tên port đích | `<tên-instance>-nic<i>` theo thứ tự NIC (vd `app-vm01-nic0`) |
 | Tên instance trùng → arg là ID | Tên dùng cho đặt tên lấy từ `server.json .name` (đã có từ fix 6174780) |
 
-## 5. Những điều KHÔNG đổi
+## 5. Cam kết tương thích ngược (user yêu cầu 17/11: không phá logic/tính năng cũ)
 
-- Tool per-VM vẫn dùng được một mình như cũ; không có `SRC_PROJECT`/`DST_PROJECT` thì hành vi
-  y hệt hôm nay (appcred vẫn dùng được cho migrate lẻ).
-- Luồng copy/verify/rollback, guard trùng đích, lock-sau-detach, progress % — giữ nguyên.
+- **Mọi option hiện có dùng được trong thiết kế mới**, cả gọi lẻ lẫn truyền qua batch sau `--`:
+  `--mode cold|live, --ip same|new|<addr>, --volume-type, --az, --flavor, --security-group,
+  --start-source, --keep-source-ports, --verify, --max-passes, --delta-limit`.
+- **Không có `migrate.conf`** → tool đọc env/mặc định y hệt hôm nay. Không có
+  `SRC_PROJECT`/`DST_PROJECT` → không scope gì thêm, appcred vẫn dùng được cho migrate lẻ.
+- Luồng copy/verify/rollback, guard trùng đích/trùng tên, thứ tự lock, progress %, state dir,
+  format `volume-map`/`options` — giữ nguyên.
+- Thay đổi hành vi **duy nhất** được phép (đã duyệt ở mục 3): VM có keypair không còn FAIL
+  preflight mà bỏ `key_name` + báo; và tên volume/port ở đích theo instance nguồn (trước đây
+  volume đích lấy tên volume nguồn — thường rỗng với BFV — và port tên `mig-*`). Rollback xóa
+  theo ID trong state nên đổi tên không ảnh hưởng rollback.
+- **Regression gate bắt buộc trước khi merge**: trên bản nhánh, chạy KHÔNG SỬA các bộ test cũ —
+  `blocksync-unit.sh` 8/0, `e2e-migrate.sh` 50/0 (không conf, chạy bằng env như cũ),
+  `live-migrate.sh` 26/0 — rồi mới chạy test mới (mục 7).
 
 ## 6. Giới hạn nói trước
 
