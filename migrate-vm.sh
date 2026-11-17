@@ -7,7 +7,8 @@
 #   migrate-vm.sh rollback <vm>            delete destination objects, restore and start the source VM
 #
 # Options (migrate and plan):
-#   --mode cold|live        cold (default): stop the VM, qemu-img copy + full compare (v1 behaviour).
+#   --mode cold|live        cold (default): stop the VM, qemu-img copy + full compare (unless
+#                           --verify none).
 #                           live: hash-cached pre-sync passes while the VM runs; the cutover only
 #                           syncs the final delta, so downtime tracks the write rate, not the size.
 #   --volume-type <type>    Cinder volume type for every destination volume (default: cloud default).
@@ -30,9 +31,9 @@
 #   --max-passes <n>        live: maximum pre-sync passes (default 5).
 #   --delta-limit <MB>      live: cut over once a pass changed at most this much (default 64).
 #   --verify readback|full|none
-#                           live only; cold always runs a full qemu-img compare.
-#                           readback (default): re-read every written chunk. full: readback plus a
-#                           full compare during cutover. none: trust the writes.
+#                           cold: full qemu-img compare unless none; readback and full are the same.
+#                           live: readback (default) re-reads every written chunk, full adds a
+#                           cutover compare, none trusts the writes.
 #
 # Boot-from-volume VMs are copied volume by volume. A VM with an ephemeral (image-backed) root
 # disk is migrated cold through a Glance snapshot: snapshot -> download -> upload -> boot; its
@@ -311,10 +312,14 @@ copy_volume_cold() {  # source-volume-id dest-volume-id size-gb dir
   local took=$((SECONDS-t0))
   log "copy done in ${took}s ($((size*1024/(took>0?took:1))) MB/s logical)"
 
-  log "verify byte-for-byte"
-  t0=$SECONDS
-  qemu-img compare -f raw -F raw "$DEVICE" "$img" || die "verification failed for $vid"
-  log "verify OK in $((SECONDS-t0))s"
+  if [ "$VERIFY" != none ]; then
+    log "verify byte-for-byte"
+    t0=$SECONDS
+    qemu-img compare -f raw -F raw "$DEVICE" "$img" || die "verification failed for $vid"
+    log "verify OK in $((SECONDS-t0))s"
+  else
+    log "verify skipped (--verify none)"
+  fi
   drop_clone
 }
 

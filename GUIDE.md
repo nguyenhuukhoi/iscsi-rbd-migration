@@ -83,7 +83,7 @@ Options (mặc định = hành vi v1: cold, giữ IP/MAC, volume type mặc đ�
 | `--az <zone>` | AZ đích cho **cả volume lẫn server** (cloud có backend theo AZ / `cross_az_attach=false`). Preflight kiểm AZ tồn tại ở cả compute lẫn volume service. Mặc định: để scheduler đích tự chọn. **Cloud 2 AZ lưu ý**: `RBD_POOL_MAP` map theo *volume-type* chứ không theo AZ — mỗi lần chạy phải truyền bộ khớp nhau `--az AZ1 --volume-type <type-của-AZ1>` (+ pool/`CEPH_CONF` đúng cụm nếu mỗi AZ một cụm Ceph); truyền lệch thì tool dừng an toàn trước khi copy nhưng thông báo nói về type mapping. User Ceph chuyển cần caps trên pool của mọi AZ sẽ migrate vào |
 | `--max-passes <n>` | live: tối đa n lượt pre-sync (mặc định 5) |
 | `--delta-limit <MB>` | live: cutover khi delta một lượt ≤ ngưỡng (mặc định 64) |
-| `--verify readback\|full\|none` | live: `readback` (mặc định) đọc lại từng chunk vừa ghi; `full` thêm `qemu-img compare` toàn bộ trong cutover; `none` không kiểm. Cold luôn compare toàn bộ |
+| `--verify readback\|full\|none` | live: `readback` (mặc định) đọc lại từng chunk vừa ghi; `full` thêm `qemu-img compare` toàn bộ trong cutover; `none` không kiểm. Cold: compare toàn bộ trừ khi `none` (compare đọc lại cả 2 phía, 1 luồng — thường lâu bằng/hơn copy; bỏ thì nên checksum trong guest sau khi VM đích boot) |
 
 VM nguồn **luôn phải tắt lúc cutover**, kể cả live mode — hai cloud độc lập không live-migrate kiểu
 Nova được; "live" nghĩa là phần copy lớn chạy khi VM còn sống.
@@ -113,17 +113,30 @@ migrate-vm.sh migrate demo-vm --flavor mig.small2 --security-group mig-sg-b
 # 4c. VM không có volume (root ephemeral) — tự đi đường Glance, chỉ cold
 migrate-vm.sh migrate demo-eph
 
+# 4d. Chọn AZ đích cho cả volume lẫn server (cloud 2 AZ, cross_az_attach=false)
+migrate-vm.sh migrate demo-vm --az AZ1 --volume-type nvme-az1
+
+# 4e. Không tháo port nguồn (chấp nhận rủi ro split-brain nếu ai bật lại nguồn;
+#     đổi lại phía nguồn chạy được creds member thuần)
+migrate-vm.sh migrate demo-vm --keep-source-ports
+
+# 4f. Cold bỏ bước compare (nhanh gần gấp đôi; nên checksum trong guest sau khi đích boot)
+migrate-vm.sh migrate demo-vm --verify none
+
 # 5. Live, IP chỉ định (VM 1 NIC), MAC mới
 migrate-vm.sh migrate demo-vm --mode live --ip 192.168.120.150
 
 # 6. Hối hận: xóa sạch phía đích, trả VM về nguồn (tự hiểu option đã dùng từ state)
 migrate-vm.sh rollback demo-vm
 
-# 7. Trỏ sang hệ thống khác + volume type nằm pool khác
-SRC_RC=/opt/prod/src-openrc.sh DST_RC=/opt/prod/dst-openrc.sh \
-RBD_POOL=cinder-ssd RBD_POOL_MAP="hdd:cinder-hdd,ssd:cinder-ssd" RBD_USER=mig-xfer \
-MIG_ISCSI_IP=10.77.0.20 \
-migrate-vm.sh migrate app-vm01 --mode live --volume-type hdd
+# 7. Bộ production điển hình: appcred 2 cloud, đích 2 AZ (type/pool khớp AZ),
+#    host convert 1 path, không tháo port nguồn, bỏ compare
+#    (tổ hợp 2 NIC + 2 volume + 3 option này đã test nguyên lượt trên lab 17/11)
+SRC_RC=/opt/mig/src/appcred-openrc.sh DST_RC=/opt/mig/dst/appcred-openrc.sh \
+RBD_POOL=volumes-nvme RBD_POOL_MAP="nvme-az1:volumes-nvme-az1,nvme-az2:volumes-nvme-az2" \
+RBD_USER=mig-xfer MIG_ISCSI_IP=<ip-iscsi-của-host-convert> \
+migrate-vm.sh migrate app-vm01 --mode cold --az AZ1 --volume-type nvme-az1 \
+  --keep-source-ports --verify none
 ```
 
 Lab (chạy từ workstation, đứng ở `Lab/`):

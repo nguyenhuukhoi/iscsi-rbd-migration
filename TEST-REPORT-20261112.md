@@ -47,6 +47,16 @@ dưới `set -euo pipefail`, eval lồng nháy, nhánh ephemeral/live/rollback).
 → preflight FAIL cả 2; `--az nova` → full migrate PASS, server + cả 2 volume đích đều AZ nova,
 rollback sạch. Giới hạn ghi ở GUIDE: pool map theo type chứ không theo AZ.
 
+### `--verify none` cho cold + test tổ hợp production-shape (17/11 tối)
+
+Cold giờ tôn trọng `--verify none` (mặc định vẫn compare; Opus code, review sạch). Test tổ hợp
+đúng hình dạng VM production: demo-vm **2 NIC** (vlan120+vlan121) + **2 volume**, migrate
+`--mode cold --keep-source-ports --az nova --verify none` → WARN keep-ports + "verify skipped"
+in đúng (mỗi volume một lần); đích đủ 2 NIC **khớp MAC nguồn**, 2 volume, đúng AZ; port nguồn
+còn gắn nguyên 2; rollback sạch, demo-vm về nguyên trạng. Bỏ compare: 2 volume xong trong ~2
+phút (có compare ~5 phút). Đổi lại mất lớp bắt lỗi âm thầm — khuyến nghị checksum trong guest
+sau khi VM đích boot.
+
 ### Option mới `--keep-source-ports` (17/11, theo yêu cầu vận hành)
 
 Với `--ip same` nhưng không tháo port nguồn — người vận hành nhận rủi ro: chỉ còn SHUTOFF+lock
