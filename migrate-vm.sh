@@ -20,6 +20,10 @@
 #                           <addr>: that address with a new MAC (single-NIC VMs only).
 #   --start-source          after a successful migrate, unlock and start the source VM again.
 #                           Only with --ip new|<addr>; both VMs then run with the same hostname.
+#   --keep-source-ports     with --ip same: do NOT detach the source ports. UNSAFE: the only
+#                           thing keeping the old VM off the wire is then its SHUTOFF+lock state;
+#                           anyone who powers it on puts two machines with the same MAC+IP on the
+#                           VLAN (split-brain). Rollback then needs no port reattach.
 #   --max-passes <n>        live: maximum pre-sync passes (default 5).
 #   --delta-limit <MB>      live: cut over once a pass changed at most this much (default 64).
 #   --verify readback|full|none
@@ -58,7 +62,7 @@ log() { echo "[$(date +%T)] $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # --- options -------------------------------------------------------------------
-MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" START_SOURCE=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
+MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
 OV_FLAVOR="" OV_SG="" EPHEMERAL=0
 
 parse_options() {
@@ -70,6 +74,7 @@ parse_options() {
                      elif [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then IPMODE=addr; IPADDR=$2
                      else die "--ip takes same, new or an IPv4 address"; fi; shift 2;;
       --start-source) START_SOURCE=1; shift;;
+      --keep-source-ports) KEEP_PORTS=1; shift;;
       --flavor)       OV_FLAVOR=$2; shift 2;;
       --security-group) OV_SG=$2; shift 2;;
       --max-passes)  MAX_PASSES=$2; shift 2;;
@@ -535,15 +540,17 @@ cmd_migrate() {
   # ephemeral snapshot) must happen BEFORE the lock: Nova's lock blocks these
   # calls for non-admin credentials (admins silently bypass it, which is why
   # the admin-only lab never caught this ordering).
-  if [ "$IPMODE" = same ]; then
+  if [ "$IPMODE" = same ] && [ "$KEEP_PORTS" = 0 ]; then
     detach_source_ports "$vm" "$dir" "$sid"
   fi
   [ "$EPHEMERAL" = 0 ] || migrate_ephemeral_root "$vm" "$dir" "$sid"
   src server lock "$sid"
-  if [ "$IPMODE" = same ]; then
-    log "source stopped, its ports detached, now locked"
-  else
+  if [ "$IPMODE" != same ]; then
     log "source stopped and locked; ports left attached (--ip $IPMODE keeps them out of conflict)"
+  elif [ "$KEEP_PORTS" = 1 ]; then
+    log "WARN --keep-source-ports: source ports stay attached with the same MAC+IP as the destination VM. Only SHUTOFF+lock keeps it off the wire — powering it on causes split-brain. Do not start it; delete it once the migration is accepted."
+  else
+    log "source stopped, its ports detached, now locked"
   fi
 
   for vid in $vids; do

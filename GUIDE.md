@@ -79,6 +79,7 @@ Options (mặc định = hành vi v1: cold, giữ IP/MAC, volume type mặc đ�
 | `--flavor <tên>` | Flavor cho VM đích (mặc định: cùng tên với nguồn, phải tồn tại ở đích) |
 | `--security-group <sg1,sg2>` | Security group cho **mọi** port đích, thay bộ SG của nguồn |
 | `--start-source` | Bật lại VM nguồn sau khi chuyển xong (chỉ với `--ip new\|<addr>`; 2 VM chạy song song, trùng hostname + SSH host key, dữ liệu rẽ nhánh từ cutover) |
+| `--keep-source-ports` | Với `--ip same`: KHÔNG tháo port nguồn. **Rủi ro**: chỉ còn SHUTOFF+lock giữ VM nguồn khỏi mạng — ai bật lại (admin bypass được lock) là 2 máy cùng MAC+IP trên VLAN (split-brain). Đổi lại: tool không đụng port ở nguồn → phía nguồn chạy được bằng creds member thuần; rollback không cần cắm lại port. Nghiệm thu xong nên xóa VM nguồn sớm |
 | `--max-passes <n>` | live: tối đa n lượt pre-sync (mặc định 5) |
 | `--delta-limit <MB>` | live: cutover khi delta một lượt ≤ ngưỡng (mặc định 64) |
 | `--verify readback\|full\|none` | live: `readback` (mặc định) đọc lại từng chunk vừa ghi; `full` thêm `qemu-img compare` toàn bộ trong cutover; `none` không kiểm. Cold luôn compare toàn bộ |

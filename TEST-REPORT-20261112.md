@@ -39,6 +39,14 @@ cold migrate `--ip same` + rollback nguyên luồng **chạy lọt**, VM về AC
 phải Nova-owned (nhánh tái tạo port cần `--mac-address` vẫn đòi admin/chủ network ở nguồn) và
 đích vẫn admin (tạo port giữ MAC/IP).
 
+### Option mới `--keep-source-ports` (17/11, theo yêu cầu vận hành)
+
+Với `--ip same` nhưng không tháo port nguồn — người vận hành nhận rủi ro: chỉ còn SHUTOFF+lock
+giữ VM nguồn khỏi mạng, ai bật lại là split-brain (WARN in rõ trong log). Đổi lại tool không đụng
+port nguồn (bỏ luôn nhánh duy nhất cần admin phía nguồn). Test lab: migrate cold với option →
+WARN đúng, port nguồn còn gắn vào VM, VM đích ACTIVE chiếm IP; rollback không cần cắm lại port,
+nguồn ACTIVE trả lời IP cũ, hết lock.
+
 ## Bổ sung 13/11: multi-NIC, override flavor/SG, server properties, VM ephemeral
 
 `tests/extras.sh` chạy sạch **30 PASS / 0 FAIL** (lần chạy nguyên vẹn cuối, sau 4 lần fail có lý do ở mục sự cố):
