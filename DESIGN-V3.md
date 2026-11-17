@@ -68,8 +68,7 @@ migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]]
 | `SRC_PROJECT` / `DST_PROJECT` (env) | Đè `OS_PROJECT_NAME` + unset `OS_PROJECT_ID` ngay sau khi source rc, ở MỌI chỗ source (wrapper src/dst, token Glance). Die sớm nếu rc là appcred |
 | `--server-group <name>` (option mới) | Resolve trong project đích → `--hint group=<uuid>` khi `server create`. Preflight: group tồn tại (FAIL kèm lệnh tạo gợi ý), in policy (affinity/anti-affinity). Không auto-create |
 | `--volumes-only` (option mới) | Chỉ copy volume, không tạo port/server ở đích. Cold only đợt này. Nguồn vẫn stop+lock mặc định; `--start-source` được phép với mọi ip-mode (không có xung đột IP). Preflight bỏ check network/flavor/SG/keypair. Rollback: xóa volume đích + unlock/start nguồn |
-| Tên volume đích | `<tên-instance>-<device>` (vd `app-vm01-vda`, `app-vm01-vdb`) — áp cho CẢ migrate thường lẫn volumes-only. Description giữ `migrated from <src-vol-id>` |
-| Tên port đích | `<tên-instance>-nic<i>` theo thứ tự NIC (vd `app-vm01-nic0`) |
+| Tên volume/port đích | **Chỉnh 17/11 theo user: tên mới là opt-in.** Không flag → tên cũ y hệt hôm nay (volume đích mang tên volume nguồn, port `mig-<vm>-<i>`). Flag mới `--name-from-instance` → volume `<tên-instance>-<device>` (vd `app-vm01-vda`), port `<tên-instance>-nic<i>`. Riêng `--volumes-only` mặc định LUÔN đặt theo instance (yêu cầu gốc: phân biệt được nhiều volume; BFV volume thường không có tên). Description giữ `migrated from <src-vol-id>` |
 | Tên instance trùng → arg là ID | Tên dùng cho đặt tên lấy từ `server.json .name` (đã có từ fix 6174780) |
 
 ## 5. Cam kết tương thích ngược (user yêu cầu 17/11: không phá logic/tính năng cũ)
@@ -90,8 +89,8 @@ migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]]
   `e2e-migrate.sh` 50/0 (không conf, chạy bằng env như cũ), `live-migrate.sh` 26/0 — trên bản
   nhánh, rồi mới test tính năng mới (mục 7). Test cũ **chỉ được sửa đúng các assert dính tới
   thay đổi đã duyệt** (naming volume/port ở đích), liệt kê từng dòng trong commit; mọi assert
-  khác giữ nguyên từng chữ. Đã xác định 3 chỗ: `live-migrate.sh:75` (demo-root → tên mới),
-  `extras.sh:87,93` và `newip-voltype.sh:36-37,68` (port `mig-*` → `<vm>-nic<i>`).
+  khác giữ nguyên từng chữ. **Cập nhật sau chỉnh naming opt-in: không còn assert nào phải sửa** —
+  mặc định giữ tên cũ nên bộ test cũ đúng nguyên bản; 7 dòng đã lỡ sửa được revert.
 
 ## 6. Giới hạn nói trước
 

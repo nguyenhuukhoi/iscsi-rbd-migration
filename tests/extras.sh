@@ -84,14 +84,14 @@ assert "migrate rc=0" "[ $RC = 0 ]"
 wait_ssh $IP && say "PASS  SSH on first NIC after migrate" || say "FAIL  SSH on first NIC after migrate"
 for t in $(seq 1 20); do ping -c1 -W2 $IP2 >/dev/null 2>&1 && break; sleep 3; done
 assert "second NIC answers on the destination ($IP2)" "ping -c2 -W2 $IP2"
-assert "both destination ports exist" "dst port show $VM-nic0 && dst port show $VM-nic1"
+assert "both destination ports exist" "dst port show mig-$VM-0 && dst port show mig-$VM-1"
 assert "second source MAC present on a destination port" \
   "dst port list -f value -c mac_address | grep -qix '$MAC2'"
 assert "data checksum unchanged" "[ \"\$(vssh 'sudo sha256sum /data/random.bin | cut -d\" \" -f1')\" = '$SUM' ]"
 assert "destination flavor is the override" "dst server show $VM -f json | jq -e '.flavor | (.original_name // .name) == \"mig.small2\"'"
 SGB=$(dst security group show mig-sg-b -f value -c id)
-assert "destination port 0 carries only mig-sg-b" "dst port show $VM-nic0 -f json | jq -e --arg s '$SGB' '.security_group_ids == [\$s]'"
-assert "destination port 1 carries only mig-sg-b" "dst port show $VM-nic1 -f json | jq -e --arg s '$SGB' '.security_group_ids == [\$s]'"
+assert "destination port 0 carries only mig-sg-b" "dst port show mig-$VM-0 -f json | jq -e --arg s '$SGB' '.security_group_ids == [\$s]'"
+assert "destination port 1 carries only mig-sg-b" "dst port show mig-$VM-1 -f json | jq -e --arg s '$SGB' '.security_group_ids == [\$s]'"
 assert "server property env=prod copied" "dst server show $VM -f json | jq -e '(.properties // .metadata).env == \"prod\"'"
 assert "server property app=demo copied" "dst server show $VM -f json | jq -e '(.properties // .metadata).app == \"demo\"'"
 

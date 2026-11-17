@@ -72,7 +72,7 @@ assert "churn file consistent (last seq readable, fs clean)" "vssh 'tail -1 /dat
 LASTSEQ_T=$(vssh 'tail -1 /data/churn-seq.log | cut -d" " -f1')
 assert "churn wrote until the stop request" "awk 'BEGIN{exit !($LASTSEQ_T >= $TSTOP - 3)}'"
 assert "no filesystem errors in kernel log" "! vssh 'sudo dmesg | grep -qE \"EXT4-fs error|I/O error\"'"
-assert "destination volumes on RBD" "dst volume show $VM-vda -f value -c 'os-vol-host-attr:host' | grep -qi rbd"
+assert "destination volumes on RBD" "dst volume show demo-root -f value -c 'os-vol-host-attr:host' | grep -qi rbd"
 
 say "=== source preserved, then rollback"
 assert "source SHUTOFF and locked" "src server show $VM -f json | jq -e '.status==\"SHUTOFF\" and .locked==true'"

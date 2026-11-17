@@ -33,6 +33,10 @@
 #                           already exist in the destination project; it is never created.
 #   --volumes-only          cold only: copy the volumes, create no destination port or server.
 #                           The source is stopped and locked as usual; its ports stay attached.
+#                           Implies --name-from-instance.
+#   --name-from-instance    name destination volumes <vm>-<device> (app01-vda, app01-vdb) and ports
+#                           <vm>-nic<i>. Default: a volume keeps the source volume's name (mig-<id>
+#                           when it has none) and ports are mig-<vm>-<i>.
 #   --max-passes <n>        live: maximum pre-sync passes (default 5).
 #   --delta-limit <MB>      live: cut over once a pass changed at most this much (default 64).
 #   --verify readback|full|none
@@ -44,7 +48,6 @@
 # disk is migrated cold through a Glance snapshot: snapshot -> download -> upload -> boot; its
 # attached data volumes still go the volume way. Server properties and description are copied.
 # Source volumes are never modified or deleted; rollback restores everything.
-# Destination volumes are named <vm>-<device> (app01-vda, app01-vdb), ports <vm>-nic<i>.
 # Environment overrides: SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP COPY_STREAMS
 # MIG_MULTIPATH; the same keys may be set in $MIG_CONF (default /opt/mig/migrate.conf), and the
 # environment wins over that file. SRC_PROJECT / DST_PROJECT run each side in that project of the
@@ -113,7 +116,7 @@ check_project_scope() {  # an application credential cannot be rescoped: fail be
 
 # --- options -------------------------------------------------------------------
 MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
-OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0
+OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0 NAME_FROM_INSTANCE=0
 
 parse_options() {
   while [ $# -gt 0 ]; do
@@ -130,6 +133,7 @@ parse_options() {
       --security-group) OV_SG=$2; shift 2;;
       --server-group) SERVER_GROUP=$2; shift 2;;
       --volumes-only) VOLUMES_ONLY=1; shift;;
+      --name-from-instance) NAME_FROM_INSTANCE=1; shift;;
       --max-passes)  MAX_PASSES=$2; shift 2;;
       --delta-limit) DELTA_LIMIT_MB=$2; shift 2;;
       --verify)      VERIFY=$2; shift 2;;
@@ -139,6 +143,8 @@ parse_options() {
   case $MODE in cold|live) ;; *) die "--mode takes cold or live";; esac
   case $VERIFY in readback|full|none) ;; *) die "--verify takes readback, full or none";; esac
   [ "$VOLUMES_ONLY" = 0 ] || [ "$MODE" = cold ] || die "--volumes-only is cold only: drop --mode live"
+  # Without a server, the instance name is what ties the copied volumes back to their VM.
+  [ "$VOLUMES_ONLY" = 0 ] || NAME_FROM_INSTANCE=1
   # --volumes-only creates no destination VM, so a restarted source cannot clash on MAC/IP.
   [ "$START_SOURCE" = 0 ] || [ "$IPMODE" != same ] || [ "$VOLUMES_ONLY" = 1 ] || die "--start-source needs --ip new or --ip <addr>: with the same MAC and IP both VMs cannot be up at once"
 }
@@ -411,9 +417,12 @@ cleanup_attach() { stop_watch; [ -z "$ATTACHED" ] || ( src_env; "$BRICK" detach 
 create_dest_volume() {  # source-volume-id dir ; sets DVID, appends to volume-map
   local vid=$1 dir=$2 vj name size bootable
   vj=$(src volume show "$vid" -f json)
-  # Named after the instance, not the source volume: BFV volumes usually have no name, and the
-  # device tells several volumes of one VM apart.
-  name=$(dest_volume_name "$vid" "$dir")
+  if [ "$NAME_FROM_INSTANCE" = 1 ]; then
+    name=$(dest_volume_name "$vid" "$dir")
+  else
+    # Volumes made by "server create --boot-from-volume" have no name.
+    name=$(jq -r '.name // ""' <<<"$vj"); name=${name:-mig-$vid}
+  fi
   size=$(jq -r .size <<<"$vj"); bootable=$(jq -r .bootable <<<"$vj")
 
   DVID=$(dst volume create "$name" --size "$size" ${VOLUME_TYPE:+--type "$VOLUME_TYPE"} \
@@ -617,9 +626,9 @@ create_destination() {  # vm dir
         < <(jq -r ".[$i].security_groups[]" "$dir/ports.json")
     fi
     [ ${#sg_args[@]} -gt 0 ] || sg_args=(--no-security-group)
-    # Ports are used and rolled back by ID: <vm>-nic<i> is not unique across projects, and an
-    # admin's name lookup sees every project.
-    pname="$vmname-nic$i"
+    # Ports are used and rolled back by ID whatever their name: <vm>-nic<i> is not unique across
+    # projects, and an admin's name lookup sees every project.
+    if [ "$NAME_FROM_INSTANCE" = 1 ]; then pname="$vmname-nic$i"; else pname="mig-$vm-$i"; fi
     case $IPMODE in
       same) pid=$(dst port create "$pname" --network "$net" --mac-address "$mac" \
               --fixed-ip "subnet=$subnet,ip-address=$ip" "${sg_args[@]}" -f value -c id);;
@@ -629,7 +638,7 @@ create_destination() {  # vm dir
               --fixed-ip "subnet=$subnet,ip-address=$IPADDR" "${sg_args[@]}" -f value -c id);;
     esac
     echo "$pid" >> "$dir/dst-ports"
-    log "destination port $pname $pid $(dst port show "$pid" -f json | jq -r '"\(.fixed_ips[0].ip_address) \(.mac_address)"')"
+    log "destination port $pname $(dst port show "$pid" -f json | jq -r '"\(.fixed_ips[0].ip_address) \(.mac_address)"')"
     nics+=(--port "$pid")
   done
 
@@ -802,8 +811,8 @@ cmd_rollback() {
     log "delete destination server"
     dst server delete "$(cat "$dir/dst-server-id")" --wait || true
   fi
-  # Destination ports go by the IDs create_destination recorded. State written by an older
-  # version has no dst-ports file and named its ports mig-<arg>-<i>: that sweep stays for it.
+  # Destination ports go by the IDs create_destination recorded, whatever their name. The
+  # mig-<arg>-<i> name sweep below also covers state written before dst-ports existed.
   local i n pname pid
   if [ -s "$dir/dst-ports" ]; then
     while read -r pid; do
@@ -871,7 +880,7 @@ cmd_rollback() {
   log "source VM ACTIVE again"
 }
 
-[ $# -ge 2 ] || { sed -n '2,41p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '2,45p' "$0"; exit 2; }
 CMD=$1 VM=$2; shift 2
 case $CMD in
   plan|migrate) parse_options "$@"; POOL=$(pool_for_type); check_project_scope;;
