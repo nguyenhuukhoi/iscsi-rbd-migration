@@ -122,7 +122,9 @@ Batch mode volume: `migrate-batch.sh --project <p> --volumes attached|available|
   ở bước tạo — preflight không đoán trước được scheduler.
 - Batch chạy tuần tự, không song song (iSCSI + băng thông không lợi khi chạy đôi; giữ đơn giản).
 - Volumes-only không mang theo: port/IP, metadata server, server group — chỉ volume + bootable flag.
-- Lọc theo node: tên hypervisor phải đúng như `openstack hypervisor list` (FQDN nếu cloud dùng FQDN).
+- Lọc theo node: `--host` khớp với host của compute service (cột Host của `openstack compute service
+  list`, = `OS-EXT-SRV-ATTR:host` trong `server show`), không phải `hypervisor_hostname` của
+  `openstack hypervisor list` (thường là FQDN).
 
 ## 7. Kế hoạch test trên lab (trước khi merge)
 

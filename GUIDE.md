@@ -4,6 +4,9 @@ Bản v1 (cold, giữ IP/MAC) chạy thật ngày 2026-11-05: [TEST-REPORT-20261
 Bản v2 (thêm live mode, chọn volume type, chọn IP) thiết kế ở [DESIGN-V2.md](DESIGN-V2.md), test ngày
 2026-11-12: [TEST-REPORT-20261112.md](TEST-REPORT-20261112.md). IP trong tài liệu là IP ví dụ
 (dải TEST-NET 192.0.2.x / 198.51.100.x); IP thật ghi ở tài liệu nội bộ ngoài repo.
+Bản v3 (file cấu hình, chạy theo project, đặt tên theo instance, `--server-group`, `--volumes-only`,
+lệnh `migrate-volume`, chạy lô bằng `migrate-batch.sh`) thiết kế ở [DESIGN-V3.md](DESIGN-V3.md), test
+ngày 2026-11-17/18: [TEST-REPORT-20261117.md](TEST-REPORT-20261117.md); hướng dẫn ở mục 2b.
 Triển khai lên host convert production (từ git, step-by-step): [DEPLOY.md](DEPLOY.md).
 
 ## 1. Cách làm
@@ -14,9 +17,10 @@ So sánh riêng Cold vs Live (khoảng nào VM còn chạy, khoảng nào downti
 Dạng chữ:
 
 ```
-  Bước 0  Lệnh migrate (--mode cold|live · --ip same|new|addr · --volume-type · --flavor · --security-group)
+  Bước 0  Lệnh migrate (--mode cold|live · --ip same|new|addr · --volume-type · --flavor · --security-group
+          · v3: --server-group · --volumes-only)
   Bước 1  Preflight đích: flavor, network, SG, IP/MAC trống, volume type. FAIL = dừng, chưa tạo gì
-  Bước 2  Tạo volume đích (--volume-type → đúng pool RBD qua RBD_POOL_MAP)
+  Bước 2  Tạo volume đích <vm>-<vda|vdb…> (--volume-type → đúng pool RBD qua RBD_POOL_MAP)
   Bước 3  CHỈ --mode live, VM vẫn chạy:
             3a clone volume nguồn (crash-consistent) → 3b blocksync (hash 4 MiB, chỉ ghi delta)
             lặp 3a↔3b tới khi delta ≤ --delta-limit hoặc đủ --max-passes
@@ -27,8 +31,9 @@ Dạng chữ:
   Bước 5  Port nguồn: --ip same → tháo, giữ chỗ IP/MAC · --ip new/addr → giữ nguyên
   Bước 6  Copy cuối + verify: cold = qemu-img copy + compare · live = sync delta + readback
           root ephemeral (không volume) = snapshot Glance → tải về → đẩy lên đích
-  Bước 7  Tạo port + VM đích: MAC/IP theo --ip, flavor/SG theo override,
+  Bước 7  Tạo port <vm>-<ip> + VM đích: MAC/IP theo --ip, flavor/SG theo override,
           copy server properties + description, user-data tối thiểu giữ SSH host key + hostname
+          (--volumes-only: bỏ bước 7, không tạo port/VM đích)
   Bước 8  Hoàn tất — nguồn giữ SHUTOFF + lock (8b: --start-source bật lại nguồn, chỉ ip new/addr)
 
   Rollback (chạy được ở bất kỳ bước nào):
@@ -67,6 +72,12 @@ Chạy bằng `root` trên host chuyển.
 migrate-vm.sh plan     <vm> [options]  # chỉ đọc: xuất cấu hình nguồn, preflight theo đúng options
 migrate-vm.sh migrate  <vm> [options]  # chuyển thật
 migrate-vm.sh rollback <vm>            # xóa phía đích, trả VM về nguồn
+# v3:
+migrate-vm.sh migrate-volume <volume> [--volume-type t] [--az z] [--verify v]
+                                       # 1 volume available, nguồn không bị đụng (mục 2b.4)
+migrate-vm.sh rollback <volume>        # xóa bản copy của volume đó ở đích
+migrate-batch.sh <selector…> [--volumes …] [--plan-only] [--yes] [-- <options>]
+                                       # chạy lô theo host/project/danh sách VM (mục 2b.6)
 ```
 
 Options (mặc định = hành vi v1: cold, giữ IP/MAC, volume type mặc định):
@@ -84,6 +95,8 @@ Options (mặc định = hành vi v1: cold, giữ IP/MAC, volume type mặc đ�
 | `--max-passes <n>` | live: tối đa n lượt pre-sync (mặc định 5) |
 | `--delta-limit <MB>` | live: cutover khi delta một lượt ≤ ngưỡng (mặc định 64) |
 | `--verify readback\|full\|none` | live: `readback` (mặc định) đọc lại từng chunk vừa ghi; `full` thêm `qemu-img compare` toàn bộ trong cutover; `none` không kiểm. Cold: compare toàn bộ trừ khi `none` (compare đọc lại cả 2 phía, 1 luồng — thường lâu bằng/hơn copy; bỏ thì nên checksum trong guest sau khi VM đích boot) |
+| `--server-group <tên\|ID>` | (v3) VM đích vào server group đó (`--hint group=<id>`). Group phải có sẵn trong project đích, tool không tự tạo; thiếu thì preflight FAIL kèm lệnh tạo gợi ý (mục 2b.5) |
+| `--volumes-only` | (v3) Chỉ cold. Copy volume, **không tạo port/VM đích**; nguồn vẫn stop + lock, port nguồn để nguyên (mục 2b.5) |
 
 VM nguồn **luôn phải tắt lúc cutover**, kể cả live mode — hai cloud độc lập không live-migrate kiểu
 Nova được; "live" nghĩa là phần copy lớn chạy khi VM còn sống.
@@ -158,16 +171,335 @@ Biến môi trường để trỏ sang hệ thống khác:
 | `MIG_ISCSI_IP` | `10.77.0.20` | IP host chuyển trên mạng iSCSI |
 | `MIG_MULTIPATH` | `0` | `1`: attach qua multipath (SAN nhiều portal kiểu PowerStore) — cần `multipathd` chạy; brick từ chối device không phải dm và so kích thước device với volume (chặn LUN lạ khác cỡ) |
 | `COPY_STREAMS` | `8` | Số luồng `qemu-img` (cold) |
+| `SRC_PROJECT`, `DST_PROJECT` | (trống) | (v3) Chạy phía nguồn/đích trong project này của account openrc — cần password openrc (mục 2b.2) |
+| `PROJECT_MAP_FILE` | (trống) | (v3) File map project nguồn → đích, chỉ `migrate-batch.sh` đọc (mục 2b.6) |
+| `MIG_CONF` | `/opt/mig/migrate.conf` | (v3) File cấu hình chứa các biến trên; env thắng file (mục 2b.1) |
 
 Live mode cần thêm `blocksync.py` trong `/usr/local/bin` và `python3-rbd` trên host chuyển.
 
-**Điều kiện phía đích, preflight sẽ kiểm tra:** flavor, keypair, security group cùng tên; network cùng tên, subnet cùng CIDR; MAC và IP chưa bị dùng.
+**Điều kiện phía đích, preflight sẽ kiểm tra:** flavor, security group cùng tên (resolve trong đúng project đích); network cùng tên, subnet cùng CIDR; MAC và IP chưa bị dùng. Từ v3 keypair thiếu ở đích **không còn FAIL**: preflight báo `INFO`, VM đích tạo không có `key_name` (Nova không cho gán keypair của user khác; key vẫn nằm trong đĩa nên SSH vẫn vào được) — add lại sau nếu cần.
 
 **Preflight từ chối:** volume mã hóa, volume multiattach, port nhiều fixed IP, port có allowed-address-pairs, và `--mode live` cho VM không boot từ volume.
 
 **VM không dùng volume (root ephemeral):** đi đường Glance — snapshot VM đã tắt → tải về host chuyển → đẩy lên Glance đích bằng REST (openstackclient lỗi với upload dài) → so sha512 với hash Glance tính → VM đích boot từ image đó. Chỉ cold. Server properties + description luôn được copy sang VM đích; MAC/IP + port của VM nhiều NIC (kể cả khác network) được giữ từng port một.
 
 Khi chạy thật ổn định và không cần rollback nữa, tự xóa bằng tay ở nguồn: server, volume, port. Công cụ cố ý không có lệnh này.
+
+## 2b. Bản v3: file cấu hình, project, đặt tên, chạy lô
+
+Mọi option và cách chạy ở mục 2 giữ nguyên hành vi. Không có `migrate.conf`, không đặt
+`SRC_PROJECT`/`DST_PROJECT` thì tool chạy y như v2. Có 2 thay đổi hành vi: tên volume/port ở đích
+(mục 2b.3), và keypair thiếu ở đích không còn làm preflight FAIL (mục 2).
+
+### 2b.1. File cấu hình `/opt/mig/migrate.conf`
+
+Dùng thay cho chuỗi `export`. Đây là file bash dạng `KEY=VALUE`, tool `source` nó lúc khởi động. Đổi
+đường dẫn bằng env `MIG_CONF=<file>`.
+
+**Thứ tự ưu tiên: option CLI > biến môi trường > migrate.conf > mặc định trong script.** Biến đã có
+trong env được giữ lại sau khi source file. Vì vậy cách chạy cũ bằng `export` không đổi hành vi, và
+muốn đè conf cho một lần chạy thì chỉ cần đặt env trước lệnh.
+
+Biến đọc từ file (ý nghĩa xem bảng biến môi trường ở mục 2): `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP
+RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`.
+`migrate-batch.sh` cũng đọc file này, nhưng chỉ lấy `SRC_RC`, `DST_RC`, `PROJECT_MAP_FILE`. Các biến còn
+lại do từng lần gọi `migrate-vm.sh` tự đọc.
+
+```bash
+# /opt/mig/migrate.conf — bash KEY=VALUE, không cần export
+SRC_RC=/opt/mig/src/admin-openrc.sh
+DST_RC=/opt/mig/dst/admin-openrc.sh
+RBD_POOL=volumes-nvme
+RBD_POOL_MAP="nvme-az1:volumes-nvme-az1,nvme-az2:volumes-nvme-az2"
+RBD_USER=mig-xfer
+CEPH_CONF=/etc/ceph/ceph.conf
+MIG_ISCSI_IP=192.0.2.20
+MIG_MULTIPATH=0
+COPY_STREAMS=8
+PROJECT_MAP_FILE=/opt/mig/project-map.conf
+# SRC_PROJECT / DST_PROJECT: thường không ghi ở đây, đặt theo từng lần chạy (batch tự đặt cho từng VM)
+```
+
+```bash
+migrate-vm.sh plan app-vm01                                    # mọi giá trị lấy từ conf
+COPY_STREAMS=4 migrate-vm.sh migrate app-vm01                  # env đè conf cho riêng lần này
+MIG_CONF=/opt/mig/migrate-az2.conf migrate-vm.sh plan app-vm01 # dùng bộ conf khác
+```
+
+### 2b.2. Chạy trong project của VM: `SRC_PROJECT` / `DST_PROJECT`
+
+- Mỗi lần source openrc, tool đè `OS_PROJECT_NAME=<SRC_PROJECT|DST_PROJECT>` và bỏ `OS_PROJECT_ID`.
+  Nhờ vậy clone tạm, volume, port, server đều nằm trong đúng project đó, quota và ownership tính đúng chỗ.
+  Project nhận theo tên, cùng domain với openrc. Không đặt 2 biến này thì tool không scope gì thêm.
+- Account: **mỗi cloud một account có role trong mọi project liên quan**, openrc dạng **password**.
+  Batch liệt kê VM bằng `--all-projects` nên account nguồn cần quyền admin. `--ip same` trên provider
+  network cũng cần admin ở đích.
+- Application credential bị khóa vào đúng 1 project, không rescope được. Tool dừng trước khi đụng vào gì:
+
+```
+ERROR: SRC_PROJECT/DST_PROJECT needs a password openrc: an application credential is bound to one project (/opt/mig/dst/appcred-openrc.sh)
+```
+
+`migrate-batch.sh` luôn chạy mỗi VM trong project của nó, nên từ chối appcred ngay từ đầu:
+
+```
+ERROR: /opt/mig/src/appcred-openrc.sh is an application credential: a batch runs each VM in its own project and needs a password openrc
+```
+
+- Migrate lẻ không đặt `SRC_PROJECT`/`DST_PROJECT` thì appcred vẫn dùng được như v2.
+- Rollback chạy với **đúng cặp `SRC_PROJECT`/`DST_PROJECT` đã dùng lúc migrate**. Lý do: clone sót và
+  image `mig-snap-*` được tìm theo tên, mà tìm theo tên chỉ thấy trong project của token. Với VM
+  chạy qua batch, batch in sẵn lệnh rollback có đủ 2 biến này (mục 2b.6).
+
+### 2b.3. Quy tắc đặt tên ở đích (luôn bật, không có flag)
+
+| Đối tượng ở đích | Tên | Ví dụ |
+|---|---|---|
+| Volume của VM (migrate thường, `--volumes-only`, batch `--volumes attached`) | `<instance>-<device>` | `app-vm01-vda`, `app-vm01-vdb` |
+| Port, `--ip same` | `<instance>-<ip nguồn>` | `app-vm01-198.51.100.50` |
+| Port, `--ip <addr>` | `<instance>-<addr>` | `app-vm01-198.51.100.150` |
+| Port, `--ip new` | Tạo port tên `<instance>-pending<i>`, Neutron cấp IP xong thì đổi tên thành `<instance>-<ip mới>` | `app-vm01-pending0` → `app-vm01-198.51.100.77` |
+| Volume rời (`migrate-volume`, batch `--volumes available`) | **Giữ nguyên tên nguồn**, kể cả tên rỗng | `data-backup-01` → `data-backup-01` |
+
+- `<instance>` là tên thật của VM nguồn, kể cả khi chạy bằng ID. `<device>` là phần đuôi của device
+  attach (`vda`, `vdb`, `sda`…). VM nhiều NIC thì mỗi port mang IP của chính nó.
+- Mọi volume đích mang description `migrated from <id-volume-nguồn>` để biết nguồn gốc. Với volume rời,
+  description này còn là guard chống copy trùng: tên volume Cinder không unique, nên tool không tra theo tên.
+- Volume rời không có tên mà Cinder đích không nhận tên rỗng: tool đặt tên bằng ID nguồn và log `WARN`.
+- Rollback xóa theo ID ghi trong state, không theo tên. Đổi tên không ảnh hưởng rollback, và state cũ
+  của v2 (port `mig-<vm>-<i>`) vẫn được dọn. Port giữ chỗ phía nguồn vẫn tên `mig-reserve-<vm>-<i>` như v2.
+- Guard trùng ở đích, đều chặn ở preflight:
+
+| Lệnh | Bị chặn khi |
+|---|---|
+| Migrate thường | Đích đã có server cùng tên |
+| `--volumes-only` | Đích đã có volume tên `<instance>-<device>` (lỗi `rename or delete it first`) |
+| `migrate-volume` | Đích đã có volume mang description `migrated from <id>` (lỗi kèm gợi ý rollback hoặc xóa) |
+
+### 2b.4. Volume rời: `migrate-vm.sh migrate-volume <volume>`
+
+Dùng cho volume **available**, tức không gắn vào VM nào:
+
+```bash
+migrate-vm.sh migrate-volume data-backup-01                          # theo tên, trong project nguồn
+migrate-vm.sh migrate-volume <volume-id> --volume-type nvme-az1 --az AZ1 --verify none
+migrate-vm.sh rollback <volume-id>                                   # xóa bản copy ở đích
+```
+
+- Luồng: clone volume nguồn (`mig-clone-<id>`) → attach clone vào host chuyển → tạo volume đích (giữ
+  tên nguồn, description `migrated from <id>`, chép cờ bootable và image metadata `hw_*`/`os_*`) →
+  `qemu-img convert` → `qemu-img compare` (trừ khi `--verify none`) → xóa clone.
+  **Volume gốc không bị đụng, vẫn `available`, không phải dừng thứ gì.**
+- Chỉ nhận `--volume-type`, `--az`, `--verify`. Option dành cho server (`--ip`, `--flavor`,
+  `--security-group`, `--server-group`, `--start-source`, `--keep-source-ports`, `--volumes-only`,
+  `--mode live`) bị từ chối.
+- Volume `in-use` bị từ chối, kèm gợi ý cách đúng là `migrate-vm.sh migrate <vm> --volumes-only`. Mọi
+  trạng thái khác `available` cũng bị từ chối.
+- Có nhiều volume cùng tên trong project nguồn: tool die và liệt kê ID, chạy lại bằng ID.
+- Không có lệnh `plan` riêng. Preflight chạy ngay đầu lệnh: AZ, volume type, volume không mã hóa, đích
+  chưa có bản copy, quyền RBD, `iscsid`. FAIL thì dừng trước khi tạo gì.
+- State nằm ở `/var/lib/mig-migrate/vol-<id-nguồn>/`. `migrate-vm.sh rollback <tên|ID>` xóa volume đích
+  và clone sót, không bao giờ sửa nguồn. Nếu có state VM trùng tên với volume thì state VM được ưu tiên,
+  khi đó rollback volume bằng **ID**.
+- Volume không thuộc project của openrc: đặt `SRC_PROJECT`/`DST_PROJECT` (batch tự đặt).
+- Giới hạn: snapshot của volume không đi theo, chỉ copy dữ liệu hiện tại. Cây snapshot ở lại nguồn.
+
+### 2b.5. `--server-group` và `--volumes-only`
+
+**`--server-group <tên|ID>`** (dùng với `plan`, `migrate`):
+
+- VM đích tham gia server group đó (`server create --hint group=<id>`). Group phải **có sẵn trong
+  project đích**, tool không bao giờ tự tạo.
+- Preflight tìm thấy group thì báo `OK` và in policy. Có nhiều group cùng tên thì FAIL, khi đó truyền
+  ID. Không thấy thì FAIL kèm lệnh tạo:
+
+```
+  FAIL  server group web-anti not found in the destination project — create it first: openstack server group create --policy anti-affinity web-anti
+```
+
+- Anti-affinity mà không đủ host thì Nova báo NoValidHost lúc tạo VM. Preflight không đoán trước được
+  scheduler, nên trường hợp này phải rollback.
+- Dùng chung với `--volumes-only` thì bị bỏ qua (preflight báo `INFO`), vì không có server nào được tạo.
+
+**`--volumes-only`** (dùng với `plan`, `migrate`; chỉ cold):
+
+- Copy mọi volume của VM sang đích với tên `<instance>-<device>`. **Không tạo port, không tạo server.**
+- Nguồn vẫn bị stop + lock như migrate thường, nhưng **port nguồn không bị tháo**, vì không có port đích
+  nào dùng MAC/IP đó. Xong lệnh, nguồn ở trạng thái SHUTOFF + locked. `--start-source` dùng được với mọi
+  `--ip`. Bật lại nguồn thì dữ liệu nguồn bắt đầu khác bản copy.
+- Preflight bỏ qua check network, flavor, SG, keypair, MAC/IP, và thêm check tên `<instance>-<device>`
+  chưa có ở đích.
+- Bị từ chối: `--mode live`, và VM có root ephemeral (lỗi `ephemeral VM has no volume to migrate`).
+- Không mang theo: port/IP, metadata server, server group.
+- `migrate-vm.sh rollback <vm>` xóa volume đích, unlock và start lại nguồn.
+
+### 2b.6. Chạy lô: `migrate-batch.sh`
+
+Script bọc ngoài `migrate-vm.sh`: chọn VM, chạy `plan` cho tất cả, hỏi xác nhận một lần, rồi migrate
+**lần lượt từng con, theo ID**. Mỗi con chạy với `SRC_PROJECT`/`DST_PROJECT` của project chứa nó.
+
+```
+migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]] [--vm-file <file>]
+                 [--volumes attached|available|all] [--plan-only] [--yes] [--continue-on-error]
+                 [-- <options passed to every migrate-vm.sh call>]
+```
+
+Chạy không có tham số thì script in phần usage này.
+
+**Chọn VM (selector):**
+
+| Selector | Ý nghĩa |
+|---|---|
+| `--host h1[,h2…]` | VM trên các compute host đó. Tên host lấy ở cột **Host** của `openstack compute service list` (cũng là `OS-EXT-SRV-ATTR:host` trong `server show`). **Không phải** `hypervisor_hostname` của `openstack hypervisor list`, thường là FQDN. Sai tên thì batch log `WARN no VM on host …` |
+| `--project p1[,p2…]` | VM của các project đó, nhận tên hoặc ID |
+| `--vm v1[,v2…]` | VM theo tên hoặc ID |
+| `--vm-file <file>` | Mỗi dòng một tên hoặc ID. `#` là comment, dòng trống bị bỏ qua, khoảng trắng đầu/cuối được cắt. Gộp chung với `--vm`. Dòng không ra VM nào thành `SKIP(not-found)`, batch không chết |
+
+- Dùng nhiều selector thì lấy **giao**: `--host` ∩ `--project` ∩ `--vm/--vm-file`. Phải có ít nhất 1 selector.
+- Nhiều VM cùng tên trong 1 project thì thành `SKIP(ambiguous-name: use the ID)`. Cùng tên nhưng ở các
+  project khác nhau thì cả hai đều được chọn, mỗi con chạy trong project của nó.
+
+**Phạm vi volume (`--volumes`):**
+
+| Giá trị | Làm gì | Điều kiện |
+|---|---|---|
+| (không có) | Migrate VM đầy đủ: volume + port + VM ở đích | — |
+| `attached` | Mỗi VM chạy `migrate-vm.sh migrate <id> --volumes-only`: copy volume, không tạo VM đích, VM nguồn bị stop + lock. Tên `<instance>-<device>` | Cần `--project` hoặc `--vm/--vm-file`. `--host` chỉ để thu hẹp |
+| `available` | Mọi volume `available` của project chạy `migrate-vm.sh migrate-volume <id>`: giữ tên nguồn, nguồn không bị đụng | Cần `--project`. Không dùng với `--host`, `--vm`, `--vm-file` |
+| `all` | `attached` trước, `available` sau | Cần `--project`. Không dùng với `--host` |
+
+- `--volumes` đi với `--mode live` thì bị từ chối, vì copy volume chỉ chạy cold.
+- Volume `in-use` không nằm trong danh sách `available`. Batch log số lượng của chúng: các volume này đi
+  theo VM (`attached`). Clone tạm sót lại (`mig-clone-*`) thành `SKIP(mig-clone)`.
+
+**Điều khiển:**
+
+| Option | Ý nghĩa |
+|---|---|
+| `--plan-only` | Liệt kê và plan tất cả, không đổi gì. Exit 1 nếu có `PLAN-FAIL` |
+| `--yes` | Không hỏi xác nhận. Bắt buộc khi stdin không phải terminal (cron, pipe…), nếu thiếu thì batch die |
+| `--continue-on-error` | Chạy tiếp sau con FAIL. Mặc định dừng ở con FAIL đầu tiên, các con còn lại thành `SKIP(not-run)` |
+| `-- <options>` | Mọi thứ sau `--` được truyền nguyên vẹn cho **mọi** lần gọi `migrate-vm.sh plan`/`migrate` |
+
+**Luồng chạy:**
+
+1. Liệt kê, in bảng `Selected:` gồm các cột KIND / ID / NAME / STATUS / PROJECT src -> dst / RESULT.
+2. Chạy `plan` cho mọi VM, in bảng `Plan:` cùng dòng FAIL của từng con `PLAN-FAIL`. `--plan-only` dừng ở đây.
+3. Hỏi `Type yes to continue` (bỏ qua nếu có `--yes`).
+4. Migrate tuần tự từng con, theo ID.
+5. In bảng `Summary:` và dòng `Totals: OK n  FAIL n  SKIP n`. Exit 1 nếu có FAIL.
+
+Lưu ý khi chạy:
+
+- Volume rời (`available`) không có bước plan. Bảng ghi `READY`, preflight chạy lúc `migrate-volume`.
+- Với volume rời, batch chỉ truyền `--volume-type`, `--az`, `--verify`, `--mode`. Option chỉ dành cho VM
+  bị bỏ qua, có log dòng `available volumes: ignoring VM-only options …`.
+- Option sau `--` áp cho **mọi** VM. `--flavor`, `--security-group`, `--server-group` thì mọi VM nhận
+  cùng giá trị. `--ip <addr>` chỉ hợp lý khi batch có đúng 1 VM.
+- Batch chạy và ghi state theo **ID** (`/var/lib/mig-migrate/<id>/`), nên rollback cũng phải bằng ID.
+  Rollback bằng tên không tìm thấy state đó.
+
+**Project đích và `PROJECT_MAP_FILE`:**
+
+- Mặc định project đích **cùng tên** với project nguồn. Project đó phải có sẵn ở đích, và account phải
+  có role trong đó.
+- Cặp project khác tên thì khai trong một file riêng, trỏ tới bằng `PROJECT_MAP_FILE` (trong conf hoặc env).
+  Mỗi dòng có dạng `project-nguồn project-đích`, **phân cách bằng khoảng trắng**, `#` là comment.
+  - Project không có dòng nào thì giữ nguyên tên.
+  - File không đọc được: batch log `WARN`, mọi project giữ nguyên tên.
+  - Dòng sai dạng (thiếu hoặc thừa cột, kể cả kiểu `a = b`) thì batch die.
+- Chỉ `migrate-batch.sh` đọc file map. Chạy lẻ `migrate-vm.sh` thì tự đặt `DST_PROJECT`.
+
+```
+# /opt/mig/project-map.conf
+finance        finance-prod
+web-legacy     web
+```
+
+**Kết quả (cột RESULT):**
+
+| RESULT | Nghĩa |
+|---|---|
+| `SKIP(not-found)` | Dòng `--vm`/`--vm-file` không resolve được VM nào |
+| `SKIP(ambiguous-name: use the ID)` | Có từ 2 VM cùng tên trong 1 project |
+| `SKIP(state-exists)` | Đã có state từ lần chạy trước (`/var/lib/mig-migrate/<id hoặc tên>/` hoặc `vol-<id>/`). Batch in lệnh rollback |
+| `SKIP(status)` | VM không ở ACTIVE/SHUTOFF, hoặc volume ở trạng thái khác `available`/`in-use` (error, reserved…) |
+| `SKIP(ephemeral-root)` | Chỉ khi copy volume (`--volumes …` hoặc `-- --volumes-only`): VM có root ephemeral, không có volume để copy |
+| `SKIP(mig-clone)` | Volume là clone tạm `mig-clone-*` còn sót |
+| `SKIP(not-run)` | Không chạy vì batch đã dừng ở con FAIL trước đó |
+| `PLAN-OK` / `PLAN-FAIL` | Kết quả `plan` |
+| `READY` | Volume rời đang chờ migrate |
+| `OK` / `OK(no key_name: <key>)` | Xong. Dạng thứ hai nghĩa là keypair không có ở đích nên VM đích được tạo không có `key_name`; add lại sau |
+| `FAIL` / `FAIL(plan)` | Migrate lỗi / tới lượt một con `PLAN-FAIL` |
+
+Với dòng `FAIL` và `SKIP(state-exists)`, batch in sẵn lệnh hoàn tác, có đúng cặp project:
+
+```
+  app-vm01: inspect, then to undo: SRC_PROJECT=proj-a DST_PROJECT=proj-a /usr/local/bin/migrate-vm.sh rollback <id>
+```
+
+Log của mỗi lần chạy nằm ở `/var/log/mig-batch/<YYYYmmdd-HHMMSS>/`: `plan-<id>.log` và
+`migrate-<id>.log` (output đầy đủ của từng con), cùng các file JSON danh sách lúc liệt kê.
+
+Chưa test trên lab (TEST-REPORT-20261117): `PROJECT_MAP_FILE` có cặp khác tên thật,
+`--continue-on-error` gặp FAIL giữa chừng thật, và `--volumes all`.
+
+### 2b.7. Ví dụ v3
+
+```bash
+# 1. Theo host: xem trước (không đổi gì), rồi chạy thật
+migrate-batch.sh --host cmp-01 --plan-only
+migrate-batch.sh --host cmp-01 --yes
+
+# 2. Host + project: chỉ VM của proj-a, proj-b nằm trên cmp-01, cmp-02
+migrate-batch.sh --host cmp-01,cmp-02 --project proj-a,proj-b --plan-only
+migrate-batch.sh --host cmp-01,cmp-02 --project proj-a,proj-b --yes
+
+# 3. Danh sách VM từ file
+cat > /root/wave1.txt <<'EOF'
+# đợt 1
+app-vm01
+app-vm02
+11111111-2222-3333-4444-555555555555   # VM trùng tên: ghi bằng ID
+EOF
+migrate-batch.sh --vm-file /root/wave1.txt --plan-only
+migrate-batch.sh --vm-file /root/wave1.txt --yes
+
+# 4a. Volume rời của project: giữ tên nguồn, nguồn không bị đụng, không VM nào bị dừng
+migrate-batch.sh --project proj-a --volumes available --yes
+# 4b. So với volume đang gắn VM: copy theo từng VM, VM nguồn bị stop + lock, tên <vm>-<vdX>,
+#     không tạo VM đích
+migrate-batch.sh --project proj-a --volumes attached --yes -- --verify none
+
+# 5. Chỉ copy volume của vài VM chỉ định (tương đương --vm … --volumes attached)
+migrate-batch.sh --vm app-vm01,app-vm02 --yes -- --volumes-only
+
+# 6. Một account cho nhiều project, chạy lẻ (password openrc; project đích khác tên)
+SRC_PROJECT=proj-a DST_PROJECT=proj-a-new migrate-vm.sh plan app-vm01 --server-group web-anti
+SRC_PROJECT=proj-a DST_PROJECT=proj-a-new migrate-vm.sh migrate app-vm01 --server-group web-anti
+SRC_PROJECT=proj-a DST_PROJECT=proj-a-new migrate-vm.sh rollback app-vm01   # nếu cần hoàn tác
+
+# 7. Batch truyền option xuống từng migrate-vm.sh: cold, không tháo port nguồn, bỏ compare,
+#    AZ + volume type khớp nhau (rủi ro của --keep-source-ports: xem bảng option mục 2)
+migrate-batch.sh --host cmp-01 --project proj-a --yes \
+  -- --mode cold --keep-source-ports --verify none --az AZ1 --volume-type nvme-az1
+```
+
+### 2b.8. Bug đã sửa: security group trùng tên giữa các project
+
+- Triệu chứng (bắt được khi test batch 18/11): VM thuộc project khác bị preflight báo
+  `FAIL security group default`, dù project đó có SG `default`. Nguyên nhân: Neutron cho admin thấy SG
+  `default` của **mọi** project, kể cả qua token đã scope, nên tra theo tên bị mơ hồ.
+- Đã sửa: tên SG được resolve thành ID **trong đúng project của token** (`security group list --project <id>`).
+  - **Phía đích**: không tìm thấy thì preflight FAIL. Có từ 2 group cùng tên trong project thì FAIL,
+    khi đó truyền ID cho `--security-group` (option này nhận cả tên lẫn ID).
+  - **Phía nguồn**: việc tạo lại port giữ chỗ khi Nova tự xóa port của nó diễn ra giữa cutover. Nếu
+    SG không resolve được thì tool chỉ **log WARN và bỏ SG đó, không bao giờ die**, vì việc của port
+    giữ chỗ là giữ IP/MAC. Log in sẵn lệnh để add lại SG sau rollback:
+
+```
+WARN reserve port <port-id> has no security group default; after a rollback re-add them: openstack port set --security-group default <port-id>
+```
 
 ## 3. Quy hoạch network cho 2 cloud chung VLAN
 
@@ -296,13 +628,13 @@ Cách chuẩn (mọi host, kể cả production — chi tiết: [DEPLOY.md](DEPL
 ```bash
 git clone https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
 cd iscsi-rbd-migration
-install -m 0755 migrate-vm.sh brick_attach.py blocksync.py /usr/local/bin/
+install -m 0755 migrate-vm.sh migrate-batch.sh brick_attach.py blocksync.py /usr/local/bin/
 ```
 
 Hoặc đẩy từ workstation vào lab như lần dựng gốc:
 
 ```bash
-scp -i key.txt iscsi-rbd-migration/{migrate-vm.sh,brick_attach.py,blocksync.py} root@192.0.2.109:/usr/local/bin/
+scp -i key.txt iscsi-rbd-migration/{migrate-vm.sh,migrate-batch.sh,brick_attach.py,blocksync.py} root@192.0.2.109:/usr/local/bin/
 scp -i key.txt iscsi-rbd-migration/tests/*.sh root@192.0.2.109:/root/mig-lab/tests/
 # trên mig-host: live mode cần librbd bindings
 apt-get install -y python3-rbd
