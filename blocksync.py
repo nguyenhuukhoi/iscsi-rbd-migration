@@ -29,6 +29,16 @@ import rbd
 
 CHUNK = 4 * 1024 * 1024  # matches the default RBD object size
 DIGEST = 16
+MIB = 1024 * 1024
+GIB = 1024 * MIB
+
+
+def progress(done, total, changed):
+    """One progress line on stderr; stdout carries only the final JSON."""
+    print("[blocksync] %d%% (%.1f/%.1f GiB), changed %d MiB"
+          % (done * 100 // total, done * CHUNK / GIB, total * CHUNK / GIB,
+             changed * CHUNK // MIB),
+          file=sys.stderr, flush=True)
 
 
 def main():
@@ -72,8 +82,12 @@ def main():
     new = bytearray(nchunks * DIGEST)
     changed = written_bytes = zeroed = 0
     t0 = time.monotonic()
+    step = max(1, nchunks // 20)
 
     for i in range(nchunks):
+        # Reported at the top of the loop: the body below has several "continue"s.
+        if i and i % step == 0:
+            progress(i, nchunks, changed)
         off = i * CHUNK
         data = os.pread(fd, min(CHUNK, dev_size - off), off)
         h = hashlib.blake2b(data, digest_size=DIGEST).digest()
@@ -97,9 +111,9 @@ def main():
         written_bytes += len(data)
         if args.verify == "readback" and image.read(off, len(data)) != data:
             sys.exit(3)
-        if changed % 512 == 0:
-            print("  .. %d/%d chunks read, %d changed" % (i + 1, nchunks, changed),
-                  file=sys.stderr)
+
+    if nchunks:
+        progress(nchunks, nchunks, changed)  # the final chunk
 
     image.flush()
     image.close()

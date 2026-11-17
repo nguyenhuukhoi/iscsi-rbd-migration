@@ -47,6 +47,16 @@ dưới `set -euo pipefail`, eval lồng nháy, nhánh ephemeral/live/rollback).
 → preflight FAIL cả 2; `--az nova` → full migrate PASS, server + cả 2 volume đích đều AZ nova,
 rollback sạch. Giới hạn ghi ở GUIDE: pool map theo type chứ không theo AZ.
 
+### Hiển thị % tiến độ copy/verify (17/11 tối, theo yêu cầu user)
+
+Cold: watcher nền đọc bộ đếm sector của device nguồn trong `/sys/block`, in mỗi 15 s dòng
+`copy 54% (5.4/10 GiB, 221 MB/s)` / `verify 25% (...)` — sạch trong log (không dùng progress
+bar `\r` của qemu-img). Live: `blocksync.py` in `[blocksync] NN% (...), changed X MiB` ra
+stderr mỗi ~5%, stdout vẫn chỉ một JSON stats. Test: blocksync-unit 8/0 + % đều; cold migrate
+10 GB thấy rõ copy 150–307 MB/s vs verify 47–74 MB/s (1 luồng, chưa cache) — giải thích đúng
+cảm giác "verify lâu". Volume xong dưới 15 s không ra dòng % (chủ đích). Watcher bị dừng bởi
+`stop_watch` + trap EXIT nên bước fail không để lại tiến trình mồ côi (Opus đã test riêng).
+
 ### Trùng tên instance trong project nguồn (17/11 tối, câu hỏi của user)
 
 Nova cho phép nhiều server cùng tên trong một project; trước đây tool chết với lỗi OSC khó hiểu,

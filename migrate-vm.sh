@@ -132,6 +132,46 @@ wait_server() {  # src|dst server wanted-status [timeout-seconds]
   done
 }
 
+# --- progress ------------------------------------------------------------------
+# progress_watch logs how far a long sequential read of a device has got, from the
+# sectors-read counter in /sys/block/<dev>/stat (/dev/mapper names resolve to their dm-N).
+# Start it as "progress_watch ... & WATCH_PID=$!" and end it with stop_watch; cleanup_attach
+# (the EXIT trap) stops it too, so a step that dies leaves no watcher behind.
+WATCH_PID=""
+progress_watch() {  # device size-gb label
+  local dev=$1 size=$2 label=$3 base file total start last cur now t done_b gib10 pct rate sleeper=""
+  [[ $size =~ ^[1-9][0-9]*$ ]] || return 0
+  base=$(basename "$(readlink -f "$dev")") || return 0
+  file=/sys/block/$base/stat
+  [ -r "$file" ] || return 0
+  # stop_watch's SIGTERM interrupts "wait": take the pending sleep down as well, so no
+  # orphan keeps the script's stdout (a pipe to tee, say) open after the step ends.
+  trap '[ -z "${sleeper:-}" ] || kill "$sleeper" 2>/dev/null || true; exit 0' TERM
+  { read -r _ _ start _ < "$file"; } 2>/dev/null && [[ $start =~ ^[0-9]+$ ]] || return 0
+  total=$((size*1073741824)) last=$start t=$SECONDS
+  while :; do
+    sleep 15 & sleeper=$!
+    wait "$sleeper" || true
+    sleeper=""
+    { read -r _ _ cur _ < "$file"; } 2>/dev/null || continue
+    [[ $cur =~ ^[0-9]+$ ]] || continue
+    now=$SECONDS
+    done_b=$(( (cur-start)*512 ))
+    pct=$(( done_b*100/total )); pct=$(( pct>99 ? 99 : pct ))
+    gib10=$(( done_b*10/1073741824 ))
+    rate=$(( (cur-last)*512/1048576/(now>t ? now-t : 1) ))
+    log "$label $pct% ($((gib10/10)).$((gib10%10))/$size GiB, $rate MB/s)"
+    last=$cur t=$now
+  done
+}
+
+stop_watch() {  # stop the running progress_watch, if any; safe to call twice
+  [ -n "$WATCH_PID" ] || return 0
+  kill "$WATCH_PID" 2>/dev/null || true
+  wait "$WATCH_PID" 2>/dev/null || true
+  WATCH_PID=""
+}
+
 # --- plan: describe the source and check the destination can receive it -----
 export_definition() {
   local vm=$1 dir=$2 sid
@@ -258,7 +298,7 @@ cmd_plan() {
 
 # --- migrate -----------------------------------------------------------------
 ATTACHED=""
-cleanup_attach() { [ -z "$ATTACHED" ] || ( source "$SRC_RC"; "$BRICK" detach "$ATTACHED" ) || true; }
+cleanup_attach() { stop_watch; [ -z "$ATTACHED" ] || ( source "$SRC_RC"; "$BRICK" detach "$ATTACHED" ) || true; }
 
 create_dest_volume() {  # source-volume-id dir ; sets DVID, appends to volume-map
   local vid=$1 dir=$2 vj name size bootable
@@ -314,14 +354,19 @@ copy_volume_cold() {  # source-volume-id dest-volume-id size-gb dir
   log "copy $DEVICE -> $POOL/volume-$dvid"
   t0=$SECONDS
   # The new RBD image is all zeros, so zero runs are skipped and stay unallocated.
+  # If qemu-img fails, set -e exits and the EXIT trap (cleanup_attach) stops the watcher.
+  progress_watch "$DEVICE" "$size" copy & WATCH_PID=$!
   qemu-img convert -f raw -O raw -n --target-is-zero -m "$COPY_STREAMS" -W "$DEVICE" "$img"
+  stop_watch
   local took=$((SECONDS-t0))
   log "copy done in ${took}s ($((size*1024/(took>0?took:1))) MB/s logical)"
 
   if [ "$VERIFY" != none ]; then
     log "verify byte-for-byte"
     t0=$SECONDS
+    progress_watch "$DEVICE" "$size" verify & WATCH_PID=$!
     qemu-img compare -f raw -F raw "$DEVICE" "$img" || die "verification failed for $vid"
+    stop_watch
     log "verify OK in $((SECONDS-t0))s"
   else
     log "verify skipped (--verify none)"
