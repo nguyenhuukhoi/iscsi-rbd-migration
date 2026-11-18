@@ -197,6 +197,8 @@ chmod 600 /opt/mig/migrate.conf
 
 Danh sách biến đọc từ file: `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP
 MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`.
+Cloud đích nhiều AZ hoặc nhiều pool: khai `RBD_POOL_MAP` (và từ v4 `MIG_AZ`, `AZ_TYPE_MAP`) theo
+GUIDE mục 2b.1b, nơi giải thích chuỗi AZ → volume type → pool, lý do phải khai và cách tra ngược.
 
 **Map project (tùy chọn)** là file riêng, `migrate.conf` trỏ tới nó qua `PROJECT_MAP_FILE`. Chỉ cần
 khi project đích **khác tên** project nguồn; project không có trong file thì giữ nguyên tên. Mỗi dòng

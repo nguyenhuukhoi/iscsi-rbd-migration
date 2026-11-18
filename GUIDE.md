@@ -85,13 +85,13 @@ Options (mặc định = hành vi v1: cold, giữ IP/MAC, volume type mặc đ�
 | Option | Ý nghĩa |
 |---|---|
 | `--mode cold\|live` | `cold`: tắt VM rồi copy (qemu-img, verify từng byte). `live`: VM chạy trong lúc pre-sync nhiều lượt bằng `blocksync.py` (hash-cache từng chunk 4 MiB); lúc cutover chỉ tắt VM và sync phần delta, nên downtime theo lượng ghi chứ không theo cỡ volume |
-| `--volume-type <type>` | Volume type ở đích cho mọi volume. Type nằm pool khác thì khai `RBD_POOL_MAP` |
+| `--volume-type <type>` | Volume type ở đích cho mọi volume. Type nằm pool khác thì khai `RBD_POOL_MAP`. (v4) Không truyền thì lấy theo AZ từ `AZ_TYPE_MAP` nếu có (mục 2b.1b) |
 | `--ip same\|new\|<addr>` | `same`: giữ IP + MAC, tháo port nguồn lúc cutover. `new`: đích tự cấp IP + MAC mới, **không đụng port nguồn**. `<addr>`: IP chỉ định, MAC mới (VM 1 NIC) |
 | `--flavor <tên>` | Flavor cho VM đích (mặc định: cùng tên với nguồn, phải tồn tại ở đích) |
 | `--security-group <sg1,sg2>` | Security group cho **mọi** port đích, thay bộ SG của nguồn |
 | `--start-source` | Bật lại VM nguồn sau khi chuyển xong (chỉ với `--ip new\|<addr>`; 2 VM chạy song song, trùng hostname + SSH host key, dữ liệu rẽ nhánh từ cutover) |
 | `--keep-source-ports` | Với `--ip same`: KHÔNG tháo port nguồn. **Rủi ro**: chỉ còn SHUTOFF+lock giữ VM nguồn khỏi mạng — ai bật lại (admin bypass được lock) là 2 máy cùng MAC+IP trên VLAN (split-brain). Đổi lại: tool không đụng port ở nguồn → phía nguồn chạy được bằng creds member thuần; rollback không cần cắm lại port. Nghiệm thu xong nên xóa VM nguồn sớm |
-| `--az <zone>` | AZ đích cho **cả volume lẫn server** (cloud có backend theo AZ / `cross_az_attach=false`). Preflight kiểm AZ tồn tại ở cả compute lẫn volume service. Mặc định: để scheduler đích tự chọn. **Cloud 2 AZ lưu ý**: `RBD_POOL_MAP` map theo *volume-type* chứ không theo AZ — mỗi lần chạy phải truyền bộ khớp nhau `--az AZ1 --volume-type <type-của-AZ1>` (+ pool/`CEPH_CONF` đúng cụm nếu mỗi AZ một cụm Ceph); truyền lệch thì tool dừng an toàn trước khi copy nhưng thông báo nói về type mapping. User Ceph chuyển cần caps trên pool của mọi AZ sẽ migrate vào |
+| `--az <zone>` | AZ đích cho **cả volume lẫn server** (cloud có backend theo AZ / `cross_az_attach=false`). Preflight kiểm AZ tồn tại ở cả compute lẫn volume service. Mặc định: `MIG_AZ` (v4) nếu có, không thì để scheduler đích tự chọn. **Cloud 2 AZ lưu ý**: `RBD_POOL_MAP` map theo *volume-type* chứ không theo AZ — mỗi lần chạy phải truyền bộ khớp nhau `--az AZ1 --volume-type <type-của-AZ1>` (v4: khai `AZ_TYPE_MAP` thì chỉ cần `--az`, mục 2b.1b) (+ pool/`CEPH_CONF` đúng cụm nếu mỗi AZ một cụm Ceph); truyền lệch thì tool dừng an toàn trước khi copy nhưng thông báo nói về type mapping. User Ceph chuyển cần caps trên pool của mọi AZ sẽ migrate vào |
 | `--max-passes <n>` | live: tối đa n lượt pre-sync (mặc định 5) |
 | `--delta-limit <MB>` | live: cutover khi delta một lượt ≤ ngưỡng (mặc định 64) |
 | `--verify readback\|full\|none` | live: `readback` (mặc định) đọc lại từng chunk vừa ghi; `full` thêm `qemu-img compare` toàn bộ trong cutover; `none` không kiểm. Cold: compare toàn bộ trừ khi `none` (compare đọc lại cả 2 phía, 1 luồng — thường lâu bằng/hơn copy; bỏ thì nên checksum trong guest sau khi VM đích boot) |
@@ -166,7 +166,9 @@ Biến môi trường để trỏ sang hệ thống khác:
 |---|---|---|
 | `SRC_RC`, `DST_RC` | `/opt/mig/{src,dst}/admin-openrc.sh` | Openrc 2 cloud |
 | `RBD_POOL`, `RBD_USER` | `mig-volumes`, `mig-xfer` | Pool Cinder đích mặc định, user Ceph chỉ có quyền trên pool đó |
-| `RBD_POOL_MAP` | (trống) | `typeA:poolA,typeB:poolB` — pool cho từng volume type |
+| `RBD_POOL_MAP` | (trống) | `typeA:poolA,typeB:poolB` — pool cho từng volume type. Vì sao phải khai, cách tra ngược type → pool: mục 2b.1b |
+| `MIG_AZ` | (trống) | (v4) AZ mặc định khi không truyền `--az`; truyền `--az` thì CLI thắng (mục 2b.1b) |
+| `AZ_TYPE_MAP` | (trống) | (v4) `AZ1:typeA,AZ2:typeB` — volume type theo AZ khi không truyền `--volume-type`; `--volume-type` tay luôn thắng (mục 2b.1b) |
 | `CEPH_CONF` | `/etc/ceph/ceph.conf` | Cấu hình Ceph |
 | `MIG_ISCSI_IP` | `10.77.0.20` | IP host chuyển trên mạng iSCSI |
 | `MIG_MULTIPATH` | `0` | `1`: attach qua multipath (SAN nhiều portal kiểu PowerStore) — cần `multipathd` chạy; brick từ chối device không phải dm và so kích thước device với volume (chặn LUN lạ khác cỡ) |
@@ -201,7 +203,8 @@ trong env được giữ lại sau khi source file. Vì vậy cách chạy cũ b
 muốn đè conf cho một lần chạy thì chỉ cần đặt env trước lệnh.
 
 Biến đọc từ file (ý nghĩa xem bảng biến môi trường ở mục 2): `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP
-RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`.
+RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`,
+từ v4 thêm `MIG_AZ AZ_TYPE_MAP` (mục 2b.1b).
 `migrate-batch.sh` cũng đọc file này, nhưng chỉ lấy `SRC_RC`, `DST_RC`, `PROJECT_MAP_FILE`. Các biến còn
 lại do từng lần gọi `migrate-vm.sh` tự đọc.
 
@@ -211,6 +214,8 @@ SRC_RC=/opt/mig/src/admin-openrc.sh
 DST_RC=/opt/mig/dst/admin-openrc.sh
 RBD_POOL=volumes-nvme
 RBD_POOL_MAP="nvme-az1:volumes-nvme-az1,nvme-az2:volumes-nvme-az2"
+MIG_AZ=AZ1                               # v4: AZ khi không truyền --az
+AZ_TYPE_MAP="AZ1:nvme-az1,AZ2:nvme-az2"  # v4: volume type theo AZ khi không truyền --volume-type
 RBD_USER=mig-xfer
 CEPH_CONF=/etc/ceph/ceph.conf
 MIG_ISCSI_IP=192.0.2.20
@@ -225,6 +230,119 @@ migrate-vm.sh plan app-vm01                                    # mọi giá tr�
 COPY_STREAMS=4 migrate-vm.sh migrate app-vm01                  # env đè conf cho riêng lần này
 MIG_CONF=/opt/mig/migrate-az2.conf migrate-vm.sh plan app-vm01 # dùng bộ conf khác
 ```
+
+### 2b.1b. Chuỗi AZ → volume type → pool: `AZ_TYPE_MAP` và `RBD_POOL_MAP`
+
+Tool ghi dữ liệu thẳng vào Ceph đích, nên với mỗi volume nó phải biết 3 thứ khớp nhau: AZ, volume
+type, pool RBD. Hai map nối chúng thành một chuỗi:
+
+```
+AZ ──AZ_TYPE_MAP──► volume type ──RBD_POOL_MAP──► pool RBD
+AZ1                 nvme-az1                       volumes-nvme-az1
+```
+
+Hai map trả lời hai câu hỏi khác nhau:
+
+| Map | Trả lời câu | Bản chất | Không khai thì |
+|---|---|---|---|
+| `AZ_TYPE_MAP` (v4) | "AZ này dùng type nào?" | Quy ước **của người vận hành**, thuần cho tiện tay | Vẫn chạy: gõ `--volume-type` tay mỗi lần (hoặc dùng type mặc định của cloud đích) |
+| `RBD_POOL_MAP` | "Cinder đổ type này vào pool nào?" | **Bản chép sự thật của cloud đích** | Type không có trong map thì tool ghi vào `RBD_POOL`. Dùng type không nằm ở `RBD_POOL` thì **bắt buộc** khai đúng |
+
+**Vì sao phải khai `RBD_POOL_MAP` khi Cinder đã cấu hình type → pool rồi?** Vì tool không hỏi Cinder
+được:
+
+- Quan hệ type → pool nằm trong `cinder.conf` trên controller đích (dòng `rbd_pool` của từng backend).
+  Không có API nào trả về tên pool.
+- `openstack volume show` (admin) chỉ cho `os-vol-host-attr:host` dạng
+  `controller@rbd-nvme-az1#rbd-nvme-az1`. Đó là **tên backend**, không phải tên pool Ceph.
+- Tool không ghi qua Cinder. Nó ghi thẳng vào Ceph (`qemu-img convert … rbd:<pool>/volume-<id>`, live
+  thì `blocksync.py`) bằng keyring riêng (`RBD_USER`), nên phải biết đúng tên pool.
+
+**Ví dụ: chép một lần từ `cinder.conf` sang map**
+
+```ini
+# cinder.conf cloud đích (đã cấu hình sẵn)
+[rbd-nvme-az1]
+volume_backend_name = rbd-nvme-az1
+rbd_pool = volumes-nvme-az1
+[rbd-nvme-az2]
+volume_backend_name = rbd-nvme-az2
+rbd_pool = volumes-nvme-az2
+```
+
+```bash
+# /opt/mig/migrate.conf
+MIG_AZ=AZ1                                                          # v4: AZ khi không truyền --az
+AZ_TYPE_MAP="AZ1:nvme-az1,AZ2:nvme-az2"                             # v4: quy ước của mình
+RBD_POOL_MAP="nvme-az1:volumes-nvme-az1,nvme-az2:volumes-nvme-az2"  # chép từ rbd_pool ở trên
+```
+
+Cả hai map cùng dạng `khóa:giá-trị,khóa:giá-trị`, **không có khoảng trắng** vì tool không tự cắt.
+
+**Một lần chạy đi qua chuỗi thế nào:** `migrate-vm.sh migrate app-vm01 --az AZ1`
+
+1. Không có `--volume-type`, tool tra `AZ_TYPE_MAP` theo AZ1 và ra `nvme-az1`. Preflight in:
+   `INFO  volume type nvme-az1 from AZ_TYPE_MAP (AZ1)`.
+2. Tool tạo volume đích bằng `--type nvme-az1 --availability-zone AZ1`. Cinder đổ type đó vào backend
+   `rbd-nvme-az1`, nên image tự nằm ở pool `volumes-nvme-az1`.
+3. Tool tra `RBD_POOL_MAP` theo `nvme-az1` và ra `volumes-nvme-az1`. Nó kiểm `volume-<id>` có thật
+   trong pool đó, rồi ghi + verify ở `rbd:volumes-nvme-az1/volume-<id>`.
+
+```bash
+migrate-vm.sh migrate app-vm02 --az AZ2                         # map ra nvme-az2 → pool volumes-nvme-az2
+migrate-vm.sh migrate app-vm03 --az AZ2 --volume-type nvme-az1  # type tay luôn thắng map (lệch AZ/type thì tự chịu)
+migrate-vm.sh migrate app-vm04                                  # v4: az=AZ1 từ MIG_AZ, type=nvme-az1 từ map
+```
+
+Lấy AZ từ `MIG_AZ` thì preflight in thêm `INFO  availability zone AZ1 from MIG_AZ`. Chuỗi này áp cho
+`plan`, `migrate`, `migrate-volume`. `migrate-batch.sh` không cần option mới, vì mỗi lần gọi
+`migrate-vm.sh` tự đọc conf.
+
+**Thiếu hoặc sai thì sao**
+
+| Tình huống | Kết quả |
+|---|---|
+| Không khai `AZ_TYPE_MAP` | Chạy như v3: type mặc định của cloud đích, hoặc gõ `--volume-type` tay mỗi lần |
+| AZ hiệu lực không có trong `AZ_TYPE_MAP` | Như không có map |
+| Cloud đích chỉ có 1 pool | Không cần map nào, `RBD_POOL` là đủ |
+| `RBD_POOL_MAP` sai hoặc thiếu type đang dùng | Tool dừng ngay sau khi tạo volume đích, **trước khi ghi byte nào**: `volume-<id> not visible in pool <pool>: wrong RBD_POOL_MAP for type '<type>', or mig-xfer lacks caps on that pool`. Không hỏng dữ liệu, đây là lưới an toàn |
+
+Lưới an toàn này **không nằm trong preflight**. Preflight chỉ kiểm `RBD_USER` liệt kê được pool mà map
+chỉ tới (`rbd ls`); nó chưa biết Cinder sẽ đổ volume vào đâu. Khi bị chặn:
+
+- Cold: VM nguồn đã stop + lock (và tháo port nếu `--ip same`). Live: vẫn đang pre-sync, VM nguồn chạy.
+- Volume đích vừa tạo **chưa được ghi vào state**, nên rollback không dọn nó. Xóa tay bằng ID trong
+  thông báo: `openstack volume delete <id>`.
+- Sau đó `migrate-vm.sh rollback <vm>` (trả VM nguồn, dọn volume đã ghi state), sửa map, chạy lại.
+- Với `migrate-volume`, volume đích đã nằm trong state: `migrate-vm.sh rollback <volume>` dọn hết.
+
+Vì vậy nên kiểm map một lần trước đợt chạy thật, theo một trong hai cách dưới.
+
+**Tra ngược type → pool khi không chắc**
+
+Cách 1, đọc cấu hình:
+
+```bash
+openstack volume type show nvme-az1 -c properties   # admin: ra volume_backend_name='rbd-nvme-az1'
+# trên controller đích: liệt kê backend + pool, tìm mục có volume_backend_name đó, đọc rbd_pool
+# (Kolla: /etc/kolla/cinder-volume/cinder.conf)
+grep -nE '^\[|volume_backend_name|rbd_pool' /etc/cinder/cinder.conf
+```
+
+`properties` trống nghĩa là type không ghim backend. Khi đó scheduler chọn backend, type → pool không
+cố định. Nên ghim type vào một backend, hoặc dùng cách 2 để xem thực tế.
+
+Cách 2, thực nghiệm bằng volume test 1 GB:
+
+```bash
+VID=$(openstack volume create mig-pool-probe --size 1 --type nvme-az1 --availability-zone AZ1 -f value -c id)
+openstack volume show "$VID" -f value -c status                              # chờ available
+rbd -c /etc/ceph/ceph.conf --id mig-xfer -p volumes-nvme-az1 ls | grep "volume-$VID"   # có dòng = đúng pool
+openstack volume delete "$VID"
+```
+
+`mig-xfer` chỉ có caps trên các pool đã cấp. Muốn dò một pool đoán mò mà user này không đọc được thì
+chạy `rbd ls` trên node Ceph bằng user admin.
 
 ### 2b.2. Chạy trong project của VM: `SRC_PROJECT` / `DST_PROJECT`
 
