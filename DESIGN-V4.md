@@ -115,6 +115,15 @@ option lạ là CÓ tham số đi kèm → `-- --keep-server-group --volume-type
 nuốt luôn `--volume-type`, volume rời bị copy bằng type mặc định. Fix: thêm `--keep-server-group`
 (và `--in-use` nếu lọt vào đây) vào nhánh option-không-tham-số (`--start-source|--keep-source-ports|--volumes-only`).
 
+## 2d. Fix kèm V4 — rollback dọn được volume đích mồ côi (user chốt 18/11)
+
+Hiện trạng (bẫy production 17/11): trên đường migrate VM, guard `not visible in pool` chạy SAU
+khi tạo volume đích nhưng TRƯỚC khi ghi volume-map vào state → die vì sai RBD_POOL_MAP thì volume
+vừa tạo thành mồ côi, rollback không dọn, phải xóa tay. Đường migrate-volume không dính (ghi state
+trước check). Fix: trong `create_dest_volume`, ghi volume-map vào state ngay khi có ID volume đích
+(trước `wait_volume`/check pool), như `create_volume_copy` đang làm. Sau fix, die ở bất kỳ điểm nào
+sau khi tạo volume → `rollback <vm>` dọn hết. GUIDE 2b.1b bỏ gạch đầu dòng "xóa tay".
+
 ## 3. Những gì KHÔNG đổi
 
 Toàn bộ V1–V3: luồng migrate/plan/rollback, naming, guard, conf, batch selectors, `--volumes`,
@@ -144,7 +153,9 @@ Feature C: (15) `MIG_AZ` trong conf, không truyền `--az` → plan/preflight r
 `--az` khác → CLI thắng; (16) `AZ_TYPE_MAP` chọn type khi không truyền `--volume-type`, volume
 rơi đúng pool theo RBD_POOL_MAP; `--volume-type` tay thắng map; (17) AZ không có trong map →
 chạy như không có map. Fix 2c: (18) batch `--volumes available` + `-- --keep-server-group
---volume-type X` → volume đích đúng type X (không bị nuốt option).
+--volume-type X` → volume đích đúng type X (không bị nuốt option). Fix 2d: (19) migrate với
+RBD_POOL_MAP cố tình sai → die sau khi tạo volume đích; `rollback <vm>` dọn volume đó + nguồn
+về nguyên trạng, đích sạch.
 
 Docs đợt V4 (sau khi test xanh): GUIDE 2b thêm `--in-use`/`--keep-server-group`/`MIG_AZ`/
 `AZ_TYPE_MAP`; thêm giải thích RBD_POOL_MAP là map volume-type→pool (tool ghi thẳng RBD nên phải
