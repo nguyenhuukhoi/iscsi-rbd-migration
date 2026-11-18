@@ -40,7 +40,33 @@ tiến trình con sẽ nghiệm thu tiếp ở các phase sau trên thiết bị
 `--mode live` (P2), ephemeral migrate (P3), `migrate volume`, `migrate batch`, rollback state
 volume (P4).
 
-## Phase 2 — live mode: (đang làm)
+## Phase 2 — live mode (commit `1fb2e88`) — ĐẠT 2026-11-18
+
+Bundle `blocksync.py` vào package (unit test khóa md5 giống từng byte bản gốc), chạy qua
+`SYS_PY -I` (python hệ thống, cách ly sys.path khỏi package). Parity giả lập: 65/65 trước khi
+thêm `-I` + chạy lại 21/21 sau, unit 25/25 — phủ 17 kịch bản live (hội tụ/không hội tụ/max-passes/
+3 chế độ verify/blocksync chết giữa pre-sync lẫn cutover/churn 0/rollback chéo bash↔py).
+Cải thiện có chủ đích: chặn `--max-passes`/`--delta-limit` không phải số (bash cũ LẶP VÔ HẠN với
+input rác); blocksync in rác thay JSON → die kèm nội dung (bash ra lỗi jq khó hiểu).
+
+### Lab thật
+
+| # | Case | Lệnh | Kết quả |
+|---|---|---|---|
+| 3 | Preflight live qua cầu bundled blocksync + system python | `migrate plan demo-vm --mode live --verify none` | PASS — `OK blocksync present` + `OK librbd python bindings`, Preflight passed |
+| 4 | blocksync-unit NGUYÊN BẢN (file gốc, python hệ thống) | `bash /root/mig-lab/tests/blocksync-unit.sh` | PASS=8 FAIL=0 |
+| 5 | Gate P2: live suite NGUYÊN BẢN, sed đổi lệnh (2 dòng, `/root/mig-lab/tests/live-migrate-py.sh`) | `bash /root/mig-lab/tests/live-migrate-py.sh` | **PASS=26 FAIL=0** — pre-sync + cutover + rollback thật bằng app Python |
+
+Ghi chú harness: lần chạy đầu 2 bộ này ĐỎ OAN do wrapper của Fable — (a) activate mig-venv làm
+`#!/usr/bin/env python3` của blocksync trỏ vào python venv không có librbd (8 FAIL); (b) lệnh
+smoke `migrate plan --mode live` để sót state dir làm live suite fail check "no leftover state"
+(bash plan cũng ghi state y vậy). Dọn + chạy lại không venv → xanh như trên; code không đổi.
+
+## Phase 2b — CLI thống nhất (user chốt 18/11 đợt 2, commit design `18b4f75`)
+
+Bỏ subcommand `batch`: selector hóa (`--vm/--host/--project/--vm-file`, positional = shorthand);
+`migrate plan` thay `--plan-only`; `migrate migrate` LUÔN hỏi xác nhận trừ `--yes` (đổi hành vi
+có chủ đích, an toàn hơn bash); volume theo đợt gộp vào `migrate volume`. Thực thi ở P4.
 
 ## Phase 3 — ip/voltype/ephemeral/extras: (chưa)
 
