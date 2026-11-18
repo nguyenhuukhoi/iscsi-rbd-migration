@@ -123,29 +123,37 @@ Hiện trạng: tool từ chối port có allowed-address-pairs từ v1, và kh�
   pairs/port-security/description như port gốc — không chỉ MAC/IP/SG như hiện tại.
 - Multiple fixed-IP per port: VẪN từ chối (ngoài phạm vi).
 
-**Server group + security group MẶC ĐỊNH tạo giống nguồn, format `az-*` (user chốt 18/11 tối, gộp P6):**
+**Server group + security group MẶC ĐỊNH tạo giống nguồn, prefix = TÊN AZ ĐÍCH (user chốt 18/11 tối, gộp P6):**
 
+- Prefix KHÔNG phải chữ cứng `az-`: là **tên AZ đích của VM** (`--az`/`MIG_AZ`/mặc định cloud,
+  vd `nova`). Format: `<AZ đích>-<tên nguồn>` — ví dụ `--az dc10-epz`, group nguồn `web-anti`
+  → đích `dc10-epz-web-anti`; SG `web-tier` → `dc10-epz-web-tier`. Cùng group nguồn sang 2 AZ
+  khác nhau = 2 group đích riêng (anti-affinity tính theo AZ).
+- ⚠ Đổi so với V4..P5 (đang dùng chữ cứng `az-`): group `az-*` đã tạo ở đích từ các lần chạy
+  trước sẽ KHÔNG được dùng lại sau đổi tên — ghi chú migration trong GUIDE-PYTHON khi làm P6.
+  Bản bash (archive) giữ `az-` như cũ.
 - `--keep-server-group` không còn là opt-in: mặc định VM nguồn trong server group thì đích tự
-  tạo/dùng `az-<tên>` + add member (luật V4 giữ nguyên: policy lệch → preflight FAIL). Flag cũ
+  tạo/dùng `<AZ>-<tên>` + add member (luật V4 giữ nguyên: policy lệch → preflight FAIL). Flag cũ
   vẫn nhận, thành no-op. Thêm opt-out (tên flag chốt khi code, đề xuất `--no-server-group`).
-- Security group cũng mặc định: copy thành `az-<tên>` như mô tả dưới, opt-out đề xuất
+- Security group cũng mặc định: copy thành `<AZ>-<tên>` như mô tả dưới, opt-out đề xuất
   `--no-copy-secgroup`; `--security-group` người dùng gõ tay vẫn thắng (tên nguyên văn).
 
 **Copy security group (user chốt 18/11, gộp vào P6):**
 
-- **Bỏ hẳn map-theo-tên-trùng.** Mọi SG trên port nguồn → port đích gắn **`az-<tên SG nguồn>`**
-  trong project đích (quy ước prefix như server group). `az-<tên>` chưa có → tạo + copy rule;
+- **Bỏ hẳn map-theo-tên-trùng.** Mọi SG trên port nguồn → port đích gắn **`<AZ đích>-<tên SG nguồn>`**
+  trong project đích (cùng quy ước prefix tên-AZ như server group). Chưa có → tạo + copy rule;
   có rồi → dùng luôn, không so lại rule (như server group "có rồi thì thui").
 - Copy rule đầy đủ: direction, ethertype, protocol, port range, remote CIDR, description.
   SG mới do Neutron tạo kèm sẵn 2 rule egress-any → XÓA trước rồi mới chép rule nguồn,
   để bộ rule đích = nguồn từng rule.
-- **Rule trỏ-group (remote group): copy đệ quy SG được trỏ** thành `az-<tên nó>` rồi rule trỏ
-  sang bản az- (user chốt sau khi xem bằng chứng default SG của lab). Trỏ chính mình (default)
-  → trỏ sang chính `az-<tên>`. Phải chống vòng lặp (A trỏ B, B trỏ A) bằng visited set.
+- **Rule trỏ-group (remote group): copy đệ quy SG được trỏ** thành `<AZ>-<tên nó>` rồi rule trỏ
+  sang bản đó (user chốt sau khi xem bằng chứng default SG của lab). Trỏ chính mình (default)
+  → trỏ sang chính `<AZ>-<tên>`. Phải chống vòng lặp (A trỏ B, B trỏ A) bằng visited set.
 - `--security-group` override của user vẫn thắng: tên user đưa dùng NGUYÊN VĂN ở đích,
   không thêm prefix. Port nguồn không có SG → đích vẫn `--no-security-group`.
-- Rollback: GIỮ az-SG (dùng chung giữa các VM, như server group).
-- Preflight in rõ: `will create az-web-tier (5 rules, + az-db-tier referenced)` / `found az-web-tier`.
+- Rollback: GIỮ SG `<AZ>-*` (dùng chung giữa các VM, như server group).
+- Preflight in rõ: `will create dc10-epz-web-tier (5 rules, + dc10-epz-db-tier referenced)` /
+  `found dc10-epz-web-tier`.
 - ⚠ Đổi hành vi so với bash/P1–P5 (trước: đòi SG trùng tên có sẵn, thiếu là FAIL): các check SG
   trong suite cũ sẽ lệch — khi gate P6, những dòng suite bám tên SG cũ phải được liệt kê và
   sửa máy móc có ghi lại, như lệ sed đổi lệnh.
