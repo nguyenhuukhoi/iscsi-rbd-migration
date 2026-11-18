@@ -87,6 +87,66 @@ REST rõ hơn (POST fail: bash exit 22 của curl im lặng, Python ERROR + exit
 **Cộng dồn P1–P3: app Python qua đủ 140/140 check của 5 suite cũ** (e2e 50 + blocksync 8 +
 live 26 + newip 26 + extras 30).
 
-## Phase 4 — volume + batch + maps: (chưa)
+## Phase 4 — volume + batch + maps + selector CLI (commit `8a48c45`) — ĐẠT 2026-11-18
+
+Port nốt: `migrate volume` (available/--in-use/selector --project/--vm), selector hóa migrate/plan
+(`--vm/--host/--project/--vm-file`, positional = shorthand), **luôn hỏi `Type yes` trừ `--yes`**,
+3 map + MIG_DEFAULT_OPTS qua selector, rollback volume state. Batch chạy mỗi VM bằng tiến trình
+con `python -m migratetool.single` (giữ cách ly env/project + log riêng `/var/log/mig-batch/<ts>/`
+như bash). Parity giả lập 141/141 (so cả file log từng con với batch bash) + unit 65/0.
+
+### 10 điểm lệch Opus tự khai — Fable duyệt chấp nhận cả 10 (2026-11-18)
+
+Đáng nói nhất: **⚠ `migrate migrate <vm>` (1 VM) giờ auto-scope SRC/DST_PROJECT theo project
+của VM** — bash cũ chạy admin mà quên set env thì VM đích rơi vào project admin; giờ VM đích vào
+project cùng tên (map được qua PROJECT_MAP_FILE). Appcred dùng được qua selector khi VM thuộc
+đúng project của token (batch bash từ chối thẳng). stderr tiến trình con gộp vào stdout cha.
+Preflight chạy 2 lần khi plan→migrate (mỗi lệnh một lần — hành vi batch cũ giữ nguyên).
+Gap tự nhận: `migrate plan` chưa nhận selector volume (mất dry-run `--volumes available
+--plan-only` của batch cũ) — bù ở P5.
+
+### Lab thật — regression gate: cả 4 suite NGUYÊN BẢN sed đổi lệnh + thêm `--yes`
+
+Sed bổ sung cho quyết định "luôn hỏi xác nhận": `s/\(migrate migrate [^|>]*\) 2>&1/\1 --yes 2>\&1/`
+(sự cố lần đầu: `&` trong replacement không escape làm nát dòng — đã sửa `2>\&1`, verify bằng
+grep lines-without-yes = rỗng trước khi chạy).
+
+| # | Case | Lệnh | Kết quả |
+|---|---|---|---|
+| 8 | e2e cold trên build P4 | `bash /root/mig-lab/tests/e2e-migrate-py.sh` | **PASS=50 FAIL=0 WARN=0** |
+| 9 | live trên build P4 | `bash /root/mig-lab/tests/live-migrate-py.sh` | **PASS=26 FAIL=0** |
+| 10 | newip-voltype trên build P4 | `bash /root/mig-lab/tests/newip-voltype-py.sh` | **PASS=26 FAIL=0** |
+| 11 | extras trên build P4 | `bash /root/mig-lab/tests/extras-py.sh` | **PASS=30 FAIL=0** |
+| 12 | Feature V3–V6 trên CLI mới (`p4feat.sh`, 24 check) | `bash /root/mig-lab/tests/p4feat.sh` | **PASS=24 FAIL=0** (lượt 2; lượt 1: 10 FAIL đều oan, xem dưới) |
+
+Các case trong `p4feat.sh` (fixture: proj-b + batch-vm BFV thuộc proj-b, data-c proj-b, sg-vm1/2
+flavor v5-src trong group soft-anti-affinity web-anti, flavor v5-dst chỉ có ở đích):
+
+| Case | Lệnh | Kiểm chứng |
+|---|---|---|
+| A1 | `migrate plan --host mig-src-cmp --verify none` | 3 PLAN-OK (đa project, có proj-b) + 2 PLAN-FAIL đúng lý do `flavor v5-src` thiếu ở đích, rc=1 |
+| E1 | `migrate migrate demo-vm --verify none </dev/null` | die đòi `--yes` khi stdin không phải tty; không migrate gì |
+| A2 | `migrate migrate batch-vm --verify none --yes` (KHÔNG set env) | VM đích vào đúng proj-b (auto-scope ⚠); rollback bằng tên, nguồn ACTIVE, đích sạch |
+| A3 | `migrate plan --vm-file f` (có dòng rác) | rác → SKIP(not-found), demo-vm PLAN-OK |
+| A4 | `migrate volume --project proj-b --available --yes` | OK 1, đích giữ nguyên tên data-c, nguồn còn nguyên; rollback bằng vol-ID |
+| A5 | `migrate volume --vm demo-vm --verify none --yes` | copy cả vda+vdb (demo-vm-vda/vdb), không tạo server; rollback bằng `demo-vm` (đúng chữ đã gõ) |
+| A6 | `migrate migrate --vm demo-vm --volume-type bogus-type --yes` | PLAN-FAIL chặn, không đụng đích, rc=1 |
+| B1 | `migrate volume <vdb-id> --in-use` | copy crash-consistent, VM nguồn ACTIVE suốt; rollback sạch |
+| C1 | `migrate migrate --vm sg-vm1,sg-vm2 --keep-server-group --flavor-fallback --verify none --yes` + FLAVOR_MAP_FILE | plan báo will-create không tạo; 2 VM một lệnh; group az-web-anti đúng policy + 2 member; flavor map ra v5-dst; rollback giữ group, nguồn ACTIVE |
+| B4 | MIG_DEFAULT_OPTS trong conf | plan in `MIG_DEFAULT_OPTS applied` + keep-sg có hiệu lực; env rỗng tắt được |
+| D1 | `migrate batch` / `migrate migrate-volume` | die kèm hướng dẫn lệnh mới, không chạy gì |
+
+**Lượt 1: 14/24, 10 FAIL — chẩn đoán xong cả 10 đều OAN, không có bug code:**
+(a) A1: harness quên sg-VM dùng flavor v5-src chưa có ở đích → PLAN-FAIL là ĐÚNG (bằng chứng
+log con `FAIL flavor v5-src`); (b) A5b+C1d: harness rollback bằng ID theo thói quen batch bash,
+nhưng CLI mới ghi state theo ĐÚNG CHỮ đã gõ (`--vm sg-vm1` → state `sg-vm1`) — điểm lệch đã
+duyệt, tool tự in hint rollback đúng identifier; (c) A4: project admin nguồn có sẵn 4 volume
+available vô danh (rác test cũ) nên quét available bắt cả 5 — tool đúng, chuyển fixture sang
+proj-b; (d) A6/B1/B4a/cleanup: dây chuyền từ (b) — state demo-vm còn sống → SKIP(state-exists),
+copy vdb còn ở đích → preflight dst-exists chặn (đều là guard đúng). Điểm cộng quan sát được:
+rollback 2 VM mà NGUỒN đã bị xóa tay vẫn dọn sạch tài nguyên đích rồi mới chết ở bước re-attach
+port nguồn — idempotent đúng thiết kế. Dọn lab bằng chính `migrate rollback` của tool.
+
+## Phase 5 — thay thế + docs: (chưa)
 
 ## Phase 5 — thay thế + docs: (chưa)
