@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "migratetool"
-version = "7.0.0.dev1"
+version = "7.0.0"
 description = "migrate: move VMs between two independent OpenStack clouds, iSCSI Cinder -> Ceph RBD"
 readme = "README.md"
 requires-python = ">=3.10"
