@@ -147,6 +147,115 @@ copy vdb còn ở đích → preflight dst-exists chặn (đều là guard đún
 rollback 2 VM mà NGUỒN đã bị xóa tay vẫn dọn sạch tài nguyên đích rồi mới chết ở bước re-attach
 port nguồn — idempotent đúng thiết kế. Dọn lab bằng chính `migrate rollback` của tool.
 
-## Phase 5 — thay thế + docs: (chưa)
+## Phase 5 — `plan volume` + `-I` + thay thế + docs (code `5e67653`) — Opus test xong, CHỜ FABLE DUYỆT
 
-## Phase 5 — thay thế + docs: (chưa)
+Phần code:
+
+- `migrate plan volume <selection>` bù gap dry-run volume theo đợt (P4 tự nhận). Nó chạy đúng đường
+  `--volumes … --plan-only` của batch: volume available `READY` không có plan con, VM của `--attached`/`--vm`
+  chạy `plan --volumes-only`.
+- Hint: `migrate volume … --plan-only` và `migrate plan … --volumes` chỉ sang `plan volume`.
+- Tiến trình con selector chạy `python -I -m migratetool.single`.
+
+Phần thay thế: 4 file bash `git mv` vào `archive/`, giữ nguyên byte. Docs `*-PYTHON.md`, README, CHANGELOG,
+`migrate.conf.example`.
+
+### Test
+
+Harness giả lập P1–P4 + 12 kịch bản P5, chép ra thư mục riêng trên mig-host (`/root/v7h-p5`, ngoài repo,
+không gọi cloud). Bộ unit P5 `p5unit.py`: clouds và tiến trình con giả, chạy được cả Windows lẫn Linux.
+
+| # | Case | Lệnh | Kết quả |
+|---|---|---|---|
+| 13 | Parity 12 kịch bản P5: app `plan volume` vs `migrate-batch.sh --volumes … --plan-only` | `python3 scenarios.py p5-` | **12/0** |
+| 14 | Regression toàn bộ harness P1–P5 trên build P5 | `python3 scenarios.py` | **153/0** (14 ph 35 s) |
+| 15 | Unit cũ P1–P4 | `python3 unit.py` | **65/0** |
+| 16 | Unit P5 trên mig-host; `-I` kiểm với package **cài thật** trong `/opt/mig-venv` | `P5_VENV_PY=/opt/mig-venv/bin/python3 python3 p5unit.py /root/v7h-p5` | **48/0** |
+| 17 | Unit P5 trên Windows: Python 3.13, venv riêng cài bằng `pip install --no-build-isolation --no-deps .` | `P5_VENV_PY=<venv>\Scripts\python.exe python -B p5unit.py <repo>` | **48/0** |
+| 18 | Lab thật, chỉ đọc: volume rời của admin | `PYTHONPATH=/root/v7h-p5 /opt/mig-venv/bin/python3 -m migratetool plan volume --project admin --available` | rc 0. Log `admin: 2 in-use volume(s) not listed — … (migrate volume --attached)`, bảng Selected + Plan **6 hàng READY**, không tiến trình con, không hỏi |
+| 19 | Lab thật, chỉ đọc: volume của VM | `PYTHONPATH=/root/v7h-p5 /opt/mig-venv/bin/python3 -m migratetool plan volume --vm demo-vm --verify none` | rc 0. Tiến trình con `python -I -m migratetool.single plan demo-vm --volumes-only --verify none` chạy bằng package đã cài, preflight volumes-only 6 OK, `PLAN-OK` |
+| 20 | Công thức sed của gate (DEVELOPING-PYTHON §5.1) sinh lại đúng file gate P4 | 4 phép sed trên `{e2e-migrate,live-migrate,newip-voltype,extras}.sh` rồi `cmp` với `*-py.sh` | **4/4 giống từng byte**; không dòng `migrate migrate` nào thiếu `--yes` |
+| 21 | Chuyển archive giữ nguyên byte | `md5sum archive/{migrate-vm.sh,migrate-batch.sh,blocksync.py,brick_attach.py}` + `git ls-files -s` | md5 `5706e763`/`2a3189f1`/`ae9cd19f`/`ce2512f8`, blob git trùng trước khi chuyển |
+
+Ở case 18–19, tiến trình cha chạy code P5 từ cây nguồn. Tiến trình con dùng `-I` nên import package đã cài
+(build P4), vốn giống P5 ở mọi đường của tiến trình con. Lab không cài build P5.
+
+**12 kịch bản parity P5:**
+
+- `--available` == `--volumes available --plan-only`: READY, SKIP(mig-clone)/SKIP(status), rc 0;
+- có state cũ: SKIP(state-exists) + hint rollback theo ID;
+- `--vm ID` == `--volumes attached --vm ID --plan-only`: preflight thêm trên stdout là lệch đã duyệt;
+- `--project --attached`;
+- `--project --all`;
+- `--vm` 2 VM với `--volume-type bogus`: PLAN-FAIL, rc 1 cả hai;
+- `MIG_DEFAULT_OPTS` có option chỉ dành cho VM;
+- không có volume available: `nothing selected`, rc 0 cả hai;
+- chỉ còn hàng SKIP: app rc 1, batch rc 0, output giống hệt (lệch đã duyệt từ P4);
+- 3 kịch bản riêng app: hint `--plan-only`, `plan volume <1 volume>` dừng, hint `--volumes`.
+
+So 6 chiều như mọi phase. Lời gọi `openstack` của app giống batch **từng lệnh, đúng thứ tự**, và world cuối
+không đổi, tức chỉ đọc.
+
+**48 check unit P5:**
+
+- 16 check parser: scope, thông báo theo lệnh đã gõ, các hint, `CHILD` có `-I`.
+- 17 check `Runner` với clouds giả:
+  - READY, không tiến trình con, chỉ gọi `list`/`show`;
+  - mọi hàng SKIP → rc 1; không hàng nào → rc 0;
+  - `--vm`: con `plan --volumes-only` có tee, đúng cặp project;
+  - PLAN-FAIL → rc 1;
+  - `--all` đúng thứ tự;
+  - `--yes` không làm gì thêm.
+- 12 check CLI subprocess: help, usage rc 2, die, VM tên `volume` qua `--vm volume`.
+- 3 check `-I` thật:
+  - không `-I` thì package giả trong thư mục hiện tại thắng: chứng minh bug có thật;
+  - có `-I` thì package đã cài chạy;
+  - `SRC_PROJECT`/`DST_PROJECT`/`SRC_RC` vẫn tới `config.load()`.
+
+### Điểm lệch / quyết định Opus tự đưa ra (chờ Fable duyệt)
+
+1. **`plan volume` của `--attached`/`--vm`/`--all` vẫn chạy preflight con `plan --volumes-only` cho hàng VM**,
+   đúng như batch `--plan-only`. Chỉ hàng volume available là không có plan con.
+2. **`plan volume` in cả bảng `Plan:`**, không chỉ bảng `Selected:`, giống batch `--plan-only`.
+3. **Mã thoát**: rc 1 khi có PLAN-FAIL hoặc mọi hàng SKIP. Không hàng nào (`nothing selected`) thì **rc 0**,
+   giống mọi selector run hiện tại (`migrate plan --host <host rỗng>` cũng 0) và giống batch. Fable muốn rc 1
+   cho trường hợp này thì sửa 1 dòng `return 0` trong `Runner.run`, áp cho mọi lệnh.
+4. **`migrate plan volume <1 volume>` dừng** kèm hướng dẫn, không dựng plan cho 1 volume. Bash
+   `migrate-volume` không có plan; preflight của nó chạy trước khi tạo gì.
+5. `plan volume` nhận rồi bỏ qua `--yes`/`--continue-on-error`, như `migrate plan` hiện tại. Help của
+   `plan volume` không liệt kê 2 option này, cũng không liệt kê `--in-use` (bị từ chối như selector volume).
+6. **`migrate plan volume …` chiếm từ `volume` sau `plan`**: VM tên đúng là `volume` thì plan bằng
+   `--vm volume`. Đã ghi vào GUIDE-PYTHON và có unit test.
+7. **Hint `--volumes` cho `plan`** (thêm ngoài danh sách): `migrate plan … --volumes x` chỉ sang
+   `migrate plan volume …`, còn `migrate`/`volume` giữ hint cũ.
+8. **Thông báo chọn volume nêu lệnh đã gõ**: `migrate plan volume --project needs …`. Câu chữ của
+   `migrate volume` không đổi.
+9. **`-I` chỉ thêm ở `selector.CHILD`**, đúng phạm vi. `copyvol.brick` vẫn gọi
+   `[sys.executable, "-m", "migratetool.brick"]` **không `-I`**: cùng loại rủi ro thư mục hiện tại che
+   package, nhưng chỉ khi thư mục đó có `migratetool/`. Thêm `-I` ở đó thì harness hiện tại phải đổi cách
+   stub brick (harness dựa vào `PYTHONPATH`). Đề xuất: làm ở phase sau, có duyệt.
+10. Docstring `livesync.py` đổi "the repository's blocksync.py" thành "archive/blocksync.py" sau khi đã
+    test. Chỉ comment; diff với bản đã test đúng 1 dòng đó.
+11. **`lab.sh up` bước 6/6 còn `scp iscsi-rbd-migration/{migrate-vm.sh,brick_attach.py,blocksync.py}`** từ
+    gốc repo. Sau khi chuyển vào `archive/`, bước này hỏng đường dẫn. **Không sửa** vì ngoài phạm vi. Sửa
+    thì đổi sang `pip install` app hoặc trỏ `archive/`.
+12. `pyproject.toml` vẫn `version = "7.0.0.dev1"`. Không đổi vì ngoài phạm vi; đặt `7.0.0` khi user chốt phát hành.
+13. TEST-REPORT này thêm mục P5 (CLAUDE.md bắt ghi test bằng md). Bỏ 2 dòng trùng "Phase 5 — (chưa)".
+14. Harness (`/root/v7h-p5` trên mig-host, bản gốc ở máy làm việc) và `p5unit.py` **không đưa vào repo**,
+    như P1–P4. DEVELOPING-PYTHON §5.3 ghi rõ điều này.
+15. Docs, chi tiết ở báo cáo P5 gửi Fable:
+    - `migrate.conf.example` sửa thêm câu mô tả cách đọc file: app không `source`, parser chặt;
+    - thêm mục "SRC/DST_PROJECT chỉ `volume <1 volume>` và `rollback` đọc";
+    - thêm ví dụ file map project, vì mẫu cũ thiếu.
+
+### Trạng thái lab sau P5
+
+Cloud không đổi. Case 18–19 chỉ đọc. `/var/lib/mig-migrate/demo-vm/` đã có từ trước (5 file của một
+lần plan, không có `volume-map`), case 19 ghi lại đúng 5 file đó. Còn để lại:
+
+- 2 thư mục log `/var/log/mig-batch/20261118-190648` và `-190654`;
+- harness `/root/v7h-p5`.
+
+Bản cài trong `/opt/mig-venv` vẫn là build P4. Gate lab 4 bộ sed chưa chạy lại trên build P5. Code P5 chỉ
+đổi lớp selector, CLI và dòng `-I`; đường tiến trình con giữ nguyên, harness phủ đủ. Nên chạy lại gate trước
+khi user chốt.
