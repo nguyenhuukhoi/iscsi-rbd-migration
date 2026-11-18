@@ -107,8 +107,15 @@ EOF
   $S $MIG 'bash /root/mig-lab/06-prepare-clouds.sh'
 
   ask "step 6/6: install the migration tool and tests"
-  scp -i "$KEY" iscsi-rbd-migration/{migrate-vm.sh,brick_attach.py,blocksync.py} "$MIG":/usr/local/bin/
+  # Bash build (archive/ since v7): the parity reference for the Python app, called by the original suites.
+  scp -i "$KEY" iscsi-rbd-migration/archive/{migrate-vm.sh,brick_attach.py,blocksync.py} "$MIG":/usr/local/bin/
   $S $MIG 'chmod +x /usr/local/bin/{migrate-vm.sh,brick_attach.py,blocksync.py}; mkdir -p /root/mig-lab/tests'
+  # Python app 'migrate' (v7+) into /opt/mig-venv, created in step 2 by 02-mighost-setup.sh (DEPLOY-PYTHON.md
+  # section 4). A fresh source dir each time: a stale build/ or a removed module must not end up in the wheel.
+  # README.md goes along because pyproject.toml names it as the package readme.
+  $S $MIG 'rm -rf /root/migrate-py && mkdir -p /root/migrate-py'
+  scp -r -i "$KEY" iscsi-rbd-migration/{pyproject.toml,README.md,migratetool} "$MIG":/root/migrate-py/
+  $S $MIG '/opt/mig-venv/bin/pip install -q --no-build-isolation /root/migrate-py && /opt/mig-venv/bin/migrate --version'
   scp -i "$KEY" iscsi-rbd-migration/tests/*.sh "$MIG":/root/mig-lab/tests/
   $S $MIG 'apt-get install -y python3-rbd >/dev/null && python3 -c "import rados, rbd" && echo "python3-rbd OK"'
   echo "Lab up. Verify with: lab.sh status"
