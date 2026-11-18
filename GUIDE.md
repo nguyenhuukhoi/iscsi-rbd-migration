@@ -503,9 +503,13 @@ migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]] [-
 Chạy không có tham số thì script in phần usage này.
 
 **Quen tay `migrate-vm.sh` thì đổi sang batch thế nào.** Batch **không có lệnh con** `plan`/`migrate`/
-`rollback`, chỉ có option. Gõ `migrate-batch.sh plan app-vm01` sẽ ra
-`ERROR: unknown option plan (options for migrate-vm.sh go after --)` (đã gặp thật trên production
-18/11).
+`rollback`, chỉ có option. **Quy tắc: trước `--` là option của batch (selector và điều khiển), sau `--`
+là option truyền xuống `migrate-vm.sh`.** Hai lỗi đã gặp thật trên production 18/11:
+
+| Gõ sai | Lỗi | Gõ đúng |
+|---|---|---|
+| `migrate-batch.sh plan app-vm01` | `ERROR: unknown option plan (options for migrate-vm.sh go after --)` | `migrate-batch.sh --vm app-vm01 --plan-only` |
+| `migrate-batch.sh --vm app-vm01 --az AZ1 --yes` | `ERROR: unknown option --az (options for migrate-vm.sh go after --)` | `migrate-batch.sh --vm app-vm01 --yes -- --az AZ1` |
 
 | `migrate-vm.sh` | `migrate-batch.sh` tương đương | Ghi chú |
 |---|---|---|
