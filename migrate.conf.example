@@ -1,20 +1,22 @@
-# migrate.conf.example — mẫu đầy đủ cho /opt/mig/migrate.conf (migrate-vm.sh, migrate-batch.sh)
+# migrate.conf.example — mẫu đầy đủ cho /opt/mig/migrate.conf (app `migrate`; bản bash cũ trong
+# archive/ đọc cùng file, cùng tên biến)
 #
 # Cài:   install -m 600 migrate.conf.example /opt/mig/migrate.conf    rồi bỏ dấu # ở dòng cần dùng.
 # Đổi đường dẫn file: env MIG_CONF=/đường/dẫn/khác.conf
 #
-# File là bash KEY=VALUE, tool `source` nó lúc khởi động, không cần export. Giá trị có khoảng trắng
-# thì đặt trong nháy kép.
+# File dạng bash KEY=VALUE, không cần export. Giá trị có khoảng trắng thì đặt trong nháy kép.
+# App `migrate` đọc file như dữ liệu, không `source`: chỉ nhận dòng KEY=VALUE (có thể có `export`,
+# nháy, comment #). Dòng chỉ bash hiểu được ($VAR, $(...), source, if...) thì app dừng kèm số dòng.
 #
-# Thứ tự ưu tiên: option CLI > biến môi trường > file này > mặc định trong script.
-#   - Biến đã có trong env (kể cả rỗng) thắng file. Ví dụ COPY_STREAMS=4 migrate-vm.sh migrate vm-a
+# Thứ tự ưu tiên: option CLI > biến môi trường > file này > mặc định của tool.
+#   - Biến đã có trong env (kể cả rỗng) thắng file. Ví dụ COPY_STREAMS=4 migrate migrate vm-a --yes
 #     chỉ đổi cho lần chạy đó.
-#   - Tắt một biến của file cho một lần chạy thì đặt rỗng trong env: MIG_AZ= migrate-vm.sh ...
-#   - Dòng còn dấu # thì biến lấy mặc định trong script (ghi ở từng dòng dưới).
+#   - Tắt một biến của file cho một lần chạy thì đặt rỗng trong env: MIG_AZ= migrate ...
+#   - Dòng còn dấu # thì biến lấy mặc định của tool (ghi ở từng dòng dưới).
 #
-# migrate-batch.sh chỉ đọc SRC_RC, DST_RC, PROJECT_MAP_FILE từ file này. Mọi biến còn lại do từng lần
-# gọi migrate-vm.sh tự đọc, nên batch hưởng đủ.
-# Giá trị dưới đây là ví dụ (IP dải TEST-NET). Hướng dẫn chi tiết: GUIDE.md mục 2 và 2b.
+# Mọi lệnh `migrate` đọc file này: tiến trình chọn VM, và tiến trình con của từng VM/volume.
+# Giá trị dưới đây là ví dụ (IP dải TEST-NET). Hướng dẫn chi tiết: GUIDE-PYTHON.md mục 7
+# (bản bash: GUIDE.md mục 2 và 2b).
 
 # ---- Kết nối 2 cloud ---------------------------------------------------------------------------
 # Openrc cloud nguồn (iSCSI). Chạy đa project (SRC_PROJECT/DST_PROJECT) thì phải là password openrc.
@@ -45,12 +47,22 @@
 #COPY_STREAMS=8
 
 # ---- Project và file map ----------------------------------------------------------------------
-# Chạy phía nguồn / đích trong project này của account openrc (cần password openrc). Thường không
-# ghi ở đây: đặt theo từng lần chạy, batch tự đặt cho từng VM. Mặc định: rỗng (không scope thêm)
+# Chạy phía nguồn / đích trong project này của account openrc (cần password openrc). Không ghi ở
+# đây. Các lệnh chạy theo selector (plan, migrate, volume --project/--vm, plan volume) tự đặt hai
+# biến theo project của từng VM/volume, đè giá trị env/conf. Chỉ `migrate volume <1 volume>` và
+# `migrate rollback` đọc chúng như bản bash: đặt trong env cho lần chạy đó (rollback: theo lệnh tool
+# in sẵn). Mặc định: rỗng (không scope thêm)
 #SRC_PROJECT=proj-a
 #DST_PROJECT=proj-a
-# File map project nguồn -> đích, mỗi dòng "nguồn đích" phân cách bằng khoảng trắng. Chỉ
-# migrate-batch.sh đọc. Mặc định: rỗng (project đích cùng tên)
+# File map project nguồn -> đích, dùng khi project đích KHÁC TÊN project nguồn. Áp cho mọi lệnh
+# plan/migrate/volume, kể cả 1 VM (bản bash: chỉ migrate-batch.sh đọc).
+#   - Mỗi dòng "project-nguồn project-đích" phân cách bằng khoảng trắng, # là comment.
+#   - Project không có dòng nào thì giữ nguyên tên.
+#   - Dòng sai dạng (thiếu/thừa cột, kể cả "a = b") thì tool dừng; file không đọc được thì chỉ WARN.
+# Ví dụ /opt/mig/project-map.conf:
+#     finance       finance-prod
+#     web-legacy    web
+# Mặc định: rỗng (project đích cùng tên)
 #PROJECT_MAP_FILE=/opt/mig/project-map.conf
 # (v5) File map flavor nguồn -> đích. Chỉ dùng khi chạy với --flavor-fallback (gõ tay, hoặc đặt trong
 # MIG_DEFAULT_OPTS), và chỉ khi đích KHÔNG có flavor cùng tên với nguồn. Có cùng tên thì dùng luôn,
@@ -64,7 +76,7 @@
 #     m1.large      c2.large
 #     m1.xlarge     c2.xlarge
 #     legacy.tiny   m1.small
-# Chỉ migrate-vm.sh đọc; batch truyền -- --flavor-fallback thì mỗi VM tra map theo flavor của nó.
+# Chạy nhiều VM một lượt thì mỗi VM tra map theo flavor của chính nó: một map chung cho cả đợt.
 # Mặc định: rỗng
 #FLAVOR_MAP_FILE=/opt/mig/flavor-map.conf
 
@@ -77,14 +89,15 @@
 
 # ---- Option mặc định (v4) ----------------------------------------------------------------------
 # Option luôn muốn có, khỏi gõ mỗi lần. Chuỗi được parse TRƯỚC option CLI của plan/migrate/
-# migrate-volume, nên CLI thắng với option có giá trị (vd conf --verify none, gõ --verify full thì
+# volume, nên CLI thắng với option có giá trị (vd conf --verify none, gõ --verify full thì
 # full thắng). Mặc định: rỗng.
 #   - Tách token theo khoảng trắng: giá trị chứa khoảng trắng không dùng được ở đây.
 #   - Option kiểu cờ (--keep-source-ports, --keep-server-group…) không tắt được từ CLI. Muốn bỏ hết
-#     option mặc định cho một lần chạy: MIG_DEFAULT_OPTS="" migrate-vm.sh ...
+#     option mặc định cho một lần chạy: MIG_DEFAULT_OPTS="" migrate ...
 #   - --keep-server-group ở đây mà CLI gõ --server-group <x>: bỏ keep, báo INFO, không dừng
 #     (và ngược lại). Cả hai cùng nằm ở đây thì dừng.
-#   - migrate-volume chỉ lấy --volume-type, --az, --verify. Option khác bị bỏ kèm 1 dòng INFO.
+#   - `migrate volume` (volume rời) chỉ lấy --volume-type, --az, --verify. Option khác bị bỏ kèm
+#     1 dòng INFO.
 #   - --in-use không bao giờ được lấy từ đây (bỏ kèm INFO), phải gõ tay.
 #   - rollback không dùng biến này.
 #   - Token sai chính tả hoặc thiếu giá trị: tool dừng ngay, thông báo nêu MIG_DEFAULT_OPTS.

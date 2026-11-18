@@ -1,13 +1,110 @@
 # Changelog
 
-Lịch sử thay đổi của tool (`migrate-vm.sh`, `migrate-batch.sh`, `brick_attach.py`, `blocksync.py`).
+Lịch sử thay đổi của tool. Từ v7: app Python `migrate` (`migratetool/`). Từ v1 tới v6: `migrate-vm.sh`,
+`migrate-batch.sh`, `brick_attach.py`, `blocksync.py`, nay nằm trong [archive/](archive/README.md).
 Bản mới nhất ở trên. Viết theo tinh thần [Keep a Changelog](https://keepachangelog.com/): mỗi bản ghi
 ngày, nhánh, trạng thái, phần **Thêm** / **Đổi hành vi** / **Sửa**, commit chính, thiết kế và báo cáo test.
 
 Repo git bắt đầu từ bản v2.1 (commit đầu `e973d00`, 17/11). Bản v1 và v2 có trước repo nên không có
 commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migrate-vm-v1-20261105.sh).
 
-Cách thêm một mục mới cho bản sau: xem [DEVELOPING.md](DEVELOPING.md) mục 5.
+Cách thêm một mục mới cho bản sau: xem [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 6 (bản bash:
+[DEVELOPING.md](DEVELOPING.md) mục 5).
+
+## [v7] — 2026-11-18 · nhánh `feature/v7-python-app` (fork từ v6 `6b6c48b`) · P1–P4 test xong, P5 chờ duyệt
+
+Viết lại thành **một app Python `migrate`**, thay hẳn `migrate-vm.sh` + `migrate-batch.sh` (user chốt
+18/11). Đây là bản **port giữ nguyên hành vi**: cùng state, cùng conf, cùng cách gọi hạ tầng (vẫn
+subprocess `openstack`/`qemu-img`/`rbd`, chưa SDK), cùng quy tắc nghiệp vụ. Thiết kế:
+[DESIGN-V7.md](DESIGN-V7.md). Test: [TEST-REPORT-20261118-v7.md](TEST-REPORT-20261118-v7.md).
+Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md), [DEPLOY-PYTHON.md](DEPLOY-PYTHON.md),
+[WORKFLOW-PYTHON.md](WORKFLOW-PYTHON.md), [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md).
+
+### Test
+
+- Regression gate trên lab: 4 bộ cũ nguyên văn, chỉ sed đổi lệnh và thêm `--yes`, cộng `blocksync-unit`:
+  - cộng dồn P1–P3: **140/140**;
+  - chạy lại cả 4 bộ trên build P4: e2e 50/0, live 26/0, newip 26/0, extras 30/0.
+- Feature V3–V6 trên CLI mới (`p4feat.sh`): **24/24**. Lượt đầu có 10 FAIL, cả 10 đều oan và đã chẩn đoán
+  trong report.
+- Harness giả lập so với bản bash trên 6 chiều (stdout, stderr, mã thoát, file state, chuỗi lời gọi ra
+  ngoài, world cuối):
+  - P1 44/44 + 4/4 rollback chéo;
+  - P2 65/65;
+  - P3 86/86;
+  - P4 141/141;
+  - P5 **153/153** (141 cũ + 12 mới cho `plan volume`).
+- Unit: P1 23/23, P2–P3 25/25, P4 65/0, P5 48/0 (Linux và Windows).
+
+### Thêm
+
+- App `migrate`:
+  - package `migratetool/` + `pyproject.toml`;
+  - cài bằng `pip install --no-build-isolation .` vào `/opt/mig-venv`;
+  - lệnh `plan`, `migrate`, `volume`, `rollback`.
+- **CLI thống nhất theo selector**:
+  - chọn bằng `--vm`/`--host`/`--project`/`--vm-file`, positional là cách viết gọn của `--vm`;
+  - 1 VM hay N VM đi cùng một đường: bảng `Selected`/`Plan`/`Summary`;
+  - mỗi VM là một tiến trình con, có project riêng và log riêng ở `/var/log/mig-batch/<thời gian>/`;
+  - không còn lệnh `batch`, không còn dấu `--`.
+- **Luôn hỏi `Type yes`** trước khi migrate, kể cả 1 VM, trừ khi có `--yes`. stdin không phải terminal mà
+  thiếu `--yes` thì app dừng.
+- **Volume theo đợt** gộp vào `migrate volume`: `--project p --available|--attached|--all`, `--vm a,b`.
+  Một volume vẫn là `migrate volume <volume> [--in-use]`.
+- **`migrate plan volume <selection>`** (P5): dry-run của volume theo đợt, thay
+  `migrate-batch.sh --volumes … --plan-only`.
+  - Volume available ra `READY`, không có plan riêng, giống batch.
+  - VM của `--attached`/`--vm` chạy preflight `--volumes-only`.
+  - Không hỏi, không đổi gì.
+- `blocksync.py` đóng gói trong package, giống từng byte bản bash, chạy bằng `SYS_PY -I`. `brick_attach.py`
+  thành module `migratetool.brick`.
+- Gõ kiểu cũ thì app dừng kèm hướng dẫn lệnh mới: `batch`, `migrate-volume`, `--`, `--plan-only`, `--volumes`.
+
+### Đổi hành vi (đã duyệt)
+
+- **Thay thế**: 4 file của bản bash chuyển vào [archive/](archive/README.md), giữ nguyên byte. Bản bash
+  dừng ở commit `6b6c48b`. Tài liệu bản bash (GUIDE/DEPLOY/WORKFLOW/DEVELOPING) giữ nguyên; tài liệu app
+  ở các file `*-PYTHON.md` mới.
+- `migrate migrate` luôn hỏi xác nhận (bản bash chạy thẳng). Script và cron phải thêm `--yes`.
+- ⚠ **Một VM cũng tự scope `SRC_PROJECT`/`DST_PROJECT` theo project của VM.**
+  - Bản bash chạy lẻ mà quên đặt env thì VM đích rơi vào project của openrc.
+  - `PROJECT_MAP_FILE` giờ áp cho cả lệnh 1 VM.
+  - Env `SRC_PROJECT`/`DST_PROJECT` bị project của VM đè khi chạy theo selector.
+- State, log và lệnh rollback dùng **đúng chữ đã gõ**: `--vm sg-vm1` thì rollback `sg-vm1`. Riêng
+  `--host`/`--project` vẫn theo ID như batch.
+- Đợt mà mọi hàng đều SKIP thì thoát mã 1; batch thoát 0. `plan` một VM đã có state ra
+  `SKIP(state-exists)`, không export đè lên state cũ.
+- `migrate plan` in preflight ra màn hình. Batch chỉ ghi vào log.
+- Application credential dùng được qua selector khi VM thuộc đúng project của token. Batch bash từ chối thẳng.
+- Conf được đọc chặt: chỉ `KEY=VALUE`. Gặp dòng bash phức tạp thì app dừng kèm số dòng, nên phải soát conf
+  production trước khi chuyển.
+- stderr của tiến trình con gộp vào stdout của `migrate`.
+- Tiến trình con chạy `python -I -m migratetool.single` (P5): thư mục `migratetool/` của repo nằm ở thư mục
+  hiện tại không che được package đã cài.
+- Message lỗi rõ hơn. Các chuỗi mà người, test và script đang bám vào thì giữ nguyên văn
+  ([DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 4). Blocksync in rác thay cho JSON thì app dừng kèm nội
+  dung đó, thay vì lỗi jq khó hiểu như bash.
+
+### Sửa (bug của bản bash)
+
+- Rollback khi có từ 2 clone `mig-clone-*` sót cùng tên: bash truyền chuỗi nhiều dòng thành 1 đối số nên
+  không dọn được. App dọn từng clone.
+- Server property chứa `\` hoặc tab bị `@tsv` của bash làm hỏng khi chép sang VM đích. App chép nguyên văn.
+- `--max-passes`/`--delta-limit` không phải số nguyên: bash lặp pre-sync **vô hạn**. App dừng ngay, ví dụ
+  `ERROR: --max-passes takes a whole number, not 'x'`.
+
+### Tài liệu
+
+- Mới: GUIDE-PYTHON, DEPLOY-PYTHON, WORKFLOW-PYTHON, DEVELOPING-PYTHON, archive/README.
+- Sửa: README (bảng trỏ bản Python hiện hành / bản bash trong archive, lệnh cài mới), `migrate.conf.example`
+  (tên lệnh `migrate`, cách app đọc file, ví dụ file map project).
+
+### Commit
+
+- Code: P1 `e0a41a1`, P2 `1fb2e88`, P3 `f584bd5`, P4 `8a48c45`, P5 `5e67653`.
+- Thiết kế: `1f25651`, `fc77812`, `18b4f75`; P6 port fidelity `5b020e2` (thiết kế, chưa code).
+- Report: `3a28aa8`, `b5f1979`, `9b47e50`, `0d58db0`, cùng commit report P5.
+- Archive: `b6f0e2f`. Docs: commit docs P5.
 
 ## [v6] — 2026-11-18 · nhánh `feature/v6-batch-hint` (fork từ v5) · test xong: 6/6 lab + 8/8 giả lập
 
