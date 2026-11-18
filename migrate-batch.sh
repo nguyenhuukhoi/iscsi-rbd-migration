@@ -68,6 +68,10 @@ while [ $# -gt 0 ]; do
     --yes) YES=1; shift;;
     --continue-on-error) CONTINUE=1; shift;;
     --) shift; PASS=("$@"); break;;
+    # migrate-vm.sh subcommands typed here by habit: point at both ways of doing it.
+    plan)     die "migrate-batch.sh has no 'plan' command — use: migrate-vm.sh plan <vm>, or: migrate-batch.sh --vm <vm> --plan-only";;
+    migrate)  die "migrate-batch.sh has no 'migrate' command — use: migrate-vm.sh migrate <vm>, or: migrate-batch.sh --vm <vm> --yes";;
+    rollback) die "migrate-batch.sh has no 'rollback' command — use: migrate-vm.sh rollback <vm|id> (with the SRC_PROJECT/DST_PROJECT pair; batch prints the exact command for FAIL and SKIP(state-exists) rows)";;
     *) die "unknown option $1 (options for migrate-vm.sh go after --)";;
   esac
 done
