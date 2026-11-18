@@ -106,6 +106,29 @@ Docs P5 (user chốt 18/11): hướng dẫn app Python viết vào **file MỚI 
 README trỏ cả hai, ghi rõ bản nào cho bản tool nào. DEPLOY/WORKFLOW/DEVELOPING xử tương tự
 khi tới P5 sẽ hỏi user (mặc định đề xuất: cũng file -PYTHON mới, bản cũ giữ).
 
+| P6 (feature mới, SAU parity — user chốt 18/11) | Port fidelity: port đích sao chép thuộc tính port nguồn | test plan riêng bên dưới |
+
+### P6 — Port fidelity (chỉ app Python; bash không làm)
+
+Hiện trạng: tool từ chối port có allowed-address-pairs từ v1, và không chép port_security_enabled
+→ VM kiểu VIP/keepalived qua đích bị sai hành vi mạng. User chốt 18/11:
+
+- Chép sang port đích: **`port_security_enabled`** (nguồn tắt → đích tạo `--disable-port-security`,
+  KHÔNG gắn SG — Neutron cấm; nếu user đồng thời truyền `--security-group` → die nêu xung đột),
+  **`allowed_address_pairs`** (nguyên từng cặp ip/mac), **`description`**, **`dns_name`**
+  (đích không bật DNS extension thì WARN bỏ qua, không die).
+- Preflight: BỎ refusal allowed-address-pairs (với `--ip same|<addr>`). Với **`--ip new`: BỎ
+  pairs + WARN** (user chốt — pairs trỏ dải IP cũ, ai cần tự add).
+- Port giữ chỗ phía nguồn (tạo lại khi Nova xóa port của nó giữa cutover) cũng phải mang đủ
+  pairs/port-security/description như port gốc — không chỉ MAC/IP/SG như hiện tại.
+- Multiple fixed-IP per port: VẪN từ chối (ngoài phạm vi).
+- Policy cần verify trên lab bằng member thật (như V3): `allowed_address_pairs` và
+  `port_security_enabled` thường là admin_or_network_owner.
+- Test plan: VM có pairs (mô phỏng VIP) --ip same end-to-end + rollback; VM port-security-off
+  (không SG) end-to-end; nhánh reserve-port (Nova-owned) giữ pairs/PS; `--ip new` bỏ pairs +
+  WARN; xung đột PS-off + --security-group die; dns_name trên đích không có extension → WARN;
+  member creds probe policy; regression: VM thường không pairs/PS nguyên trạng như parity.
+
 Mỗi phase: Opus code → Fable review diff → test lab → phase sau. Phase chưa xong thì bản bash
 trên host convert KHÔNG bị gỡ (hai bản song song trên host lab; production chỉ đổi khi user quyết).
 
