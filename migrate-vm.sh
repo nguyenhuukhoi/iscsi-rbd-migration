@@ -17,11 +17,12 @@
 #                           --verify none).
 #                           live: hash-cached pre-sync passes while the VM runs; the cutover only
 #                           syncs the final delta, so downtime tracks the write rate, not the size.
-#   --volume-type <type>    Cinder volume type for every destination volume (default: cloud default).
+#   --volume-type <type>    Cinder volume type for every destination volume (default: cloud default,
+#                           or the AZ's entry in AZ_TYPE_MAP="AZ1:typeA,AZ2:typeB" when that is set).
 #                           RBD_POOL_MAP="typeA:poolA,typeB:poolB" maps types to RBD pools.
 #   --az <zone>             destination availability zone for BOTH the volumes and the server
 #                           (for clouds with per-AZ backends / cross_az_attach=false).
-#                           Default: let the destination schedulers pick.
+#                           Default: MIG_AZ when set, else let the destination schedulers pick.
 #   --flavor <name>         flavor for the destination VM (default: same name as the source).
 #   --security-group <sgs>  comma-separated security groups for every destination port
 #                           (default: the same group names the source ports carry).
@@ -55,9 +56,10 @@
 # Source volumes are never modified or deleted; rollback restores everything.
 # Destination volumes are named <vm>-<device> (app01-vda, app01-vdb), ports <vm>-<ip>.
 # Environment overrides: SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP COPY_STREAMS
-# MIG_MULTIPATH; the same keys may be set in $MIG_CONF (default /opt/mig/migrate.conf), and the
-# environment wins over that file. SRC_PROJECT / DST_PROJECT run each side in that project of the
-# openrc's account (password openrc only: an application credential is bound to one project).
+# MIG_MULTIPATH MIG_AZ AZ_TYPE_MAP; the same keys may be set in $MIG_CONF (default
+# /opt/mig/migrate.conf), and the environment wins over that file. SRC_PROJECT / DST_PROJECT run each
+# side in that project of the openrc's account (password openrc only: an application credential is
+# bound to one project).
 set -euo pipefail
 
 # Precedence: CLI option > environment > $MIG_CONF > defaults below. Variables already set in the
@@ -66,7 +68,7 @@ MIG_CONF=${MIG_CONF:-/opt/mig/migrate.conf}
 if [ -r "$MIG_CONF" ]; then
   declare -A _env_saved=()
   for _v in SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH \
-            COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT; do
+            COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT MIG_AZ AZ_TYPE_MAP; do
     [ -z "${!_v+x}" ] || _env_saved[$_v]=${!_v}
   done
   source "$MIG_CONF"
@@ -80,6 +82,8 @@ SRC_RC=${SRC_RC:-/opt/mig/src/admin-openrc.sh}
 DST_RC=${DST_RC:-/opt/mig/dst/admin-openrc.sh}
 RBD_POOL=${RBD_POOL:-mig-volumes}
 RBD_POOL_MAP=${RBD_POOL_MAP:-}
+MIG_AZ=${MIG_AZ:-}
+AZ_TYPE_MAP=${AZ_TYPE_MAP:-}
 RBD_USER=${RBD_USER:-mig-xfer}
 COPY_STREAMS=${COPY_STREAMS:-8}
 export MIG_ISCSI_IP=${MIG_ISCSI_IP:-10.77.0.20}
@@ -158,14 +162,14 @@ src_sg_id() {  # name-or-id ; prints the group's ID in the source project, nothi
 # --- options -------------------------------------------------------------------
 MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
 OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0
-KEEP_SG=0 IN_USE=0
+KEEP_SG=0 IN_USE=0 AZ_CLI=0 TYPE_CLI=0
 
 parse_options() {
   while [ $# -gt 0 ]; do
     case $1 in
       --mode)        MODE=$2; shift 2;;
-      --volume-type) VOLUME_TYPE=$2; shift 2;;
-      --az)          DEST_AZ=$2; shift 2;;
+      --volume-type) VOLUME_TYPE=$2; TYPE_CLI=1; shift 2;;
+      --az)          DEST_AZ=$2; AZ_CLI=1; shift 2;;
       --ip)          if [ "$2" = same ] || [ "$2" = new ]; then IPMODE=$2
                      elif [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then IPMODE=addr; IPADDR=$2
                      else die "--ip takes same, new or an IPv4 address"; fi; shift 2;;
@@ -202,6 +206,26 @@ pool_for_type() {  # prints the RBD pool backing $VOLUME_TYPE
   echo "$RBD_POOL"
 }
 POOL=$RBD_POOL
+
+# MIG_AZ and AZ_TYPE_MAP (conf or environment) fill in only what the command line left out.
+# Chain: AZ -> volume type (AZ_TYPE_MAP) -> pool (RBD_POOL_MAP, pool_for_type). Run before pool_for_type.
+AZ_FROM="" TYPE_FROM=""
+apply_az_defaults() {
+  local e
+  if [ "$AZ_CLI" = 0 ] && [ -n "$MIG_AZ" ]; then DEST_AZ=$MIG_AZ AZ_FROM=MIG_AZ; fi
+  [ "$TYPE_CLI" = 0 ] && [ -n "$DEST_AZ" ] && [ -n "$AZ_TYPE_MAP" ] || return 0
+  IFS=, read -ra _aztypes <<<"$AZ_TYPE_MAP"
+  for e in "${_aztypes[@]}"; do
+    if [[ $e == *:* ]] && [ "${e%%:*}" = "$DEST_AZ" ] && [ -n "${e#*:}" ]; then
+      VOLUME_TYPE=${e#*:} TYPE_FROM="AZ_TYPE_MAP ($DEST_AZ)"
+      return 0
+    fi
+  done
+}
+conf_origin_info() {  # preflight lines naming the values taken from MIG_AZ / AZ_TYPE_MAP
+  [ -z "$AZ_FROM" ] || echo "  INFO  availability zone $DEST_AZ from $AZ_FROM"
+  [ -z "$TYPE_FROM" ] || echo "  INFO  volume type $VOLUME_TYPE from $TYPE_FROM"
+}
 
 wait_volume() {  # src|dst volume-id wanted-status [timeout-seconds]
   local cloud=$1 id=$2 want=$3 limit=${4:-3600} start=$SECONDS s
@@ -405,6 +429,7 @@ preflight() {
   local ksg=""
   [ "$KEEP_SG" = 0 ] || ksg=" keep-server-group"
   echo "Destination preflight (mode=$MODE$vo ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}${SERVER_GROUP:+ server-group=$SERVER_GROUP}$ksg):"
+  conf_origin_info
   if [ -n "$DEST_AZ" ]; then
     [ "$VOLUMES_ONLY" = 1 ] || check "compute AZ $DEST_AZ" "dst availability zone list --compute -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
     check "volume AZ $DEST_AZ"  "dst availability zone list --volume  -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
@@ -1090,6 +1115,7 @@ volume_preflight() {  # dir ; destination checks for the volume in $dir/volume.j
   check() { if eval "$2" >/dev/null 2>&1; then echo "  OK    $1"; else echo "  FAIL  $1"; fail=1; fi; }
   vid=$(jq -r .id "$dir/volume.json")
   echo "Destination preflight (migrate-volume type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}):"
+  conf_origin_info
   if [ "$IN_USE" = 1 ]; then
     if [ "$(jq -r .status "$dir/volume.json")" = available ]; then
       echo "  INFO  --in-use ignored: $vid is available, copied as usual"
@@ -1213,13 +1239,13 @@ cmd_rollback_volume() {  # volume name, ID or vol-<id> ; deletes the copy, never
   log "rollback done; source volume $vid was never modified"
 }
 
-[ $# -ge 2 ] || { sed -n '2,50p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '2,51p' "$0"; exit 2; }
 CMD=$1 VM=$2; shift 2
 case $CMD in
   plan|migrate) parse_options "$@"
                 [ "$IN_USE" = 0 ] || die "--in-use belongs to migrate-volume: plan and migrate move a VM with its volumes (--mode live keeps it running until the cutover)"
-                POOL=$(pool_for_type); check_project_scope;;
-  migrate-volume) volume_options_only "$@"; parse_options "$@"; POOL=$(pool_for_type); check_project_scope;;
+                apply_az_defaults; POOL=$(pool_for_type); check_project_scope;;
+  migrate-volume) volume_options_only "$@"; parse_options "$@"; apply_az_defaults; POOL=$(pool_for_type); check_project_scope;;
   rollback) [ $# -eq 0 ] || die "rollback takes no options"; check_project_scope;;
   *) die "unknown command $CMD";;
 esac
