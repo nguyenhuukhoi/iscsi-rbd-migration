@@ -1,22 +1,27 @@
 """The 'migrate' command.
 
-argparse describes the commands and produces --help. The options of plan/migrate are parsed by
-options.Options, a line-by-line port of the bash parser: MIG_DEFAULT_OPTS first, then the command
-line, with the same origin tracking, conflicts and messages (argparse cannot merge two sources).
+argparse describes the commands and produces --help. The command line itself is split by
+selector.split_args (selectors and run control vs. the options of each VM) and the per-VM options
+are parsed by options.Options, a line-by-line port of the bash parser: MIG_DEFAULT_OPTS first, then
+the command line, with the same origin tracking, conflicts and messages.
+
+plan/migrate/volume over a selection run every VM (or volume) as a child process
+(migratetool.single), each with its own project scope and log file, like migrate-batch.sh did.
 """
 import argparse
 import os
 import sys
 
-from . import __version__, config
+from . import __version__, config, selector
 from .context import Run
 from .livesync import check_numbers
 from .options import Options
 from .preflight import load_flavor_map
 from .rollback import rollback_vm
 from .state import StateDir
-from .util import Die, Exit
-from .vmcmd import NOT_PORTED, cmd_migrate, cmd_plan
+from .util import Die, Exit, prog
+from .vmcmd import cmd_migrate, cmd_plan
+from .volcmd import cmd_migrate_volume, cmd_rollback_volume, volume_options_only
 
 VM_OPTIONS = (
     ("--mode", "cold|live", "cold (default): stop the VM, qemu-img copy + full compare (unless --verify none). "
@@ -46,32 +51,75 @@ VM_OPTIONS = (
     ("--verify", "readback|full|none", "cold: full qemu-img compare unless none. live: readback (default) re-reads "
                                        "every written chunk, full adds a cutover compare, none trusts the writes."),
 )
-EPILOG = """Configuration: /opt/mig/migrate.conf (or $MIG_CONF), bash KEY=VALUE, template migrate.conf.example.
+SELECTOR_HELP = (
+    ("--vm", "VMS", "VM names or IDs, comma-separated (<vm> alone is the same as --vm <vm>)."),
+    ("--host", "HOSTS", "source compute hosts (Host column of 'openstack compute service list')."),
+    ("--project", "PROJECTS", "source projects, name or ID."),
+    ("--vm-file", "FILE", "one VM name or ID per line (# comments and blank lines skipped). Selectors intersect."),
+)
+EPILOG = """Every VM runs as its own child process in its own project: SRC_PROJECT/DST_PROJECT = the VM's
+project (renamed by PROJECT_MAP_FILE "source destination" lines). Lists with --all-projects (admin).
+Logs: /var/log/mig-batch/<time>/ (plan-<id>.log, migrate-<id>.log). State: /var/lib/mig-migrate/<vm>/.
+Configuration: /opt/mig/migrate.conf (or $MIG_CONF), bash KEY=VALUE, template migrate.conf.example.
 Precedence: option > environment > migrate.conf > default. MIG_DEFAULT_OPTS="--opt ..." is applied
-before the command-line options, so the command line wins. State: /var/lib/mig-migrate/<vm>/."""
+before the command-line options, so the command line wins."""
 
 
 def build_parser():
+    fmt = argparse.RawDescriptionHelpFormatter
     p = argparse.ArgumentParser(
-        prog="migrate", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG,
+        prog="migrate", formatter_class=fmt, epilog=EPILOG,
         description="Migrate VMs between two independent OpenStack clouds: iSCSI Cinder -> Ceph RBD.")
     p.add_argument("--version", action="version", version="migrate " + __version__)
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
-    for name, text in (("plan", "read-only: export the source definition, run the destination preflight"),
-                       ("migrate", "migrate one VM (cold stops it first, live only at the cutover)")):
-        sp = sub.add_parser(name, help=text, description=text, epilog=EPILOG,
-                            formatter_class=argparse.RawDescriptionHelpFormatter)
-        sp.add_argument("vm", help="VM name or ID")
+    for name, text in (("plan", "read-only dry-run: list the selection, export each VM, run the destination "
+                                "preflight; exit 1 when a plan fails"),
+                       ("migrate", "plan the selection, ask 'Type yes' (unless --yes), then migrate one VM at a time "
+                                   "(cold stops it first, live only at the cutover)")):
+        sp = sub.add_parser(name, help=text, description=text, epilog=EPILOG, formatter_class=fmt)
+        sp.add_argument("vm", nargs="?", help="VM name or ID (same as --vm <vm>)")
+        g = sp.add_argument_group("selection")
+        for opt, metavar, h in SELECTOR_HELP:
+            g.add_argument(opt, metavar=metavar, help=h)
+        if name == "migrate":
+            g.add_argument("--yes", action="store_true",
+                           help="no confirmation prompt (required when stdin is not a terminal).")
+            g.add_argument("--continue-on-error", action="store_true",
+                           help="go on after a failure (default: stop at the first one, the rest SKIP(not-run)).")
+        g = sp.add_argument_group("options of each VM")
         for opt, metavar, h in VM_OPTIONS:
             if metavar:
-                sp.add_argument(opt, metavar=metavar, help=h)
+                g.add_argument(opt, metavar=metavar, help=h)
             else:
-                sp.add_argument(opt, action="store_true", help=h)
-    rb = sub.add_parser("rollback", help="delete the destination objects, restore and start the source VM",
-                        description="delete the destination objects, restore and start the source VM")
-    rb.add_argument("vm", help="the name or ID the migrate ran with")
-    sub.add_parser("volume", help="copy one volume (" + NOT_PORTED + ")")
-    sub.add_parser("batch", help="many VMs (" + NOT_PORTED + ")")
+                g.add_argument(opt, action="store_true", help=h)
+    text = "copy volumes without creating a server: one volume, or the volumes of a selection"
+    vp = sub.add_parser("volume", help=text, description=text, formatter_class=fmt, epilog="""
+  %(prog)s <volume> [--in-use]   one volume (name or ID) of the source project, no prompt
+  %(prog)s --project P --available    every available volume of P (keeps its name)
+  %(prog)s --project P --attached     the volumes of P's VMs (= migrate --volumes-only)
+  %(prog)s --project P --all          both: attached first, then available
+  %(prog)s --vm a,b                   the volumes of those VMs
+A selection asks 'Type yes' unless --yes. State: /var/lib/mig-migrate/vol-<id>/.""")
+    vp.add_argument("volume", nargs="?", help="volume name or ID (alone: no selector options)")
+    g = vp.add_argument_group("selection")
+    for opt, metavar, h in SELECTOR_HELP:
+        g.add_argument(opt, metavar=metavar, help=h)
+    g.add_argument("--available", action="store_true", help="with --project: its available volumes.")
+    g.add_argument("--attached", action="store_true", help="the volumes of the selected VMs (default with --vm).")
+    g.add_argument("--all", action="store_true", help="with --project: attached first, then available.")
+    g.add_argument("--yes", action="store_true", help="no confirmation prompt (required when stdin is not a terminal).")
+    g.add_argument("--continue-on-error", action="store_true", help="go on after a failure.")
+    g = vp.add_argument_group("options")
+    g.add_argument("--in-use", action="store_true",
+                   help="one volume only: copy an attached volume from a clone taken while attached (crash-consistent).")
+    for opt, metavar, h in VM_OPTIONS:
+        if opt in ("--volume-type", "--az", "--verify"):
+            g.add_argument(opt, metavar=metavar, help=h)
+    rb = sub.add_parser("rollback", help="delete the destination objects, restore and start the source VM; or delete "
+                                         "a volume copy",
+                        description="delete the destination objects, restore and start the source VM; or delete a "
+                                    "volume copy (the source volume is never modified)")
+    rb.add_argument("target", help="the VM name or ID the migrate ran with, or a volume name, ID or vol-<id>")
     return p
 
 
@@ -83,40 +131,64 @@ def _help(argv):
     return 0
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else list(argv)
+def guarded(fn):
+    """bash die / exit / Ctrl-C as exit codes."""
     try:
-        if not argv:
-            build_parser().print_help()
-            return 2
-        if argv[0] in ("-h", "--help", "--version"):
-            return _help(argv)
-        cmd, rest = argv[0], argv[1:]
-        if cmd in ("plan", "migrate"):
-            if not rest or rest[0].startswith("-") and rest[0] in ("-h", "--help"):
-                code = _help([cmd, "--help"])
-                return 2 if not rest else code
-            if "-h" in rest[1:] or "--help" in rest[1:]:
-                return _help([cmd, "--help"])
-            return run_vm(cmd, rest[0], rest[1:])
-        if cmd == "rollback":
-            if not rest or rest[0] in ("-h", "--help"):
-                code = _help([cmd, "--help"])
-                return 2 if not rest else code
-            if len(rest) > 1:
-                raise Die("rollback takes no options")
-            return run_rollback(rest[0])
-        if cmd in ("volume", "migrate-volume", "batch"):
-            raise Die("'%s': %s" % (cmd, NOT_PORTED))
-        raise Die("unknown command " + cmd)
+        return fn()
     except Die as e:
         print("ERROR: %s" % e, file=sys.stderr, flush=True)
         return 1
     except Exit as e:
         return e.code
+    except KeyboardInterrupt:
+        return 130
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    return guarded(lambda: _main(argv))
+
+
+def _main(argv):
+    if not argv:
+        build_parser().print_help()
+        return 2
+    if argv[0] in ("-h", "--help", "--version"):
+        return _help(argv)
+    cmd, rest = argv[0], argv[1:]
+    if cmd in ("plan", "migrate", "volume", "rollback"):
+        if not rest:
+            _help([cmd, "--help"])
+            return 2
+        if "-h" in rest or "--help" in rest:
+            return _help([cmd, "--help"])
+    if cmd in ("plan", "migrate"):
+        return selector.run(cmd, rest)
+    if cmd == "volume":
+        s = selector.split_args("volume", rest)
+        if s.positional and not s.selected_by_option():
+            if len(s.positional) > 1:
+                raise Die("one volume only (got: %s): several go by --project or --vm" % " ".join(s.positional))
+            return run_volume(s.positional[0], s.passed)
+        if s.positional:
+            raise Die("a volume goes alone: %s volume <volume> [--in-use] [--volume-type t] [--az z] [--verify v]; "
+                      "a selection takes --project or --vm/--vm-file, not a volume" % prog())
+        return selector.run("volume", rest)
+    if cmd == "rollback":
+        if len(rest) > 1:
+            raise Die("rollback takes no options")
+        return run_rollback(rest[0])
+    # Commands of the bash build typed by habit: point at their replacement.
+    if cmd == "batch":
+        raise Die("there is no 'batch' command: plan and migrate take the selection themselves: %s migrate --vm a,b | "
+                  "--host h | --project p | --vm-file f" % prog())
+    if cmd == "migrate-volume":
+        raise Die("'migrate-volume' is now: %s volume <volume> [--in-use]" % prog())
+    raise Die("unknown command " + cmd)
 
 
 def run_vm(cmd, vm, args):
+    """One VM (the child of a selector run): bash migrate-vm.sh plan|migrate <vm> [options]."""
     cfg = config.load()
     o = Options()
     o.load_default_opts(cmd, cfg.MIG_DEFAULT_OPTS)
@@ -140,13 +212,28 @@ def run_vm(cmd, vm, args):
     return 0
 
 
+def run_volume(target, args):
+    """One volume: bash migrate-vm.sh migrate-volume <volume> [options]."""
+    volume_options_only(args)  # the typed options only; load_default_opts filters the defaults
+    cfg = config.load()
+    o = Options()
+    o.load_default_opts("migrate-volume", cfg.MIG_DEFAULT_OPTS)
+    o.parse_options(args)
+    r = Run(cfg, o)
+    o.apply_az_defaults(cfg.MIG_AZ, cfg.AZ_TYPE_MAP)
+    r.pool = o.pool_for_type(cfg.RBD_POOL, cfg.RBD_POOL_MAP)
+    r.check_project_scope()
+    cmd_migrate_volume(r, target)
+    return 0
+
+
 def run_rollback(target):
     cfg = config.load()
     r = Run(cfg, Options())
     r.check_project_scope()
-    st = StateDir(target)
     # A VM state under that name wins, exactly as before; anything else is taken as a volume.
-    if os.path.exists(st.p("server.json")):
-        rollback_vm(r, st)
-        return 0
-    raise Die("rollback of a migrate-volume copy (%s): %s" % (target, NOT_PORTED))
+    if os.path.exists(os.path.join(StateDir(target).path, "server.json")):
+        rollback_vm(r, StateDir(target))
+    else:
+        cmd_rollback_volume(r, target)
+    return 0

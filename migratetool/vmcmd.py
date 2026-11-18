@@ -9,8 +9,6 @@ from .server import create_destination, detach_source_ports
 from .util import Die, Exit, jqs, log, out, prog
 from .vmdef import detect_boot, dest_volume_name, export_definition
 
-NOT_PORTED = "not ported yet: use the bash build on branch feature/v6-batch-hint (migrate-vm.sh)"
-
 
 def cmd_plan(r, st):
     export_definition(r, st.arg, st)

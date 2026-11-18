@@ -14,6 +14,7 @@ from .util import Die
 DEFAULT_CONF = "/opt/mig/migrate.conf"
 STATE_ROOT = "/var/lib/mig-migrate"
 ATTACH_DIR = "/var/lib/mig-attach"  # brick.py's records
+LOG_ROOT = "/var/log/mig-batch"     # one directory per selector run, as migrate-batch.sh wrote
 
 # The variables the bash conf loader saves from the environment before sourcing the file.
 CONF_VARS = (

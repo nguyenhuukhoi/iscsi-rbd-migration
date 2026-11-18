@@ -4,14 +4,14 @@ import json
 import os
 import time
 
-from .config import STATE_ROOT
+from . import config
 
 
 class StateDir:
-    def __init__(self, arg, root=STATE_ROOT):
+    def __init__(self, arg, root=None):
         self.arg = arg
-        self.root = root
-        self.path = os.path.join(root, arg)
+        self.root = root or config.STATE_ROOT
+        self.path = os.path.join(self.root, arg)
 
     def p(self, name):
         return os.path.join(self.path, name)

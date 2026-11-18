@@ -9,8 +9,7 @@ import sys
 import threading
 import time
 
-from . import proc
-from .config import STATE_ROOT
+from . import config, proc
 from .util import CommandFailed, Die, jq_alt, jqs, log
 from .vmdef import dest_volume_name
 
@@ -142,7 +141,7 @@ def attach_clone(r, vid):
     r.wait_volume(r.src, r.clone, "available")
     # stderr goes to a file, not /dev/null: brick's own guard messages (multipath, size/LUN
     # mismatch) are the whole point of having it.
-    err = os.path.join(STATE_ROOT, "brick-attach.err")
+    err = os.path.join(config.STATE_ROOT, "brick-attach.err")
     res = brick(r, "attach", r.clone, err)
     r.device = res.stdout.rstrip("\n")
     if res.rc == 0:

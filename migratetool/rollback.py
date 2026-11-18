@@ -5,8 +5,7 @@ import os
 import re
 import time
 
-from . import proc
-from .config import ATTACH_DIR, STATE_ROOT
+from . import config, proc
 from .copyvol import brick
 from .util import Die, lines, log, words
 
@@ -15,7 +14,7 @@ GONE_RE = re.compile(r"no volume with a name or id|not found|could not be found"
 
 def drop_volume(r, cloud, vid, label):
     """Deletes it once settled; gone is fine, in-use is refused."""
-    err = os.path.join(STATE_ROOT, "volume-show.err")
+    err = os.path.join(config.STATE_ROOT, "volume-show.err")
     res = cloud.run("volume", "show", vid, "-f", "value", "-c", "status", stderr=err)
     if res.rc != 0:
         with open(err, errors="replace") as f:
@@ -84,7 +83,7 @@ def rollback_vm(r, st):
     for a in st.json("attachments.json"):
         vid = a.get("Volume ID")
         for cid in lines(r.src.out("volume", "list", "--name", "mig-clone-%s" % vid, "-f", "value", "-c", "ID")):
-            if os.path.exists(os.path.join(ATTACH_DIR, cid + ".json")):
+            if os.path.exists(os.path.join(config.ATTACH_DIR, cid + ".json")):
                 brick(r, "detach", cid, proc.DEVNULL)  # || true
             r.wait_volume(r.src, cid, "available", 300)
             r.src.out("volume", "delete", cid)
