@@ -9,7 +9,10 @@ lệnh `migrate-volume`, chạy lô bằng `migrate-batch.sh`) thiết kế ở 
 ngày 2026-11-17/18: [TEST-REPORT-20261117.md](TEST-REPORT-20261117.md); hướng dẫn ở mục 2b.
 Bản v4 (`migrate-volume --in-use`, `--keep-server-group`, `MIG_AZ`/`AZ_TYPE_MAP`, `MIG_DEFAULT_OPTS`)
 thiết kế ở [DESIGN-V4.md](DESIGN-V4.md), test ngày 2026-11-18: [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md);
-hướng dẫn ở mục 2b.1, 2b.1b, 2b.9–2b.11. Lịch sử các bản: [CHANGELOG.md](CHANGELOG.md).
+hướng dẫn ở mục 2b.1, 2b.1b, 2b.9–2b.11. Bản v5 (`--flavor-fallback` + `FLAVOR_MAP_FILE`: đích thiếu
+flavor cùng tên thì tra file map) thiết kế ở [DESIGN-V5.md](DESIGN-V5.md), test ngày 2026-11-18:
+[TEST-REPORT-20261118-v5.md](TEST-REPORT-20261118-v5.md); hướng dẫn ở mục 2b.12. Lịch sử các bản:
+[CHANGELOG.md](CHANGELOG.md).
 Triển khai lên host convert production (từ git, step-by-step): [DEPLOY.md](DEPLOY.md).
 
 ## 1. Cách làm
@@ -93,6 +96,7 @@ Options (mặc định = hành vi v1: cold, giữ IP/MAC, volume type mặc đ�
 | `--volume-type <type>` | Volume type ở đích cho mọi volume. Type nằm pool khác thì khai `RBD_POOL_MAP`. (v4) Không truyền thì lấy theo AZ từ `AZ_TYPE_MAP` nếu có (mục 2b.1b) |
 | `--ip same\|new\|<addr>` | `same`: giữ IP + MAC, tháo port nguồn lúc cutover. `new`: đích tự cấp IP + MAC mới, **không đụng port nguồn**. `<addr>`: IP chỉ định, MAC mới (VM 1 NIC) |
 | `--flavor <tên>` | Flavor cho VM đích (mặc định: cùng tên với nguồn, phải tồn tại ở đích) |
+| `--flavor-fallback` | (v5) Đích **không có** flavor cùng tên với nguồn thì dùng flavor mà `FLAVOR_MAP_FILE` map tới. Có cùng tên thì vẫn dùng như cũ; `--flavor` gõ tay luôn thắng; tool không bao giờ tạo flavor (mục 2b.12) |
 | `--security-group <sg1,sg2>` | Security group cho **mọi** port đích, thay bộ SG của nguồn |
 | `--start-source` | Bật lại VM nguồn sau khi chuyển xong (chỉ với `--ip new\|<addr>`; 2 VM chạy song song, trùng hostname + SSH host key, dữ liệu rẽ nhánh từ cutover) |
 | `--keep-source-ports` | Với `--ip same`: KHÔNG tháo port nguồn. **Rủi ro**: chỉ còn SHUTOFF+lock giữ VM nguồn khỏi mạng — ai bật lại (admin bypass được lock) là 2 máy cùng MAC+IP trên VLAN (split-brain). Đổi lại: tool không đụng port ở nguồn → phía nguồn chạy được bằng creds member thuần; rollback không cần cắm lại port. Nghiệm thu xong nên xóa VM nguồn sớm |
@@ -176,6 +180,7 @@ Biến môi trường để trỏ sang hệ thống khác:
 | `MIG_AZ` | (trống) | (v4) AZ mặc định khi không truyền `--az`; truyền `--az` thì CLI thắng (mục 2b.1b) |
 | `AZ_TYPE_MAP` | (trống) | (v4) `AZ1:typeA,AZ2:typeB` — volume type theo AZ khi không truyền `--volume-type`; `--volume-type` tay luôn thắng (mục 2b.1b) |
 | `MIG_DEFAULT_OPTS` | (trống) | (v4) Option mặc định, vd `"--keep-server-group --verify none"`, parse trước option CLI nên CLI thắng; `MIG_DEFAULT_OPTS=""` tắt cho một lần chạy. Quy tắc đủ: [migrate.conf.example](migrate.conf.example) |
+| `FLAVOR_MAP_FILE` | (trống) | (v5) File map `flavor-nguồn flavor-đích`, chỉ dùng khi có `--flavor-fallback`. Không có đường dẫn mặc định; bật flag mà biến này rỗng thì tool dừng (mục 2b.12) |
 | `CEPH_CONF` | `/etc/ceph/ceph.conf` | Cấu hình Ceph |
 | `MIG_ISCSI_IP` | `10.77.0.20` | IP host chuyển trên mạng iSCSI |
 | `MIG_MULTIPATH` | `0` | `1`: attach qua multipath (SAN nhiều portal kiểu PowerStore) — cần `multipathd` chạy; brick từ chối device không phải dm và so kích thước device với volume (chặn LUN lạ khác cỡ) |
@@ -194,14 +199,15 @@ Live mode cần thêm `blocksync.py` trong `/usr/local/bin` và `python3-rbd` tr
 
 Khi chạy thật ổn định và không cần rollback nữa, tự xóa bằng tay ở nguồn: server, volume, port. Công cụ cố ý không có lệnh này.
 
-## 2b. Bản v3 + v4: file cấu hình, project, đặt tên, chạy lô, copy nóng, server group
+## 2b. Bản v3 → v5: file cấu hình, project, đặt tên, chạy lô, copy nóng, server group, flavor map
 
 Mọi option và cách chạy ở mục 2 giữ nguyên hành vi. Không có `migrate.conf`, không đặt
 `SRC_PROJECT`/`DST_PROJECT` thì tool chạy y như v2. Có 2 thay đổi hành vi: tên volume/port ở đích
 (mục 2b.3), và keypair thiếu ở đích không còn làm preflight FAIL (mục 2).
 
 v4 chỉ **thêm**, mọi thứ đều opt-in. Không truyền flag mới, không đặt biến mới thì build v4 chạy y như
-v3: regression gate 140/0 hai vòng, xem [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md).
+v3: regression gate 140/0 hai vòng, xem [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md). v5 cũng
+vậy: không có `--flavor-fallback` thì chạy y như v4, kể cả khi `FLAVOR_MAP_FILE` có khai.
 
 ### 2b.1. File cấu hình `/opt/mig/migrate.conf`
 
@@ -214,7 +220,8 @@ muốn đè conf cho một lần chạy thì chỉ cần đặt env trước l�
 
 Biến đọc từ file (ý nghĩa xem bảng biến môi trường ở mục 2): `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP
 RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`,
-từ v4 thêm `MIG_AZ AZ_TYPE_MAP` (mục 2b.1b) và `MIG_DEFAULT_OPTS`. Mẫu đủ mọi biến, mỗi biến có mô tả:
+từ v4 thêm `MIG_AZ AZ_TYPE_MAP` (mục 2b.1b) và `MIG_DEFAULT_OPTS`, từ v5 thêm `FLAVOR_MAP_FILE`
+(mục 2b.12). Mẫu đủ mọi biến, mỗi biến có mô tả:
 [migrate.conf.example](migrate.conf.example) (`install -m 600 migrate.conf.example /opt/mig/migrate.conf`).
 `migrate-batch.sh` cũng đọc file này, nhưng chỉ lấy `SRC_RC`, `DST_RC`, `PROJECT_MAP_FILE`. Các biến còn
 lại do từng lần gọi `migrate-vm.sh` tự đọc.
@@ -234,6 +241,7 @@ MIG_ISCSI_IP=192.0.2.20
 MIG_MULTIPATH=0
 COPY_STREAMS=8
 PROJECT_MAP_FILE=/opt/mig/project-map.conf
+FLAVOR_MAP_FILE=/opt/mig/flavor-map.conf  # v5: chỉ dùng khi có --flavor-fallback (mục 2b.12)
 # SRC_PROJECT / DST_PROJECT: thường không ghi ở đây, đặt theo từng lần chạy (batch tự đặt cho từng VM)
 ```
 
@@ -493,6 +501,20 @@ migrate-batch.sh [--host h1[,h2...]] [--project p1[,p2...]] [--vm v1[,v2...]] [-
 ```
 
 Chạy không có tham số thì script in phần usage này.
+
+**Quen tay `migrate-vm.sh` thì đổi sang batch thế nào.** Batch **không có lệnh con** `plan`/`migrate`/
+`rollback`, chỉ có option. Gõ `migrate-batch.sh plan app-vm01` sẽ ra
+`ERROR: unknown option plan (options for migrate-vm.sh go after --)` (đã gặp thật trên production
+18/11).
+
+| `migrate-vm.sh` | `migrate-batch.sh` tương đương | Ghi chú |
+|---|---|---|
+| `migrate-vm.sh plan <vm> [opts]` | `migrate-batch.sh --vm <vm> --plan-only [-- opts]` | Batch tự đặt `SRC_PROJECT`/`DST_PROJECT` theo project của VM. Chạy lẻ với VM thuộc project khác project của openrc thì phải tự đặt: `SRC_PROJECT=proj-a DST_PROJECT=proj-a migrate-vm.sh plan <vm>` |
+| `migrate-vm.sh migrate <vm> [opts]` | `migrate-batch.sh --vm <vm> --yes [-- opts]` | Option của `migrate-vm.sh` đặt **sau `--`**. Bỏ `--yes` thì batch hỏi `Type yes to continue` (cần terminal) |
+| `migrate-vm.sh rollback <vm>` | (không có) | Rollback luôn bằng `migrate-vm.sh`, theo **ID**, đúng cặp project. Batch in sẵn lệnh này cho dòng `FAIL` và `SKIP(state-exists)`. Dòng `OK` thì lấy ID và cột `PROJECT src -> dst` trong bảng `Summary:`: `SRC_PROJECT=… DST_PROJECT=… migrate-vm.sh rollback <id>` |
+
+Batch cần password openrc cho cả 2 cloud, vì mỗi VM chạy trong project riêng; application credential
+bị từ chối. `migrate-vm.sh` chạy lẻ không đặt `SRC_PROJECT`/`DST_PROJECT` thì dùng appcred được.
 
 **Chọn VM (selector):**
 
@@ -812,6 +834,96 @@ migrate-batch.sh --project proj-a --volumes available --yes -- --keep-server-gro
 # 6. AZ + volume type từ conf (MIG_AZ, AZ_TYPE_MAP, RBD_POOL_MAP; mục 2b.1b): không truyền gì
 migrate-vm.sh migrate app-vm01   # INFO  availability zone AZ1 from MIG_AZ
                                  # INFO  volume type nvme-az1 from AZ_TYPE_MAP (AZ1)
+```
+
+### 2b.12. (v5) Flavor dự phòng qua file map: `--flavor-fallback`
+
+Hai cloud khác bộ flavor thì preflight FAIL ở mọi VM có flavor không tồn tại ở đích. Trước v5 chỉ có
+cách gõ `--flavor` tay từng con. Từ v5, khai một file map dùng chung, rồi bật `--flavor-fallback`.
+
+**Thứ tự chọn flavor cho VM đích khi có `--flavor-fallback`:**
+
+| # | Tình huống | Tool làm gì | Preflight in |
+|---|---|---|---|
+| 1 | Có `--flavor <x>` (gõ tay hoặc trong `MIG_DEFAULT_OPTS`) | Dùng x, **không tra map** | `INFO  --flavor-fallback has no effect: --flavor x is given`, rồi `OK    flavor x` |
+| 2 | Đích **có** flavor cùng tên với nguồn | Dùng flavor đó, **không tra map** (map chỉ là dự phòng) | `OK    flavor m1.large` |
+| 3 | Đích **thiếu**, map có dòng cho flavor nguồn | Dùng flavor map ra | `INFO  flavor m1.large -> c2.large from FLAVOR_MAP_FILE`, rồi `OK    flavor c2.large` |
+| 4 | Đích thiếu, map **không có** dòng | FAIL như v4, kèm gợi ý | `FAIL  flavor m1.medium — not at the destination and not in /opt/mig/flavor-map.conf: add a line 'm1.medium <dest-flavor>' to /opt/mig/flavor-map.conf` |
+
+**Tool không bao giờ tự tạo flavor.** Flavor đích trong map cũng phải có sẵn ở đích, không thì FAIL:
+
+```
+  FAIL  flavor nowhere (mapped from m1.ghost in /opt/mig/flavor-map.conf) not found at the destination — the tool never creates flavors
+```
+
+Flavor map ra **nhỏ hơn** nguồn (vCPU hoặc RAM) thì preflight in WARN, VM vẫn migrate, người vận hành
+tự chịu:
+
+```
+  WARN  mapped flavor c2.small is smaller than m1.large (vcpus 4 -> 2, ram 8192 -> 4096 MB)
+```
+
+Thông số phía nguồn lấy từ flavor gắn trong `server show` của chính VM, nên vẫn so được khi flavor nguồn
+đã bị xóa. Phía đích dùng `flavor show`. Không đọc được thông số thì tool chỉ in
+`INFO  flavor sizes not compared: …`.
+
+**File map `FLAVOR_MAP_FILE`.** Format giống map project của batch:
+
+- mỗi dòng `flavor-nguồn flavor-đích`, phân cách bằng khoảng trắng;
+- `#` là comment, dòng trống bị bỏ qua;
+- dòng sai dạng (thiếu hoặc thừa cột, kể cả kiểu `a = b`) thì tool dừng:
+  `ERROR: /opt/mig/flavor-map.conf: expected 'source-flavor destination-flavor', got: m1.large = c2.large`.
+
+```
+# /opt/mig/flavor-map.conf
+m1.large      c2.large
+m1.xlarge     c2.xlarge
+legacy.tiny   m1.small
+```
+
+**Quy tắc:**
+
+- Không có `--flavor-fallback` thì chạy y như v4, kể cả khi `FLAVOR_MAP_FILE` có khai: map không được
+  đọc, flavor thiếu thì `FAIL  flavor <tên>` như cũ.
+- Bật flag mà `FLAVOR_MAP_FILE` rỗng hoặc file không đọc được thì tool **dừng**, khác map project của
+  batch (chỉ WARN). Lý do: bật flag là đã chủ động yêu cầu map.
+
+  ```
+  ERROR: --flavor-fallback needs FLAVOR_MAP_FILE (lines 'source-flavor destination-flavor'), set it in /opt/mig/migrate.conf or the environment
+  ```
+
+  Map được đọc và kiểm ngay khi bật flag, kể cả khi lần đó không cần tra (flavor cùng tên có sẵn).
+- `--volumes-only` + flag: `INFO  --flavor-fallback ignored: --volumes-only creates no server`, và không
+  cần map.
+- `migrate-volume` không nhận flag gõ tay (bị từ chối như các option chỉ dành cho server). Nếu flag
+  nằm trong `MIG_DEFAULT_OPTS` thì bị bỏ kèm 1 dòng INFO.
+- Đặt được trong `MIG_DEFAULT_OPTS`, khi đó hoạt động như gõ tay. Nhớ khai luôn `FLAVOR_MAP_FILE`, không
+  thì mọi `plan`/`migrate` VM đều dừng.
+- Batch: `-- --flavor-fallback` áp cho mọi VM, **mỗi VM tra map theo flavor của chính nó**. Một map
+  dùng chung phục vụ được lô trộn nhiều cỡ VM.
+- Flavor map ra được dùng cho `server create` và ghi vào file state `options` (`FLAVOR=`), giống flavor
+  truyền bằng `--flavor`.
+
+**Ví dụ** (rút từ các lệnh đã chạy thật trong [TEST-REPORT-20261118-v5.md](TEST-REPORT-20261118-v5.md),
+tên đã đổi sang tên chung):
+
+```bash
+# 1. Khai map trong conf, xem trước rồi chạy một VM
+echo 'FLAVOR_MAP_FILE=/opt/mig/flavor-map.conf' >> /opt/mig/migrate.conf
+migrate-vm.sh plan app-vm01 --flavor-fallback        # INFO  flavor m1.large -> c2.large from FLAVOR_MAP_FILE
+migrate-vm.sh migrate app-vm01 --flavor-fallback     # VM đích dùng flavor c2.large
+migrate-vm.sh rollback app-vm01                      # nếu cần hoàn tác
+
+# 2. Gõ --flavor thì map bị bỏ qua cho VM đó
+migrate-vm.sh plan app-vm02 --flavor m1.small --flavor-fallback   # INFO  --flavor-fallback has no effect: …
+
+# 3. Lô nhiều cỡ VM, một map chung: mỗi VM tra theo flavor của nó; VM có flavor cùng tên ở đích dùng luôn
+migrate-batch.sh --vm app-vm01,app-vm03 --plan-only -- --flavor-fallback --verify none
+migrate-batch.sh --vm app-vm01,app-vm03 --yes -- --flavor-fallback --verify none
+
+# 4. Bật mặc định cho mọi lần chạy
+echo 'MIG_DEFAULT_OPTS="--flavor-fallback"' >> /opt/mig/migrate.conf
+migrate-vm.sh plan app-vm04                          # INFO  MIG_DEFAULT_OPTS applied before the command line: --flavor-fallback
 ```
 
 ## 3. Quy hoạch network cho 2 cloud chung VLAN

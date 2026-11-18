@@ -9,6 +9,42 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING.md](DEVELOPING.md) mục 5.
 
+## [v5] — 2026-11-18 · nhánh `feature/v5-flavor-map` (fork từ v4) · feature 16/16 PASS, gate vòng 7 đang chạy
+
+Thiết kế: [DESIGN-V5.md](DESIGN-V5.md). Test: [TEST-REPORT-20261118-v5.md](TEST-REPORT-20261118-v5.md).
+Hướng dẫn: [GUIDE.md](GUIDE.md) mục 2b.12.
+
+### Test
+
+- Feature trên lab: **16/16 PASS**, phủ 12 case của DESIGN-V5 §4.
+- Regression gate vòng 7 (5 bộ cũ nguyên văn trên build `0c49e3c`): **đang chạy**, kết quả sẽ ghi vào
+  report.
+- Harness giả lập: V5 27/27. Không có flag thì output preflight giống build v4 từng byte (3 kịch bản).
+  Chạy lại các bộ A/B, C, 2d, 2e đều xanh.
+
+### Thêm
+
+- `--flavor-fallback` (cho `plan`/`migrate`, mặc định tắt) cùng biến conf/env `FLAVOR_MAP_FILE`: file
+  map riêng, mỗi dòng `flavor-nguồn flavor-đích`. Khi bật flag, flavor được chọn theo thứ tự:
+  1. `--flavor` gõ tay luôn thắng;
+  2. đích có flavor cùng tên thì dùng luôn, không tra map;
+  3. đích thiếu thì tra map;
+  4. không có trong map thì FAIL kèm gợi ý thêm dòng.
+- Tool không bao giờ tạo flavor. Flavor map ra phải có sẵn ở đích, nhỏ hơn nguồn thì WARN.
+- Bật flag mà `FLAVOR_MAP_FILE` rỗng hoặc dòng map sai dạng thì die.
+- Dùng được trong `MIG_DEFAULT_OPTS` và batch passthrough (bộ lọc `VOLPASS` của batch đã biết flag này).
+  `migrate-volume` từ chối flag.
+
+### Tài liệu
+
+- GUIDE 2b.12, cùng bảng "`migrate-vm.sh` ↔ `migrate-batch.sh`" ở 2b.6: batch không có lệnh con, gõ
+  `migrate-batch.sh plan <vm>` sẽ ra `unknown option plan`.
+- `migrate.conf.example`: thêm `FLAVOR_MAP_FILE`.
+
+### Commit
+
+Code: `0c49e3c`. Thiết kế: `141213b`. Docs: commit docs v5.
+
 ## [v4] — 2026-11-18 · nhánh `feature/v4-sg-inuse-vol` · test xong, CHỜ MERGE
 
 Thiết kế: [DESIGN-V4.md](DESIGN-V4.md). Test: [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md).
