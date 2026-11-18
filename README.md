@@ -10,6 +10,7 @@ v3 adds a conf file, per-project runs, instance-based destination names, `--serv
 |---|---|
 | [DEPLOY.md](DEPLOY.md) | Step-by-step production install on the convert host |
 | [GUIDE.md](GUIDE.md) | Usage: options, example commands, workflow, lab setup |
+| [WORKFLOW.md](WORKFLOW.md) | Step by step: one VM, cold and live, default options (commands, state, failure, timings) |
 | [DESIGN-V2.md](DESIGN-V2.md) | Design (live mode, blocksync hash-cache, IP modes) |
 | [DESIGN-V3.md](DESIGN-V3.md) | Design v3 (batch by host/project/VM list, server group, volumes-only, naming) |
 | [POWERSTORE-VS-LAB.md](POWERSTORE-VS-LAB.md) | PowerStore 5000T vs lab; single-path checklist |

@@ -14,6 +14,7 @@ Triển khai lên host convert production (từ git, step-by-step): [DEPLOY.md](
 Sơ đồ workflow đầy đủ (cold + live + 3 chế độ IP + rollback): mở [workflow-v2.html](workflow-v2.html).
 Bản dọc tối giản, mã màu theo mode: [workflow-v2-simple.html](workflow-v2-simple.html).
 So sánh riêng Cold vs Live (khoảng nào VM còn chạy, khoảng nào downtime): [cold-vs-live.html](cold-vs-live.html).
+Chi tiết từng bước với option mặc định (lệnh thật, state, fail thì sao, thời lượng lab): [WORKFLOW.md](WORKFLOW.md).
 Dạng chữ:
 
 ```
