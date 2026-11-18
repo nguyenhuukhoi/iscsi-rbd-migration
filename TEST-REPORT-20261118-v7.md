@@ -300,3 +300,164 @@ baseline 2 volume demo. Không bug code.
 | 11 `--flavor-fallback` + FLAVOR_MAP_FILE | p4feat |
 | 12 `volume --vm <2 VM>` | p4feat |
 | 13 combo production `--host --project --keep-source-ports --verify none --az --volume-type` | guidex ex13: `Totals: OK 2`, volume đích type `mig-typeb`, nguồn SHUTOFF còn nguyên port, rollback sạch — 4/4 |
+
+## Phase 6 — port fidelity + SG/server group `<AZ>-<tên>` mặc định (nhánh `feature/p6-port-fidelity`, `7.1.0.dev1`) — GIẢ LẬP XONG, chờ Fable review + lab
+
+Design: [DESIGN-V7.md](DESIGN-V7.md) mục P6. Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 4b. Phần dưới chỉ là
+**giả lập** (Opus, stub, không gọi cloud); phần lab thật Fable ghi sau.
+
+Mở màn: `a4ecb38` (nhánh `feature/v7-python-app`) đặt version `7.0.0`; nhánh `feature/p6-port-fidelity` tách từ
+đó, commit đầu `d63b4b0` đặt `7.1.0.dev1`.
+
+### Harness
+
+Bản sao mới `/root/v7h-p6` trên mig-host (bản P5 `/root/v7h-p5` để nguyên), chạy `nice -n 19` vì host đang chạy
+suite lab thật của Fable. Thay đổi so với P5:
+
+| File | Đổi |
+|---|---|
+| `stub_openstack.py` | Neutron giả cho P6: `port create` hiểu `--disable-port-security` / `--allowed-address` / `--description` / `--dns-name` (và từ chối như Neutron: SG + port security tắt, pairs + port security tắt, `dns_name` khi thiếu extension); `security group create` (kèm 2 rule egress-any), `delete`, `rule list/create/delete` (rule trùng → 409); `extension list`; `availability zone list` có cột `Zone Status`. Port không dùng các cờ mới thì world y hệt trước |
+| `parity.py` | `pyrun.py` thay `copyvol.BRICK` (brick `-I` không đọc `PYTHONPATH`); luật opt-out máy móc cho kịch bản cũ (dưới); tham số `subs_all` (đổi tên một object ở cả calls/world, và object có sẵn trong world mang tên mới phía app), `app_calls_ignore` |
+| `scenarios.py` | 9 kịch bản sửa riêng, ghi chú `P6 (intended)` (dưới); `solo()` cũng theo luật opt-out; `exec` khối `scenarios_p6.py`; in danh sách `OPTOUTS` cuối output |
+| `scenarios_p6.py` | Mới: kịch bản P6 |
+| `unit.py` | Dòng check `--version`: `7.0.0.dev1` → `7.1.0.dev1` (sed) |
+| `p6unit.py` | Mới: unit P6 |
+
+**Luật máy móc cho mọi kịch bản viết trước P6** (`parity.legacy_optouts`): phía app/py, mỗi bước `plan`/`migrate`
+của VM chạy thêm `--no-copy-secgroup` và, nếu bước đó không có `--keep-server-group`, `--no-server-group`. Hai
+opt-out này trả đúng hành vi 7.0, nên so 6 chiều với bản bash như cũ. Hệ quả cơ học, áp cho phía bash: header
+`Destination preflight (…)` thêm 2 token (`header_tokens`), prompt `Type yes` của selector thêm 2 option
+(`prompt_tokens`). Bước `volume`, `plan volume`, `rollback` không bị đụng. Danh sách đầy đủ kịch bản nhận luật này
+(dòng `OPTOUTS` cuối output, file `/root/v7h-p6/p6-full.txt`): **107/153** kịch bản cũ, gồm mọi kịch bản
+`plan-*`, `cli-die plan …`, `migrate …` (cold), `cross: py migrate …`, `live …`, `ephemeral …`, 2-NIC/newip, và
+các `P4 …`/`P5 …` chạy `plan`/`migrate` qua selector. **46** kịch bản không bị đụng: `volume`/`plan volume`, mọi
+bước `rollback`, chéo "bash migrate → py rollback", `cli-die rollback …`/`frob`.
+
+Chứng minh luật này là cần và chỉ ảnh hưởng đúng phần SG/group: chạy 4 nhóm cũ **không** opt-out
+(`HARNESS_NO_OPTOUTS=1`): 4 kịch bản VM FAIL (world base có 2 AZ compute → `FAIL  cannot name the destination
+copies … 2 compute availability zones (nova AZ1) — pass --az …`), 6 kịch bản volume vẫn PASS. Còn VM thường trên 1
+AZ thì khác bản bash đúng ở tên SG: nhóm "Regression" bên dưới.
+
+**9 kịch bản cũ sửa riêng, 4 nhóm** (lệch có chủ đích, ghi `P6 (intended)` trong `scenarios.py`; diff đủ ở
+`diff -u /root/v7h-p5/scenarios.py /root/v7h-p6/scenarios.py`):
+
+| Kịch bản | Sửa | Vì |
+|---|---|---|
+| `plan-fails (… AAP …)` | `bash_subs`: dòng `FAIL  port fa:16:3e:aa:bb:01 has allowed-address-pairs (not handled)` → `INFO  port fa:16:3e:aa:bb:01: allowed-address-pairs copied: 198.51.100.99`; `app_calls_ignore` 1 lời gọi `extension list --network` | Pairs được chép (P6) |
+| `plan-keep-server-group missing/same/other-policy/dup/no-group` (5) | Thêm `--az AZ1` cho **cả hai** bản; `subs_all` `az-web-anti` → `AZ1-web-anti`; `bash_subs` (`KEEP_SUBS`): chèn dòng INFO "`--keep-server-group changes nothing now…`", 2 lời khuyên `drop --keep-server-group and pass …` → `pass --server-group …, or --no-server-group` | Tên `<AZ>-<tên>`; world base có 2 AZ compute nên cần `--az` |
+| `migrate keep-server-group (create, rules) + rollback`, `(--rule refused)` | Như trên | Như trên |
+| `cross: py keep-server-group -> bash rollback` | Như trên | Như trên |
+
+### Kịch bản P6 mới (`python3 scenarios.py p6-`)
+
+App chạy trên **mặc định mới** (không opt-out), world base có SG `default`/`web` trên port và 1 AZ compute
+`nova` (trừ khi ghi khác), nên bản copy tên `nova-<tên>`. Mỗi kịch bản có check riêng trên output, chuỗi lời gọi
+ra ngoài, state và world cuối.
+
+| Nhóm | Kịch bản (tên trong output, rút gọn) | Check chính |
+|---|---|---|
+| SG copy | tạo mới `nova-default` (4 rule) + `nova-web` (6 rule: tcp 22 có description, tcp 8000-8080 từ 10.0.0.0/8, icmp 8/0, proto 112 trỏ chính nó, 2 egress) + rollback | Bộ rule đích = nguồn từng rule (so theo nghĩa Neutron, remote group so theo tên bỏ prefix); description SG chép; đúng 2 lệnh `rule delete` (egress mặc định) cho 2 SG tạo mới; mọi `rule create` xảy ra **trước** `server stop`; state `dst-security-groups`; rollback in `kept (nova-default, nova-web)`, đích sạch trừ SG, nguồn nguyên trạng |
+| | đệ quy remote group: `app` → `db` → `app` (vòng), `app` trỏ chính nó, `app` trỏ `cache` đã có `nova-cache` ở đích | Dòng `will create nova-app (4 rules, + nova-db referenced, nova-cache referenced, found)`; đúng 2 `security group create`; rule map sang ID bản copy; `nova-cache` không bị đọc/sửa; port chỉ mang `nova-app` |
+| | `<AZ>-<tên>` có sẵn (rule khác nguồn) | `found nova-web (sg-dst-nweb)`, không create/rule/show-json nào, rule đích giữ nguyên |
+| | `--no-copy-secgroup` (đích thiếu `web`) | Đúng dòng 7.0: `OK security group default (sg-dst-default)`, `FAIL security group web not found in destination project pdst`; không lời gọi copy |
+| | `--security-group web` khi đích có cả `web` lẫn `nova-web`, 2 AZ | Port mang `web` nguyên văn, không hỏi AZ, không copy |
+| | rule remote address group / 2 SG `nova-web` ở đích | Preflight FAIL đúng câu, rc 1 |
+| | `rule create` lỗi (quota giả trên proto 112) | Xóa 2 SG vừa tạo + WARN; VM nguồn vẫn ACTIVE, không lock; không có `volume-map` |
+| | 1 SG trên 2 port (2 NIC) | Tạo 1 lần; port 2 in `OK security group web -> nova-web (see above)` |
+| Server group | mặc định: nguồn trong `web-anti` → `nova-web-anti` tạo + `--hint`, rollback giữ | Không flag nào; dòng `will create nova-web-anti (policy anti-affinity)`; không có chữ `keep-server-group` trong output |
+| | `nova-web-anti` khác policy → FAIL; cùng policy → reused | Câu FAIL mới (`pass --server-group g1 (or --no-server-group)`); member được thêm vào `g1` |
+| | `--no-server-group` | Không một lời gọi `server group` nào, không `--hint` |
+| | `--az AZ1` / `MIG_AZ=AZ1` với 2 AZ | `AZ1-web-anti`, `AZ1-web` |
+| | `--server-group db-anti` | Thắng group nguồn, không liệt kê group nguồn |
+| | `--keep-server-group --no-server-group` gõ cả hai / keep trong `MIG_DEFAULT_OPTS` + gõ `--no-server-group` / keep một mình | die `choose one…` / gõ tay thắng kèm INFO / INFO "changes nothing now", kết quả như mặc định |
+| AZ | 2 AZ, không `--az`/`MIG_AZ` (VM có SG + group) | Đúng **1** dòng FAIL nêu lối ra |
+| | `internal` + `nova` + zone `not available` | Chọn `nova`, có dòng INFO nguồn gốc |
+| | liệt kê AZ lỗi | FAIL `cannot list the destination compute availability zones…` |
+| | VM không SG, không group, 2 AZ / 2 AZ + cả 2 opt-out | Plan OK, không hỏi AZ |
+| Port | pairs VIP (`198.51.100.99` MAC chính port, `198.51.100.98` MAC VRRP) `--ip same` + rollback | Lệnh `port create … --allowed-address ip-address=198.51.100.99 --allowed-address ip-address=198.51.100.98,mac-address=00:00:5e:00:01:05 --description vip holder`; port đích = port nguồn (pairs, description, port security); rollback trả nguồn nguyên trạng |
+| | pairs `--ip 198.51.100.77` | Pair MAC-chính-port đi theo MAC mới, MAC VRRP giữ |
+| | pairs `--ip new` | Không pair nào; WARN preflight + log có sẵn lệnh `openstack port set --allowed-address … <port-id>`; description vẫn chép |
+| | port security tắt + rollback | `--no-security-group --disable-port-security --description no filtering`; không lời gọi SG/AZ; port đích PS=False, SG rỗng |
+| | port security tắt + `--security-group web` (migrate và plan) | `ERROR: … --security-group web conflicts with it …`, rc 1, đích không đổi, nguồn không bị tắt |
+| | port security tắt, đích thiếu extension `port-security` | FAIL |
+| | port giữ chỗ (Nova-owned) có pairs + description / port security tắt | Lệnh tạo `mig-reserve-app01-0` mang đủ; sau rollback VM nguồn giữ port đó với pairs/description/PS như gốc |
+| | `dns_name`: đích thiếu `dns-integration` / `app01` (= hostname) có extension / `web-vip` | WARN không chép / INFO + port đích `dns_name app01` / WARN không chép; không lần nào migrate dừng |
+| | nhiều fixed IP (có cả pairs) | Vẫn `FAIL … several fixed IPs (not handled)`, không còn FAIL pairs |
+| | `migrate volume <vol> --no-copy-secgroup --no-server-group` | Bị từ chối như option server |
+| Chéo + CLI | app migrate (pairs + SG copy) → **bash** rollback | Bash dọn sạch đích, giữ SG, nguồn nguyên trạng |
+| | `migrate migrate app01 --yes` qua selector (VM trong group, pairs) + rollback | `Totals: OK 1  FAIL 0  SKIP 0`, `will create nova-web (6 rules)`, `will create nova-web-anti` |
+| Regression: VM thường | plan; cold + rollback; Nova-owned port + rollback; `--ip new --start-source` + rollback; live + rollback; 2 NIC + rollback; ephemeral + rollback; selector 1 VM (batch vs app) + rollback — **so với bản bash** | 6 chiều giống hệt **sau khi** bỏ các lời gọi/dòng về SG, AZ, group nguồn, và quy ID/địa chỉ do stub sinh về thứ tự xuất hiện (SG copy dùng trước số đếm ID); `--security-group <id>` quy về tên (bỏ `nova-`). Tức: ngoài tên SG, VM thường chạy y như 7.0 |
+
+### Kết quả
+
+| # | Bộ | Lệnh (trên mig-host, `/root/v7h-p6`) | Kết quả |
+|---|---|---|---|
+| 26 | Kịch bản P6 riêng, lượt đầu | `nice -n 19 python3 scenarios.py p6-` | 48/2. 2 FAIL đều ở check của harness: plan không tạo gì nên "phải có bản copy ở đích" sai cho plan; `--ip new` lấy IP/MAC theo số đếm ID của stub, SG copy dùng trước số đếm nên địa chỉ lệch. Sửa check (plan: đòi dòng `will create nova-`; quy cả IP/MAC stub sinh về thứ tự xuất hiện) |
+| 27 | Toàn bộ cũ + P6, lượt 1 | `nice -n 19 python3 scenarios.py` (17 ph 20 s) | 197/6. 6 FAIL đều ở harness: 3 `plan-keep-server-group same/other-policy/dup` (group `az-web-anti` **có sẵn** trong world chưa mang tên mới phía app) và 3 `P4 terminal …` (prompt `Type yes` liệt kê các option truyền xuống, có 2 opt-out). Sửa `parity.py`: `subs_all` đổi tên cả object có sẵn trong world phía app; `prompt_tokens` |
+| 28 | Kiểm 2 sửa trên | `nice -n 19 python3 scenarios.py plan-keep p4-confirm` | **9/0** |
+| 29 | **Toàn bộ cũ + P6, lượt 2 (chính thức)** | `nice -n 19 python3 scenarios.py` (18 ph 18 s) | **203/0** = 153 cũ + 50 P6; `OPTOUTS total=107` |
+| 30 | Unit cũ P1–P4 | `python3 unit.py` | **65/0** (dòng `--version` sửa sed như trên) |
+| 31 | Unit P5 | `P5_VENV_PY=/opt/mig-venv/bin/python3 python3 p5unit.py /root/v7h-p6` | **48/0** |
+| 32 | Unit P6, Linux (Python 3.12) | `P6_VENV_PY=/opt/mig-venv/bin/python3 python3 p6unit.py /root/v7h-p6` | **64/0**: resolver AZ 10, builder rule + khóa trùng 12, plan/describe 12, ensure 7 (tạo trước rule, map remote group, xóa khi lỗi), pairs/fidelity/dns_name 6, option 11, `-I` brick + version + help 6 (2 check `-I` dùng package **đã cài** trong `/opt/mig-venv`, bản P5: không `-I` thì cây `migratetool/` mồi ở thư mục hiện tại thắng, có `-I` thì brick đã cài chạy) |
+| 33 | Unit P6, Windows (Python 3.13) | `python -B p6unit.py <repo>` | **62/0**, 2 check `-I` SKIP (không có venv cài sẵn) |
+| 34 | Cũ không opt-out (minh họa) | `HARNESS_NO_OPTOUTS=1 nice -n 19 python3 scenarios.py plan-happy mig-cold p4-one p4-vol1` | 6/4: 4 FAIL VM như mô tả ở trên, 6 volume PASS |
+
+Trước mỗi commit: `python -m py_compile migratetool/*.py` sạch, `grep -n 'shell=True' migratetool/*.py` rỗng,
+`cmp migratetool/blocksync.py archive/blocksync.py` giống, leak-grep (mẫu thông tin nội bộ của
+[DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 6) trên file sắp commit rỗng.
+
+### Điểm lệch / quyết định Opus tự đưa ra (chờ Fable duyệt)
+
+1. **`<AZ>` khi không ai truyền AZ** (design để Opus đề xuất): `--az` > `MIG_AZ` > **AZ compute duy nhất của
+   đích** (`availability zone list --compute -f json`, bỏ `internal` và zone `not available`). Đọc ở preflight, chỉ
+   đọc, nên `plan` và `migrate` ra cùng tên trước khi có gì được tạo. 0 hoặc ≥2 zone → **1 dòng FAIL** nêu lối ra
+   (`--az`, `MIG_AZ`, hoặc 2 opt-out). Chỉ hỏi khi có thứ cần đặt tên (SG trên port mà copy đang bật, hoặc VM trong
+   server group). AZ chỉ dùng đặt tên: không thêm `--availability-zone` vào create khi người dùng không truyền.
+   Phương án bỏ: đọc AZ của volume đích vừa tạo, vì plan không biết trước, và AZ volume có thể khác AZ server.
+2. **`--no-copy-secgroup` = hành vi 7.0 nguyên vẹn** (SG cùng tên phải có sẵn, thiếu là FAIL), không phải "không
+   gắn SG". Lý do: đường lùi cho conf production và cho bộ test cũ.
+3. `--keep-server-group`: no-op + 1 dòng INFO. Vẫn xung đột với `--server-group` (die như cũ) và giờ với
+   `--no-server-group` (cái gõ tay thắng cái trong `MIG_DEFAULT_OPTS`, kèm INFO; cùng nguồn thì die).
+4. **SG copy tạo trước khi tắt VM nguồn** (`vmcmd.cmd_migrate`, ngay sau preflight), không nằm trong
+   `create_destination`: không cộng downtime (mỗi lệnh OSC ~1-2 s, SG 10 rule ~15-25 s). Lỗi giữa chừng → xóa các SG
+   vừa tạo trong lần chạy đó (để lần chạy lại không gặp SG chép dở rồi "dùng luôn"), chưa có `volume-map` nên chạy
+   lại không cần rollback. Server group vẫn tạo ở chỗ cũ (1 lệnh).
+5. Chép thêm ngoài danh sách design: **description và stateful của SG** (`--stateless`); rule trùng nghĩa (remote
+   rỗng = 0.0.0.0/0) chép 1 lần; rule **remote address group** → FAIL (khi SG đó phải tạo). Dòng preflight có tiền tố
+   `security group <tên nguồn> -> …` trước câu design mẫu `will create … / found …`.
+6. **Pair mang MAC của chính port chép không kèm MAC** (Neutron tự điền MAC của port mới): `--ip same` ra y hệt
+   nguồn, `--ip <addr>` thì pair đi theo MAC mới (chép nguyên văn sẽ trỏ MAC cũ, VIP hỏng). MAC khác (VRRP) giữ.
+   Áp cho cả port giữ chỗ.
+7. **`dns_name` có chốt chặn**: chỉ chép khi đích có `dns-integration` **và** `dns_name` đúng là hostname Nova sẽ
+   đặt (tên VM viết thường, chỉ `a-z0-9-`). Lý do: Nova từ chối port có `dns_name` khác hostname
+   (`PortNotUsableDNS` → VM đích ERROR giữa cutover) và tự đặt `dns_name` = hostname khi có extension. Không đủ điều
+   kiện → WARN, không chép. Port giữ chỗ không mang `dns_name` (design chỉ ghi pairs/PS/description; Nova đặt lại
+   khi gắn).
+8. Extension đích: thiếu `port-security` (port tắt PS) hoặc `allowed-address-pairs` (có pairs) → FAIL. Không liệt kê
+   được extension: PS → FAIL, pairs → coi như có, `dns_name` → WARN.
+9. Port tắt PS + `--security-group`: die ngay đầu preflight (cả `plan` lẫn `migrate`), trước mọi kiểm tra đích.
+10. Tên SG nguồn (trong `ports.json`) được đổi lại ra ID qua danh sách SG của project nguồn. SG trên port mà không
+    thuộc project nguồn (admin gắn chéo project) hoặc trùng tên trong project → FAIL; 7.0 chỉ cần SG cùng tên ở
+    đích. Lối ra: `--no-copy-secgroup`/`--security-group`.
+11. State: `ports.json` thêm `description`/`dns_name` **chỉ khi có giá trị** (port thường: file giống từng byte bản
+    bash, nên mọi so sánh state cũ vẫn khớp); file mới `dst-security-groups`; rollback in `INFO destination security
+    groups kept (…)`. Bash rollback state 7.1: đã test.
+12. Đổi tên hàm: `keep_sg_preflight` → `server_group_preflight`, `keep_sg_ensure` → `server_group_ensure`.
+13. Chuỗi đổi có chủ đích (DEVELOPING-PYTHON mục 4 đã ghi bảng): dòng SG mặc định; bỏ FAIL pairs; 3 lời khuyên
+    `drop --keep-server-group …`; `az-` → `<AZ>-`; header preflight thêm token `no-server-group`/`no-copy-secgroup`
+    khi có opt-out. Không chuỗi nào trong danh sách bị grep bị đổi.
+14. `migratetool/__init__.py` `__version__` đổi cùng `pyproject.toml` ở cả 2 commit version (`migrate --version`).
+15. Docs ngoài danh sách được sửa cho khỏi sai: DEVELOPING-PYTHON (module, `-I` brick, chuỗi), WORKFLOW-PYTHON
+    (bước 3b), DEPLOY-PYTHON (`-I`, chưa test lab), `migrate.conf.example` (`--keep-server-group` no-op). Header
+    CHANGELOG `[v7]` đổi "P5 chờ duyệt" → "phát hành 7.0.0".
+16. Cho Fable khi gate lab 7.1: (a) `p4feat.sh` C1 bám `will create az-web-anti` / `server group show az-web-anti`, và
+    dọn `az-web-anti` + kiểm `dst server group list` rỗng — phải đổi sang `nova-web-anti` (lab đích có 1 AZ `nova`,
+    theo `/root/az-test.txt`); (b) 4 suite sed sẽ tạo `nova-mig-vm-sg` ở đích lần đầu và giữ lại, không check nào bám
+    SG đích ngoài override `mig-sg-b` (extras), nên dự kiến xanh; (c) kiểm `openstack security group show -f json`
+    thật trả `rules` dạng list dict thô (code cũng nhận `security_group_rules`); (d) policy Neutron với creds member
+    cho pairs/PS; (e) `dns-integration` thật.
+
+### Trạng thái lab sau P6 (giả lập)
+
+Không gọi cloud thật, không cài gì vào `/opt/mig-venv` (vẫn build P5 `7.0.0.dev1`). Để lại trên mig-host:
+thư mục `/root/v7h-p6` (harness + output `p6-*.txt`).
