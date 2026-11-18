@@ -157,8 +157,8 @@ Hiện trạng: tool từ chối port có allowed-address-pairs từ v1, và kh�
   trước sẽ KHÔNG được dùng lại sau đổi tên — ghi chú migration trong GUIDE-PYTHON khi làm P6.
   Bản bash (archive) giữ `az-` như cũ.
 - `--keep-server-group` không còn là opt-in: mặc định VM nguồn trong server group thì đích tự
-  tạo/dùng `<AZ>-<tên>` + add member (luật V4 giữ nguyên: policy lệch → preflight FAIL). Flag cũ
-  vẫn nhận, thành no-op. Thêm opt-out (tên flag chốt khi code, đề xuất `--no-server-group`).
+  tạo/dùng `<AZ>-<tên>` + add member (luật V4 giữ nguyên: policy lệch → preflight FAIL). ~~Flag cũ
+  vẫn nhận, thành no-op~~ (user chốt 19/11: bỏ hẳn flag — xem mục trên). Opt-out `--no-server-group`.
 - Security group cũng mặc định: copy thành `<AZ>-<tên>` như mô tả dưới, opt-out đề xuất
   `--no-copy-secgroup`; `--security-group` người dùng gõ tay vẫn thắng (tên nguyên văn).
 
