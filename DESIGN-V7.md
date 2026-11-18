@@ -123,6 +123,14 @@ Hiện trạng: tool từ chối port có allowed-address-pairs từ v1, và kh�
   pairs/port-security/description như port gốc — không chỉ MAC/IP/SG như hiện tại.
 - Multiple fixed-IP per port: VẪN từ chối (ngoài phạm vi).
 
+**Server group + security group MẶC ĐỊNH tạo giống nguồn, format `az-*` (user chốt 18/11 tối, gộp P6):**
+
+- `--keep-server-group` không còn là opt-in: mặc định VM nguồn trong server group thì đích tự
+  tạo/dùng `az-<tên>` + add member (luật V4 giữ nguyên: policy lệch → preflight FAIL). Flag cũ
+  vẫn nhận, thành no-op. Thêm opt-out (tên flag chốt khi code, đề xuất `--no-server-group`).
+- Security group cũng mặc định: copy thành `az-<tên>` như mô tả dưới, opt-out đề xuất
+  `--no-copy-secgroup`; `--security-group` người dùng gõ tay vẫn thắng (tên nguyên văn).
+
 **Copy security group (user chốt 18/11, gộp vào P6):**
 
 - **Bỏ hẳn map-theo-tên-trùng.** Mọi SG trên port nguồn → port đích gắn **`az-<tên SG nguồn>`**
