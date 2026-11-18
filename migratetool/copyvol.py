@@ -76,14 +76,19 @@ def stop_watch(r):
 
 
 # --- brick ------------------------------------------------------------------------------------
+# -I (isolated), as selector.CHILD: the installed package runs even when the current directory holds a
+# migratetool/ source tree. The environment below still reaches it through env=; -I only stops the
+# interpreter from reading PYTHON* variables and the user site-packages.
+BRICK = [sys.executable, "-I", "-m", "migratetool.brick"]
+
+
 def brick(r, action, volume_id, stderr):
-    """python -m migratetool.brick attach|detach <id>, with the source openrc's environment."""
+    """python -I -m migratetool.brick attach|detach <id>, with the source openrc's environment."""
     env = r.src.env()
     env["MIG_ISCSI_IP"] = r.cfg.MIG_ISCSI_IP
     if r.cfg.multipath_set:
         env["MIG_MULTIPATH"] = r.cfg.MIG_MULTIPATH
-    return proc.run([sys.executable, "-m", "migratetool.brick", action, volume_id],
-                    env=env, capture=True, stderr=stderr)
+    return proc.run([*BRICK, action, volume_id], env=env, capture=True, stderr=stderr)
 
 
 def cleanup_attach(r):
