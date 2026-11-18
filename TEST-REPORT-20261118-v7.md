@@ -147,7 +147,7 @@ copy vdb còn ở đích → preflight dst-exists chặn (đều là guard đún
 rollback 2 VM mà NGUỒN đã bị xóa tay vẫn dọn sạch tài nguyên đích rồi mới chết ở bước re-attach
 port nguồn — idempotent đúng thiết kế. Dọn lab bằng chính `migrate rollback` của tool.
 
-## Phase 5 — `plan volume` + `-I` + thay thế + docs (code `5e67653`) — Opus test xong, CHỜ FABLE DUYỆT
+## Phase 5 — `plan volume` + `-I` + thay thế + docs (code `5e67653`) — ĐẠT 2026-11-18 (Fable duyệt 15 điểm lệch + gate lab xanh)
 
 Phần code:
 
@@ -256,6 +256,21 @@ lần plan, không có `volume-map`), case 19 ghi lại đúng 5 file đó. Còn
 - 2 thư mục log `/var/log/mig-batch/20261118-190648` và `-190654`;
 - harness `/root/v7h-p5`.
 
-Bản cài trong `/opt/mig-venv` vẫn là build P4. Gate lab 4 bộ sed chưa chạy lại trên build P5. Code P5 chỉ
-đổi lớp selector, CLI và dòng `-I`; đường tiến trình con giữ nguyên, harness phủ đủ. Nên chạy lại gate trước
-khi user chốt.
+Bản cài trong `/opt/mig-venv` vẫn là build P4 tại thời điểm Opus bàn giao; gate dưới đây do Fable chạy
+sau khi cài build P5 (commit `82d2643` + docs) vào venv.
+
+### Gate lab trên build P5 — ĐẠT 2026-11-18 (Fable)
+
+| # | Case | Lệnh | Kết quả |
+|---|---|---|---|
+| 22 | 4 suite NGUYÊN BẢN sed trên build P5 | `bash /root/mig-lab/tests/{e2e-migrate,live-migrate,newip-voltype,extras}-py.sh` | **50/0 + 26/0 + 26/0 + 30/0** |
+| 23 | `plan volume` sống trên bản cài thật | `migrate plan volume --project admin --available` → rc 0, bảng READY; `migrate plan volume --vm demo-vm --verify none` → rc 0, PLAN-OK; `migrate volume --project admin --available --plan-only` → rc 1 + hint `plan volume` | **3/3** |
+| 24 | p4feat trên build P5 — lượt 2 | `bash /root/mig-lab/tests/p4feat.sh` | 13/24 — **cả 11 FAIL đều oan do môi trường**, xem dưới |
+| 25 | p4feat trên build P5 — lượt 3, môi trường sạch | `bash /root/mig-lab/tests/p4feat.sh` | **PASS=24 FAIL=0** |
+
+Chẩn đoán lượt 2 (case 24): quota volume project admin cloud nguồn **kín 10/10** — 2 root sg-VM fixture
++ 2 volume demo + 6 volume vô danh available tích tụ (4 tồn từ trước V7 + 2 rò trong ngày; kiểu rò: suite
+xóa server xong xóa volume ngay, Cinder thỉnh thoảng còn giữ attachment nên delete trượt im lặng). A5 tạo
+clone thứ 11 → `VolumeLimitExceeded` → tool die đúng chuẩn kèm hint rollback; A4 vớ thêm 1 volume vô danh
+rò trong proj-b nên `OK 2` thay vì `OK 1`; các case sau dính dây chuyền. Xử lý: xóa 10 volume rác vô danh
+(cả 2 cloud), dọn state, quota về 2/10 → lượt 3 xanh tuyệt đối. Không có bug code nào trong cả 2 lượt.
