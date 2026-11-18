@@ -7,3 +7,8 @@ key.txt
 passwords.yml
 clouds.yaml
 secrets*
+# Python build output (migratetool package)
+__pycache__/
+*.egg-info/
+build/
+dist/

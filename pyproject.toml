@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "migratetool"
+version = "7.0.0.dev1"
+description = "migrate: move VMs between two independent OpenStack clouds, iSCSI Cinder -> Ceph RBD"
+readme = "README.md"
+requires-python = ">=3.10"
+# openstackclient, os-brick, python-cinderclient, keystoneauth1 and oslo.* are already in
+# /opt/mig-venv (DEPLOY.md section 3); the package itself only needs the standard library.
+dependencies = []
+
+[project.scripts]
+migrate = "migratetool.cli:main"
+
+[tool.setuptools]
+packages = ["migratetool"]
