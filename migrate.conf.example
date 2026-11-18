@@ -92,10 +92,13 @@
 # volume, nên CLI thắng với option có giá trị (vd conf --verify none, gõ --verify full thì
 # full thắng). Mặc định: rỗng.
 #   - Tách token theo khoảng trắng: giá trị chứa khoảng trắng không dùng được ở đây.
-#   - Option kiểu cờ (--keep-source-ports, --keep-server-group…) không tắt được từ CLI. Muốn bỏ hết
+#   - Option kiểu cờ (--keep-source-ports, --no-copy-secgroup…) không tắt được từ CLI. Muốn bỏ hết
 #     option mặc định cho một lần chạy: MIG_DEFAULT_OPTS="" migrate ...
-#   - --keep-server-group ở đây mà CLI gõ --server-group <x>: bỏ keep, báo INFO, không dừng
+#   - Từ 7.1 --keep-server-group không còn tác dụng (theo server group nguồn là mặc định, tên <AZ>-<tên>);
+#     nó ở đây mà CLI gõ --server-group <x> hoặc --no-server-group: bỏ keep, báo INFO, không dừng
 #     (và ngược lại). Cả hai cùng nằm ở đây thì dừng.
+#   - --no-copy-secgroup ở đây = giữ cách 7.0 cho security group (SG cùng tên có sẵn ở đích) thay vì
+#     copy thành <AZ>-<tên> (GUIDE-PYTHON.md mục 4b).
 #   - `migrate volume` (volume rời) chỉ lấy --volume-type, --az, --verify. Option khác bị bỏ kèm
 #     1 dòng INFO.
 #   - --in-use không bao giờ được lấy từ đây (bỏ kèm INFO), phải gõ tay.
@@ -103,4 +106,4 @@
 #   - Token sai chính tả hoặc thiếu giá trị: tool dừng ngay, thông báo nêu MIG_DEFAULT_OPTS.
 #   - --az / --volume-type ở đây có ưu tiên thấp hơn MIG_AZ / AZ_TYPE_MAP.
 #   - Preflight in 1 dòng INFO liệt kê option đã áp.
-#MIG_DEFAULT_OPTS="--keep-server-group --verify none"
+#MIG_DEFAULT_OPTS="--no-copy-secgroup --verify none"

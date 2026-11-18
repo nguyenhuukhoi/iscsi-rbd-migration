@@ -106,9 +106,29 @@ Docs P5 (user chốt 18/11): hướng dẫn app Python viết vào **file MỚI 
 README trỏ cả hai, ghi rõ bản nào cho bản tool nào. DEPLOY/WORKFLOW/DEVELOPING xử tương tự
 khi tới P5 sẽ hỏi user (mặc định đề xuất: cũng file -PYTHON mới, bản cũ giữ).
 
-| P6 (feature mới, SAU parity — user chốt 18/11) | Port fidelity: port đích sao chép thuộc tính port nguồn | test plan riêng bên dưới |
+| P6 (feature mới, SAU parity — user chốt 18/11) — **đã thực thi, version 7.1.0.dev1** | Port fidelity: port đích sao chép thuộc tính port nguồn; SG + server group copy `<AZ>-<tên>` mặc định | test plan riêng bên dưới |
 
 ### P6 — Port fidelity (chỉ app Python; bash không làm)
+
+**Trạng thái: ĐÃ THỰC THI (Opus, 18/11/2026), nhánh `feature/p6-port-fidelity`, version `7.1.0.dev1`.** Giả lập
+xanh (TEST-REPORT V7 mục Phase 6); chờ Fable review diff + nghiệm thu lab (policy member creds chưa đo). Các quyết
+định lúc code, chờ duyệt:
+
+- `<AZ đích>` khi không có `--az`/`MIG_AZ`: **AZ compute duy nhất của đích** (`availability zone list --compute`,
+  bỏ `internal` và zone `not available`), đọc ở preflight nên plan và migrate ra cùng tên. 0 hoặc ≥2 zone →
+  preflight FAIL kèm lối ra (`--az`, `MIG_AZ`, hoặc 2 opt-out). Chỉ hỏi khi có thứ cần đặt tên. AZ chỉ dùng đặt tên,
+  không thêm `--availability-zone` vào create.
+- Opt-out chốt tên `--no-server-group`, `--no-copy-secgroup`. `--no-copy-secgroup` = hành vi 7.0 nguyên vẹn (SG
+  cùng tên có sẵn, thiếu là FAIL), nên bộ test cũ chạy lại được bằng nó.
+- SG copy tạo **trước khi tắt VM nguồn** (không cộng downtime); lỗi giữa chừng thì xóa các SG vừa tạo, chưa có
+  `volume-map` nên chạy lại migrate được ngay. Copy cả description + stateful của SG. Rule remote address group →
+  FAIL. Rule trùng nghĩa (remote rỗng = 0.0.0.0/0) chép 1 lần.
+- Pair mang MAC của chính port được chép không kèm MAC (Neutron tự điền MAC của port mới): `--ip same` cho kết quả
+  y hệt, `--ip <addr>` thì pair đi theo MAC mới. MAC khác (VRRP) giữ nguyên.
+- `dns_name` chỉ chép khi đúng là hostname Nova sẽ đặt (tên VM viết thường, `a-z0-9-`): Nova từ chối port có
+  `dns_name` khác hostname (`PortNotUsableDNS`). Không đủ điều kiện → WARN, không chép.
+- `--keep-server-group` vẫn xung đột với `--server-group` như cũ, và với `--no-server-group` (cái gõ tay thắng cái
+  trong `MIG_DEFAULT_OPTS`).
 
 Hiện trạng: tool từ chối port có allowed-address-pairs từ v1, và không chép port_security_enabled
 → VM kiểu VIP/keepalived qua đích bị sai hành vi mạng. User chốt 18/11:

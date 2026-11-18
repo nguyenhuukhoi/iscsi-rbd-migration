@@ -14,6 +14,10 @@ Bằng chứng: app qua đủ 140/140 check của 5 bộ test cũ trên lab th�
 ([TEST-REPORT-20261118-v7.md](TEST-REPORT-20261118-v7.md)). Cái đổi là **cách gõ lệnh**, cùng vài
 điểm cố ý khác mà mục 9 liệt kê. **Đọc mục 9 trước khi chạy thật.**
 
+**Từ 7.1 (P6), app làm thêm việc bản bash không làm:** security group và server group ở đích là bản copy
+`<AZ đích>-<tên nguồn>`, port đích mang theo allowed-address-pairs, port security, description, dns_name.
+Đây là **mặc định mới**, khác 7.0. **Đọc mục 4b trước khi chạy 7.1**, nhất là phần chuyển từ 7.0.
+
 Cài đặt: [DEPLOY-PYTHON.md](DEPLOY-PYTHON.md). Từng bước một VM cold/live: [WORKFLOW-PYTHON.md](WORKFLOW-PYTHON.md).
 IP trong tài liệu thuộc dải TEST-NET (`192.0.2.x`, `198.51.100.x`); tên VM, project, host là tên ví dụ.
 
@@ -150,23 +154,171 @@ option của VM cho mọi VM trong đợt. Mặc định giống hệt bản bas
 |---|---|
 | `--mode cold\|live` | `cold` (mặc định): tắt VM rồi copy bằng `qemu-img`, sau đó so toàn bộ. `live`: VM chạy trong lúc pre-sync nhiều lượt (blocksync, hash từng chunk 4 MiB). Cutover chỉ tắt VM rồi sync phần delta |
 | `--volume-type <type>` | Volume type ở đích cho mọi volume. Không truyền thì dùng type mặc định của cloud, hoặc type theo AZ trong `AZ_TYPE_MAP` (mục 7.4) |
-| `--az <zone>` | AZ đích cho **cả volume lẫn server**. Không truyền thì dùng `MIG_AZ`, không có nữa thì để scheduler đích tự chọn |
+| `--az <zone>` | AZ đích cho **cả volume lẫn server**. Không truyền thì dùng `MIG_AZ`, không có nữa thì để scheduler đích tự chọn. Từ 7.1 còn là `<AZ>` trong tên các bản copy group (mục 4b.2) |
 | `--ip same\|new\|<addr>` | `same` (mặc định): giữ IP + MAC, tháo port nguồn lúc cutover. `new`: IP + MAC mới, không đụng port nguồn. `<addr>`: IP chỉ định, MAC mới (VM 1 NIC) |
 | `--flavor <tên>` | Flavor cho VM đích. Mặc định: cùng tên với nguồn |
 | `--flavor-fallback` | Đích không có flavor cùng tên thì dùng flavor mà `FLAVOR_MAP_FILE` map tới. App không bao giờ tạo flavor |
-| `--security-group <sg1,sg2>` | Security group cho mọi port đích, thay bộ SG của nguồn |
+| `--security-group <sg1,sg2>` | Security group cho mọi port đích, thay bộ SG của nguồn. Tên lấy **nguyên văn**, không thêm `<AZ>-` |
+| `--no-copy-secgroup` | (7.1) Không copy SG: mỗi port đích lấy SG **cùng tên** đã có sẵn ở đích, thiếu là FAIL, đúng như 7.0 (mục 4b.3) |
 | `--start-source` | Bật lại VM nguồn sau khi xong. Chỉ đi với `--ip new\|<addr>` hoặc `--volumes-only` |
 | `--keep-source-ports` | Với `--ip same`: không tháo port nguồn. Rủi ro split-brain nếu ai bật lại VM nguồn |
-| `--server-group <tên\|ID>` | VM đích vào group có sẵn ở đích |
-| `--keep-server-group` | VM đích vào group `az-<tên group nguồn>`, cùng policy. `migrate` tạo group nếu chưa có, `plan` thì không. Không dùng chung với `--server-group` |
+| `--server-group <tên\|ID>` | VM đích vào group có sẵn ở đích, thay cho bản copy group nguồn |
+| `--no-server-group` | (7.1) Không theo server group nguồn: VM đích không vào group nào (trừ `--server-group`) |
+| `--keep-server-group` | 7.0: VM đích vào group `az-<tên group nguồn>`. **Từ 7.1 không còn tác dụng**: theo group nguồn đã là mặc định (tên `<AZ>-<tên>`, mục 4b.4). Vẫn nhận để script cũ chạy được, preflight in 1 dòng INFO. Không dùng chung với `--server-group` hay `--no-server-group` |
 | `--volumes-only` | Chỉ cold: copy volume, không tạo port và VM đích |
 | `--max-passes <n>` | Live: tối đa n lượt pre-sync (mặc định 5) |
 | `--delta-limit <MB>` | Live: cutover khi delta một lượt ≤ ngưỡng (mặc định 64) |
 | `--verify readback\|full\|none` | Cold: so toàn bộ, trừ khi `none`. Live: `readback` (mặc định) đọc lại từng chunk vừa ghi; `full` thêm một lần so toàn bộ lúc cutover; `none` không kiểm |
 
-Mỗi option chi tiết ra sao (điều kiện, preflight, rủi ro) thì không đổi so với bản bash. Xem
-[GUIDE.md](GUIDE.md) mục 2 và 2b; trong đó cứ đọc `migrate-vm.sh migrate <vm> …` thành
-`migrate migrate <vm> … --yes`.
+Mỗi option chi tiết ra sao (điều kiện, preflight, rủi ro) thì không đổi so với bản bash, **trừ phần port,
+security group và server group của 7.1** (mục 4b). Xem [GUIDE.md](GUIDE.md) mục 2 và 2b; trong đó cứ đọc
+`migrate-vm.sh migrate <vm> …` thành `migrate migrate <vm> … --yes`.
+
+## 4b. Port, security group, server group ở đích giống nguồn (từ 7.1, P6)
+
+### 4b.1. Tóm tắt
+
+| Thứ | Đến 7.0 (và bản bash) | Từ 7.1, mặc định | Không muốn thì |
+|---|---|---|---|
+| Security group của port | Đích phải có sẵn SG **cùng tên**, thiếu là FAIL | Dùng `<AZ>-<tên SG>`, chưa có thì **tạo + chép đủ rule** | `--no-copy-secgroup` (= 7.0), hoặc `--security-group` (tên gõ tay, nguyên văn) |
+| Server group | Chỉ khi `--keep-server-group`, tên `az-<tên>` | **Luôn** theo group nguồn, tên `<AZ>-<tên>` | `--no-server-group`, hoặc `--server-group <group có sẵn>` |
+| allowed-address-pairs | Preflight FAIL (VM kiểu VIP/keepalived không chuyển được) | Chép từng cặp IP/MAC. `--ip new` thì bỏ kèm WARN | — |
+| Port security tắt | Port đích vẫn bật port security, gắn SG | Port đích `--disable-port-security`, không SG | — |
+| `description`, `dns_name` của port | Không chép | Chép (`dns_name` có điều kiện, mục 4b.5) | — |
+| Port giữ chỗ phía nguồn (Nova xóa port của nó lúc tháo) | Giữ MAC/IP/SG | Giữ cả pairs, port security, description | — |
+| Port có nhiều fixed IP | Từ chối | **Vẫn từ chối** | — |
+
+Ví dụ: VM `web-01` ở nguồn có port với SG `web-tier`, nằm trong server group `web-anti`.
+
+```bash
+migrate migrate web-01 --az dc10-epz --yes
+```
+
+| Ở đích | Kết quả |
+|---|---|
+| Port `web-01-198.51.100.50` | SG `dc10-epz-web-tier` (tạo nếu chưa có, đủ rule của `web-tier`) |
+| VM `web-01` | Vào server group `dc10-epz-web-anti` (tạo nếu chưa có, cùng policy với `web-anti`) |
+| Sau `migrate rollback web-01` | Xóa VM, port, volume đích. **Giữ** `dc10-epz-web-tier` và `dc10-epz-web-anti` (VM khác có thể đang dùng) |
+
+### 4b.2. `<AZ>` trong tên là gì
+
+| Thứ tự | Lấy từ | Ví dụ |
+|---|---|---|
+| 1 | `--az` | `--az dc10-epz`: SG `web-tier` → `dc10-epz-web-tier` |
+| 2 | `MIG_AZ` (env hoặc conf) | `MIG_AZ=AZ1`: group `web-anti` → `AZ1-web-anti` |
+| 3 | Không có cả hai: **AZ compute duy nhất** của cloud đích (`openstack availability zone list --compute`, bỏ zone `internal` và zone `not available`) | Lab có đúng 1 AZ `nova`: `web-tier` → `nova-web-tier` |
+
+- Bước 3 chỉ đọc, nên `plan` và `migrate` ra cùng một tên. Preflight in rõ nguồn gốc:
+  `INFO  copies of the source server group and security groups are named nova-<source name>: nova is the only compute availability zone of the destination (no --az, no MIG_AZ)`.
+- Đích có **0 hoặc từ 2 AZ** trở lên mà không có `--az`/`MIG_AZ` thì preflight FAIL, vì không biết scheduler sẽ
+  đặt VM ở AZ nào:
+  `FAIL  cannot name the destination copies of the source server group and security groups: no --az, no MIG_AZ, and the destination has 2 compute availability zones (AZ1 AZ2) — pass --az <zone> or set MIG_AZ (opt out: --no-server-group, --no-copy-secgroup)`.
+- Chỉ hỏi AZ khi thật sự cần đặt tên: VM không có SG nào trên port và không ở server group nào thì không hỏi.
+- AZ chỉ dùng để **đặt tên**. Không truyền `--az` thì volume và server vẫn tạo không chỉ định AZ như trước.
+- Cùng group nguồn sang 2 AZ = 2 bản copy riêng (`AZ1-web-anti`, `AZ2-web-anti`): anti-affinity tính theo AZ.
+
+### 4b.3. Copy security group
+
+Mỗi SG trên port nguồn ứng với `<AZ>-<tên>` trong project đích:
+
+| Ở đích | `plan` | `migrate` |
+|---|---|---|
+| Có đúng 1 SG tên đó | `OK    security group web-tier -> found dc10-epz-web-tier (<id>)` | Dùng luôn, **không so rule** |
+| Chưa có | `OK    security group web-tier -> will create dc10-epz-web-tier (5 rules, + dc10-epz-db-tier referenced)` | Tạo, **trước khi tắt VM nguồn** (không cộng vào downtime) |
+| Có 2 SG trùng tên | `FAIL  security group web-tier -> dc10-epz-web-tier: 2 security groups are named …` | — |
+
+Khi tạo, app làm đúng thứ tự:
+
+1. Tạo SG `<AZ>-<tên>`, mang description của SG nguồn; SG nguồn stateless thì bản copy cũng `--stateless`.
+2. **Xóa 2 rule egress-any** mà Neutron tự thêm vào mọi SG mới, để bộ rule đích bằng đúng bộ rule nguồn.
+3. Chép từng rule: direction, ethertype, protocol (cả dạng số, ví dụ VRRP `112`), port range (ICMP: type/code),
+   remote CIDR, description.
+
+Rule trỏ tới một SG khác (remote group):
+
+| Nguồn | Đích |
+|---|---|
+| `web-tier` có rule "tcp 5432 từ group `db-tier`" | Copy luôn `db-tier` thành `<AZ>-db-tier` (đệ quy), rule trỏ sang bản copy |
+| Rule trỏ chính nó (kiểu SG `default`: "mọi thứ từ chính group này") | Trỏ sang chính `<AZ>-default` |
+| `app` trỏ `db`, `db` trỏ ngược `app` | Mỗi SG copy một lần (có chống vòng lặp), cả hai tạo xong mới chép rule |
+| SG được trỏ đã có bản `<AZ>-<tên>` ở đích | Dùng bản đó, không đụng vào |
+
+Các trường hợp dừng ở preflight (chưa tạo gì):
+
+- Rule dùng **remote address group**: app không chép loại này. Tạo tay `<AZ>-<tên>` ở đích, hoặc dùng `--security-group`.
+- Project nguồn có 2 SG cùng tên với SG trên port: tên bản copy sẽ mập mờ.
+
+Tạo rule lỗi giữa chừng (ví dụ hết quota rule): app **xóa các SG vừa tạo trong lần chạy đó**, rồi dừng. Lúc này
+VM nguồn **chưa bị tắt** và chưa có `volume-map`, nên sửa nguyên nhân rồi chạy lại `migrate` ngay, không cần
+rollback.
+
+- Bản copy đã có mà rule khác nguồn thì app không sửa. Muốn đồng bộ lại thì xóa bản copy ở đích (khi không còn
+  port nào dùng), lần migrate sau tạo lại.
+- `--security-group sg1,sg2` thắng mặc định: mọi port đích dùng đúng các tên đó, không thêm `<AZ>-`, phải có sẵn ở đích.
+- Port nguồn không có SG nào → port đích `--no-security-group`, như trước.
+- Rollback **giữ** mọi SG `<AZ>-*`. State ghi ở file `dst-security-groups` (`<id> <tên> created=yes|no`), rollback in
+  `INFO destination security groups kept (…)`.
+
+### 4b.4. Server group
+
+| Nguồn | Ở đích | Kết quả |
+|---|---|---|
+| VM không thuộc group nào | — | Như cũ, không hint |
+| VM thuộc group `web-anti` (policy `anti-affinity`) | Chưa có `<AZ>-web-anti` | `migrate` tạo, cùng policy và rule; `plan` chỉ báo `will create` |
+| | Có `<AZ>-web-anti` cùng policy | Dùng luôn |
+| | Có nhưng **khác policy** | Preflight FAIL. Muốn dùng nó thì `--server-group <id>`, không theo nguồn thì `--no-server-group` |
+| VM thuộc 2 group | | Preflight FAIL, chọn bằng `--server-group <id>` hoặc `--no-server-group` |
+
+- `--server-group <tên|ID>` thắng: VM vào group đó, app không nhìn group nguồn.
+- Rollback giữ group (như 7.0).
+- `--keep-server-group` vẫn nhận nhưng không đổi gì, preflight in
+  `INFO  --keep-server-group changes nothing now: the source server group is followed by default (opt out: --no-server-group)`.
+  Gõ cùng `--no-server-group` thì app dừng (`choose one: …`). Nếu nó nằm trong `MIG_DEFAULT_OPTS` còn dòng lệnh gõ
+  `--no-server-group` thì cái gõ tay thắng, kèm 1 dòng INFO.
+
+### 4b.5. Port đích mang gì từ port nguồn
+
+| Thuộc tính port nguồn | `--ip same` | `--ip <addr>` | `--ip new` |
+|---|---|---|---|
+| Port security tắt | `--disable-port-security`, không SG | như `same` | như `same` |
+| allowed-address-pairs | Chép từng cặp | Chép; cặp mang MAC của chính port đi theo MAC mới, MAC khác (ví dụ VRRP `00:00:5e:00:01:05`) giữ nguyên | **Bỏ**, preflight in WARN, log in sẵn lệnh `openstack port set --allowed-address …` để thêm lại |
+| description | Chép | Chép | Chép |
+| dns_name | Chép nếu đủ điều kiện dưới | như `same` | như `same` |
+
+Ví dụ VM keepalived: port `198.51.100.50`, pairs `198.51.100.99` (VIP) và `198.51.100.98` với MAC VRRP. Với
+`--ip same`, preflight in:
+
+```
+  INFO  port fa:16:3e:aa:bb:01: allowed-address-pairs copied: 198.51.100.99 (fa:16:3e:aa:bb:01), 198.51.100.98 (00:00:5e:00:01:05)
+```
+
+- **Port security tắt + `--security-group`** thì app dừng ngay (Neutron không cho gắn SG vào port tắt port security):
+  `ERROR: port fa:16:3e:aa:bb:01 has port security disabled at the source, so its copy takes no security group: --security-group web conflicts with it — …`.
+- Đích phải có extension tương ứng: `port-security` (port tắt port security), `allowed-address-pairs` (có pairs).
+  Thiếu thì preflight FAIL.
+- **`dns_name` chỉ chép khi** (1) đích có extension `dns-integration` và (2) `dns_name` đúng là hostname Nova sẽ
+  đặt cho VM đích: tên VM viết thường, chỉ gồm `a-z 0-9 -`. Lý do: Nova từ chối port có `dns_name` khác hostname
+  (`PortNotUsableDNS`, VM đích lên ERROR) và tự đặt `dns_name` = hostname khi có extension. Không đủ điều kiện thì
+  preflight in WARN, port không mang `dns_name`, migrate vẫn chạy. Ví dụ VM `app01`, `dns_name app01`: chép;
+  `dns_name web-vip`: WARN.
+- Port giữ chỗ phía nguồn (`mig-reserve-<vm>-<i>`, khi Nova tự xóa port của nó lúc tháo) mang đủ pairs, port
+  security, description như port gốc, nên rollback gắn lại vẫn đúng hành vi mạng.
+- Tạo port với pairs hoặc tắt port security cần quyền admin hoặc chủ network (policy Neutron mặc định).
+
+### 4b.6. Chuyển từ 7.0 lên 7.1
+
+1. ⚠ **Server group `az-<tên>` do 7.0 tạo (`--keep-server-group`) không được dùng lại.** 7.1 tìm `<AZ>-<tên>`.
+   Ví dụ `web-01` đã migrate ở 7.0 nằm trong `az-web-anti`; `web-02` migrate ở 7.1 với `--az dc10-epz` vào
+   `dc10-epz-web-anti`, nên 2 VM không còn anti-affinity với nhau. Muốn `web-02` vào group cũ thì
+   `--server-group az-web-anti`. Nova không cho đổi tên server group.
+2. **SG cùng tên đã tạo tay ở đích theo kiểu 7.0 (`web-tier`) không còn được dùng mặc định.** 7.1 tạo
+   `<AZ>-web-tier`. Muốn giữ kiểu cũ: `--no-copy-secgroup` (đặt được trong `MIG_DEFAULT_OPTS`), hoặc
+   `--security-group web-tier`.
+3. Cloud đích nhiều AZ: phải có `--az` hoặc `MIG_AZ` (mục 4b.2).
+4. `MIG_DEFAULT_OPTS="--keep-server-group …"` vẫn chạy, chỉ thêm 1 dòng INFO. Nên bỏ khỏi conf.
+5. State: `ports.json` thêm khóa `description`/`dns_name` khi port có giá trị; thêm file `dst-security-groups`.
+   Bản bash (archive) bỏ qua các khóa/file này, rollback chéo vẫn được.
+6. Bản bash trong `archive/` giữ hành vi cũ (`az-`, SG cùng tên, từ chối pairs).
 
 ## 5. Volume
 
@@ -181,7 +333,8 @@ migrate volume 5d0e9f3a-0000-4000-8000-00000000b001 --in-use    # volume đang g
 - Giống `migrate-vm.sh migrate-volume` cũ: **không hỏi**, chạy preflight trước rồi mới copy.
 - Nhận `--volume-type`, `--az`, `--verify`, `--in-use`. Option dành cho server (`--ip`, `--flavor`,
   `--security-group`, `--server-group`, `--keep-server-group`, `--start-source`, `--keep-source-ports`,
-  `--volumes-only`, `--flavor-fallback`, `--mode live`) bị từ chối.
+  `--volumes-only`, `--flavor-fallback`, `--mode live`, và từ 7.1 `--no-server-group`, `--no-copy-secgroup`)
+  bị từ chối.
 - Volume `in-use` mà không có `--in-use` thì app từ chối và gợi ý 2 cách: copy nóng bằng `--in-use`, hoặc
   đi theo VM bằng `migrate migrate <vm> --volumes-only`.
 - Bản copy giữ tên nguồn và mang description `migrated from <id>`.
@@ -254,8 +407,8 @@ chạy**. Nguồn không bao giờ mất gì — tool không xóa hay sửa VM/v
 
 1. Xóa VM đích, các port tool tạo ở đích, và mọi volume đã copy sang đích (kể cả clone tạm `mig-*` còn
    sót nếu lần migrate chết giữa chừng).
-2. Server group `az-<tên>` ở đích (nếu có, do `--keep-server-group` tạo) **được giữ lại** — các VM khác
-   có thể đang là member.
+2. Server group `<AZ>-<tên>` (7.0: `az-<tên>`, do `--keep-server-group` tạo) và từ 7.1 các security group
+   `<AZ>-<tên>` ở đích **được giữ lại** — các VM khác có thể đang dùng (mục 4b).
 3. Phía nguồn: gắn lại port nếu đã tháo, mở khóa (unlock) và bật lại VM. Ví dụ sau
    `migrate migrate web-01 --yes` thì `web-01` nguồn đang SHUTOFF + locked; `migrate rollback web-01`
    đưa nó về ACTIVE như cũ.
@@ -343,20 +496,20 @@ option có giá trị thì dòng lệnh thắng.
 
 ```bash
 # /opt/mig/migrate.conf
-MIG_DEFAULT_OPTS="--keep-server-group --verify none"
+MIG_DEFAULT_OPTS="--no-copy-secgroup --verify none"
 ```
 
 ```bash
-migrate plan web-03                  # preflight in: INFO  MIG_DEFAULT_OPTS applied before the command line: --keep-server-group, --verify none
+migrate plan web-03                  # preflight in: INFO  MIG_DEFAULT_OPTS applied before the command line: --no-copy-secgroup, --verify none
 migrate plan web-03 --verify full    # … --verify none (command line wins): lần này so toàn bộ
 MIG_DEFAULT_OPTS="" migrate plan web-03   # lần này không dùng default nào
 ```
 
-- Option dạng cờ (`--keep-server-group`, `--keep-source-ports`…) không tắt được từ dòng lệnh. Muốn bỏ thì
+- Option dạng cờ (`--no-copy-secgroup`, `--keep-source-ports`…) không tắt được từ dòng lệnh. Muốn bỏ thì
   đặt `MIG_DEFAULT_OPTS=""` cho lần chạy đó.
 - Chuỗi tách theo khoảng trắng, nên giá trị chứa khoảng trắng không dùng được ở đây.
-- `--keep-server-group` ở đây mà dòng lệnh gõ `--server-group db-anti` thì cái gõ tay thắng: app bỏ keep
-  kèm 1 dòng INFO, không dừng.
+- `--keep-server-group` (không còn tác dụng từ 7.1, mục 4b.4) ở đây mà dòng lệnh gõ `--server-group db-anti`
+  hoặc `--no-server-group` thì cái gõ tay thắng: app bỏ keep kèm 1 dòng INFO, không dừng.
 - `migrate volume` chỉ lấy `--volume-type`, `--az`, `--verify`. Option khác bị bỏ kèm 1 dòng INFO.
 - `--in-use` không bao giờ được lấy từ đây. `rollback` không dùng biến này.
 - Gõ sai tên option hoặc thiếu giá trị thì app dừng, thông báo nêu `MIG_DEFAULT_OPTS`.
@@ -487,9 +640,10 @@ EOF
 migrate plan --vm-file /root/wave1.txt
 migrate migrate --vm-file /root/wave1.txt --yes --continue-on-error
 
-# 10. Hai VM cùng server group nguồn web-anti: con đầu tạo az-web-anti, con sau vào cùng group
-migrate migrate --vm web-01,web-02 --keep-server-group --verify none --yes
-migrate rollback web-01; migrate rollback web-02     # group az-web-anti vẫn giữ lại
+# 10. Hai VM cùng server group nguồn web-anti (7.1: mặc định, không cần flag): con đầu tạo
+#     dc10-epz-web-anti + các SG dc10-epz-*, con sau dùng lại
+migrate migrate --vm web-01,web-02 --az dc10-epz --verify none --yes
+migrate rollback web-01; migrate rollback web-02     # group và SG dc10-epz-* vẫn giữ lại
 
 # 11. Đích thiếu flavor cùng tên: tra FLAVOR_MAP_FILE
 migrate plan --vm app-vm01,app-vm03 --flavor-fallback --verify none
@@ -533,6 +687,10 @@ trước khi chạm vào cloud. Bản bash nhận rồi **lặp pre-sync vô h�
 
 **(e) Application credential dùng được qua selector**, khi VM thuộc đúng project của appcred. Batch
 bash từ chối appcred thẳng.
+
+**(p) Từ 7.1: security group và server group ở đích là bản copy `<AZ>-<tên>`, port đích mang pairs, port
+security, description, dns_name.** Bản bash: SG cùng tên có sẵn, group `az-<tên>` chỉ khi `--keep-server-group`,
+từ chối allowed-address-pairs. Chi tiết và cách chuyển từ 7.0: mục 4b.
 
 - VM của project khác thì hàng đó `PLAN-FAIL` với
   `SRC_PROJECT/DST_PROJECT needs a password openrc: an application credential is bound to one project (…)`.
@@ -597,6 +755,6 @@ Hành vi bên dưới giống hệt bản bash. Tài liệu của bản bash v�
 | Quy tắc đặt tên ở đích, guard chống trùng | [GUIDE.md](GUIDE.md) mục 2b.3 |
 | `--server-group`, `--volumes-only` | [GUIDE.md](GUIDE.md) mục 2b.5 |
 | Copy nóng `--in-use` (crash-consistent) | [GUIDE.md](GUIDE.md) mục 2b.9 |
-| `--keep-server-group` | [GUIDE.md](GUIDE.md) mục 2b.10 |
+| `--keep-server-group` (bản bash và app 7.0; app từ 7.1: mục 4b.4) | [GUIDE.md](GUIDE.md) mục 2b.10 |
 | `--flavor-fallback` | [GUIDE.md](GUIDE.md) mục 2b.12 |
 | Quy hoạch network 2 cloud, các bẫy | [GUIDE.md](GUIDE.md) mục 3, 4 |

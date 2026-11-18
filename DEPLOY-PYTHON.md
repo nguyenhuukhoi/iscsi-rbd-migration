@@ -14,7 +14,7 @@ Các mục 1, 2, 5, 6, 7 dưới đây giống hệt bản bash. Ở đó tài l
 |---|---|---|
 | Lệnh `migrate` | `/opt/mig-venv/bin/migrate` (symlink sang `/usr/local/bin/migrate`) | Python của venv `/opt/mig-venv` |
 | Package `migratetool` | `/opt/mig-venv/lib/python3.*/site-packages/migratetool/` | |
-| Gắn volume (thay `brick_attach.py`) | `migratetool/brick.py`, chạy thành tiến trình con `python -m migratetool.brick` | Python của venv (cần os-brick) |
+| Gắn volume (thay `brick_attach.py`) | `migratetool/brick.py`, chạy thành tiến trình con `python -I -m migratetool.brick` (`-I` từ 7.1) | Python của venv (cần os-brick) |
 | Live sync (thay `blocksync.py`) | `migratetool/blocksync.py`, giống từng byte bản cũ | **Python hệ thống** `SYS_PY` (mặc định `/usr/bin/python3`, cần `python3-rbd`), chạy với `-I` |
 
 Không còn file nào phải copy vào `/usr/local/bin` ngoài symlink `migrate`. Một lần `pip install` cài đủ cả
@@ -231,6 +231,11 @@ Vị trí state và log:
 
 Mọi mục "chưa test" của bản bash vẫn còn nguyên: [DEPLOY.md](DEPLOY.md) mục 10 (SAN thật, multipath Dell,
 `--keep-server-group` với rules, microversion < 2.64…).
+
+7.1 (P6) mới qua giả lập, chưa qua lab: copy SG/server group `<AZ>-<tên>`, port pairs/port security/dns_name
+(policy Neutron với creds member, extension `dns-integration`). Trước khi dùng thật đọc
+[GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 4b.6 (chuyển từ 7.0: group `az-*` cũ không được dùng lại, SG cùng tên
+không còn là mặc định, cloud nhiều AZ cần `--az`/`MIG_AZ`).
 
 Riêng app, đã chạy trên lab: 5 bộ test cũ (140 check) và 24 check feature V3–V6. Chưa chạy trên hệ production
 thật. Lần đầu nên:

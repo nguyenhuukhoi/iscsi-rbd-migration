@@ -11,7 +11,41 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 6 (bản bash:
 [DEVELOPING.md](DEVELOPING.md) mục 5).
 
-## [v7] — 2026-11-18 · nhánh `feature/v7-python-app` (fork từ v6 `6b6c48b`) · P1–P4 test xong, P5 chờ duyệt
+## [7.1.0] (đang làm: `7.1.0.dev1`) — 2026-11-18 · nhánh `feature/p6-port-fidelity` (từ 7.0.0 `a4ecb38`) · P6 code + giả lập xong, chờ Fable review và lab
+
+Phase P6 của [DESIGN-V7.md](DESIGN-V7.md): port, security group và server group ở đích giống nguồn. Chỉ app
+Python; bản bash trong `archive/` không đổi. Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 4b (có phần chuyển
+từ 7.0). Test: [TEST-REPORT-20261118-v7.md](TEST-REPORT-20261118-v7.md) mục Phase 6.
+
+### Đổi hành vi (mặc định mới)
+
+- **Security group**: mỗi SG trên port nguồn → `<AZ đích>-<tên>` trong project đích. Có rồi thì dùng luôn (không so
+  rule); chưa có thì `migrate` tạo trước khi tắt VM nguồn và chép đủ rule (xóa 2 rule egress Neutron tự thêm, copy
+  đệ quy SG được trỏ qua remote group, chống vòng lặp). Bỏ cách tìm SG cùng tên. `--security-group` gõ tay vẫn
+  thắng, tên nguyên văn. Rollback giữ các SG này.
+- **Server group**: VM nguồn trong group thì đích luôn dùng/tạo `<AZ đích>-<tên>` cùng policy, không cần flag.
+  7.0 dùng chữ cứng `az-` và chỉ khi `--keep-server-group`. ⚠ Group `az-*` cũ ở đích không được dùng lại.
+- `<AZ đích>` = `--az` > `MIG_AZ` > AZ compute duy nhất của đích. Đích từ 2 AZ trở lên mà không có cả hai thì
+  preflight FAIL.
+- `--keep-server-group` vẫn nhận nhưng không còn tác dụng (1 dòng INFO).
+
+### Thêm
+
+- **Port fidelity**: port đích chép port security tắt (`--disable-port-security`, không SG),
+  allowed-address-pairs (`--ip new` thì bỏ kèm WARN), description, dns_name (khi đích có `dns-integration` và
+  `dns_name` đúng là hostname). Port giữ chỗ phía nguồn cũng mang pairs, port security, description.
+  Bỏ preflight FAIL `has allowed-address-pairs (not handled)`. Nhiều fixed IP/port vẫn từ chối.
+- Opt-out: `--no-copy-secgroup` (về đúng hành vi 7.0: SG cùng tên có sẵn), `--no-server-group`.
+- State: file `dst-security-groups`; `ports.json` có thêm `description`/`dns_name` khi port có giá trị (port
+  thường: file giống hệt trước).
+- Port tắt port security mà gõ `--security-group`: dừng ngay, nêu xung đột.
+
+### Sửa
+
+- Tiến trình con brick chạy `python -I -m migratetool.brick` (như tiến trình con selector từ P5): một cây nguồn
+  `migratetool/` ở thư mục hiện tại không che được package đã cài.
+
+## [v7] — 2026-11-18 · nhánh `feature/v7-python-app` (fork từ v6 `6b6c48b`) · phát hành 7.0.0 (`a4ecb38`)
 
 Viết lại thành **một app Python `migrate`**, thay hẳn `migrate-vm.sh` + `migrate-batch.sh` (user chốt
 18/11). Đây là bản **port giữ nguyên hành vi**: cùng state, cùng conf, cùng cách gọi hạ tầng (vẫn

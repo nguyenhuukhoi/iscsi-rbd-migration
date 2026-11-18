@@ -25,15 +25,17 @@ Tài liệu cho người sửa hoặc mở rộng app Python. Đọc kèm:
 | `util.py` | `out`/`log` (dòng `[HH:MM:SS]`), `Die`/`Exit`/`CommandFailed`, `prog()`, helper kiểu jq | `log`, `die` |
 | `state.py` | `StateDir`: đọc/ghi từng file state đúng format bash, `retire` → `.rolled-back.<epoch>` | thao tác file trong `$STATE_ROOT/<vm>` |
 | `vmdef.py` | `export_definition`, `detect_boot`, `dest_volume_name` | cùng tên |
-| `preflight.py` | `Checker` (dòng `OK/FAIL/INFO/WARN`), `preflight`, `keep_sg_preflight`, `flavor_fallback_preflight`, `load_flavor_map` | cùng tên |
+| `preflight.py` | `Checker` (dòng `OK/FAIL/INFO/WARN`), `preflight`, `server_group_preflight` (7.0: `keep_sg_preflight`), `flavor_fallback_preflight`, `load_flavor_map`; P6: `need_prefix`, `port_fidelity_preflight`, `port_security_conflict`, `net_extensions`, `plain_hostname` | cùng tên (P6: không có) |
+| `azname.py` | P6: `<AZ>` của tên bản copy: `--az` > `MIG_AZ` > AZ compute duy nhất của đích (`zones_from_listing`, `pick`, `resolve`) | — |
+| `secgroups.py` | P6: copy SG thành `<AZ>-<tên>`: `rule_args` (builder rule), `rule_key`, `plan_copy` (chỉ đọc, đệ quy remote group, visited set), `describe` (dòng preflight), `ensure` (tạo trước cutover, lỗi thì xóa cái vừa tạo) | — |
 | `vmcmd.py` | `cmd_plan`, `cmd_migrate` | cùng tên |
 | `copyvol.py` | `create_dest_volume`, `attach_clone`/`drop_clone` (qua `brick`), `copy_volume_cold`, `Watcher` (tiến độ đọc `/sys/block`), `cleanup_attach` | cùng tên, `progress_watch`, trap EXIT |
 | `livesync.py` | `presync`, `sync_volume_pass`, `final_pass`, `check_numbers`, 2 dòng preflight live | vòng live trong `cmd_migrate`, `sync_volume_pass` |
 | `ephemeral.py` | Snapshot → Glance REST (urllib, đúng trình tự curl cũ) | `migrate_ephemeral_root` |
-| `server.py` | `detach_source_ports`, `create_destination`, `keep_sg_ensure` | cùng tên |
+| `server.py` | `detach_source_ports`, `create_destination`, `server_group_ensure` (7.0: `keep_sg_ensure`); P6: `fidelity_args`, `pair_args` (port đích + port giữ chỗ) | cùng tên (P6: không có) |
 | `rollback.py` | `rollback_vm`, `drop_volume` | `cmd_rollback`, `drop_volume` |
 | `volcmd.py` | `cmd_migrate_volume`, `volume_preflight`, `cmd_rollback_volume`, `volume_options_only` | cùng tên |
-| `brick.py` | Port nguyên văn `brick_attach.py`, chạy bằng `python -m migratetool.brick attach\|detach <id>` (python của venv) | `brick_attach.py` |
+| `brick.py` | Port nguyên văn `brick_attach.py`, chạy bằng `python -I -m migratetool.brick attach\|detach <id>` (python của venv; `-I` từ 7.1) | `brick_attach.py` |
 | `blocksync.py` | **Giống từng byte** `archive/blocksync.py`, chạy bằng `SYS_PY -I <file>` (python hệ thống + `python3-rbd`), không bao giờ import | `blocksync.py` |
 
 ### 1.2. Mô hình tiến trình
@@ -46,7 +48,7 @@ migrate migrate --host cmp-01 --yes                       (tiến trình cha: cl
   ├─ hỏi Type yes (trừ --yes)
   └─ [mỗi VM, tuần tự] python -I -m migratetool.single migrate <ident> <option>
         ├─ openstack …, qemu-img convert/compare, rbd                    → migrate-<id>.log + màn hình
-        ├─ python -m migratetool.brick attach|detach <clone-id>          (python venv, os-brick)
+        ├─ python -I -m migratetool.brick attach|detach <clone-id>       (python venv, os-brick)
         └─ $SYS_PY -I …/migratetool/blocksync.py …                       (python hệ thống, librbd)
 ```
 
@@ -58,8 +60,8 @@ migrate migrate --host cmp-01 --yes                       (tiến trình cha: cl
   qua các biến `PYTHON*` và user site-packages. Hệ quả cho người phát triển: chạy từ cây nguồn bằng
   `PYTHONPATH=.` thì tiến trình con **không** thấy cây nguồn. Hoặc `pip install -e .`, hoặc làm như
   harness: thay `selector.CHILD`.
-- Lời gọi `python -m migratetool.brick` (`copyvol.brick`) **chưa** có `-I` (ngoài phạm vi P5, xem
-  TEST-REPORT V7 mục P5).
+- Lời gọi brick (`copyvol.BRICK`) cũng chạy `-I` từ 7.1 (P6), cùng lý do. Harness giả lập không dùng được
+  `PYTHONPATH` cho nó nữa, nên thay `copyvol.BRICK` (như thay `selector.CHILD`).
 - Tiến trình con chạy theo **`Row.ident`**, quy ước ở mục 3.
 
 ## 2. Hợp đồng parity (DESIGN-V7 §2)
@@ -126,6 +128,15 @@ Chép từ [DEVELOPING.md](DEVELOPING.md) mục 1.4 và 4, tên lệnh đã cậ
 | Bảng `Selected:` / `Plan:` / `Summary:`, header `KIND ID NAME STATUS PROJECT src -> dst RESULT`, các giá trị RESULT, `Totals: OK n  FAIL n  SKIP n  (logs: …)`, hint `  <tên>: inspect, then to undo: SRC_PROJECT=… DST_PROJECT=… <prog> rollback <ident>` | Con người, script vận hành viết theo batch cũ | `selector.Runner` |
 | blocksync: stdout đúng **1 dòng JSON**, các trường `changed`, `chunks`, `written_bytes`, `zero_chunks`, `seconds`, `first`; stderr `[blocksync] NN% …` | `livesync.sync_volume_pass`; `tests/live-migrate.sh` đọc `sync-<vid>.log` | `blocksync.py` (byte-identical) |
 | Tên/format file state, `volume-map` `<src> <dst>`, `t-stop` epoch, tên đích `<vm>-vda` | Rollback chéo bản bash, test lab | `state.py`, `vmdef.dest_volume_name` |
+
+**P6 (7.1) đổi có chủ đích** (bảng trên vẫn đúng; không bộ test lab nào grep các chuỗi này):
+
+| 7.0 | 7.1 |
+|---|---|
+| `  OK    security group web (<id>)` (tìm SG cùng tên) | Mặc định: `  OK    security group web -> will create nova-web (6 rules)` / `-> found nova-web (<id>)`. Dòng cũ còn nguyên khi `--no-copy-secgroup` |
+| `  FAIL  port <mac> has allowed-address-pairs (not handled)` | Bỏ. Thay bằng `  INFO  port <mac>: allowed-address-pairs copied: …` (`--ip new`: `  WARN  … not copied with --ip new …`) |
+| Lời khuyên `drop --keep-server-group and pass --server-group <id>` (3 message server group) | `pass --server-group <id>, or --no-server-group` |
+| `will create az-<tên>`, `server group az-<tên> exists` | `<AZ>-<tên>` (`p4feat.sh` C1 trên lab bám `az-web-anti`: phải sửa khi gate 7.1) |
 
 Hai chỗ trước đây nằm rải ở batch bash, giờ gom về một nơi:
 
@@ -199,6 +210,12 @@ giữ ở máy làm việc.
 
 Bộ unit nhỏ của P5 (`plan volume`, hint, `-I`) chạy được trên mọi máy có Python ≥ 3.10, không cần
 bash/openstack: clouds và tiến trình con đều giả. Lệnh và kết quả ghi ở TEST-REPORT V7 mục Phase 5.
+
+Từ P6 (7.1) app khác bản bash có chủ đích ở SG/server group, nên harness so bash vs app bằng một **luật máy móc**
+cho mọi kịch bản viết trước P6: phía app chạy thêm `--no-copy-secgroup` và (trừ khi kịch bản có
+`--keep-server-group`) `--no-server-group`, tức đúng hành vi 7.0, rồi so 6 chiều như cũ. Header preflight của
+bản bash được thêm 2 token đó cho khớp. Kịch bản P6 chạy app trên mặc định mới với check riêng. Bộ unit
+`p6unit.py` cũng chạy được ở mọi máy. Chi tiết: TEST-REPORT V7 mục Phase 6.
 
 ## 6. Quy trình phase → gate
 
