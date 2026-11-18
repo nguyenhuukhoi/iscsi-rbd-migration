@@ -7,6 +7,8 @@ the command line, with the same origin tracking, conflicts and messages.
 
 plan/migrate/volume over a selection run every VM (or volume) as a child process
 (migratetool.single), each with its own project scope and log file, like migrate-batch.sh did.
+'plan volume <selection>' is the volume selection stopped after its plan stage (the batch's
+'--volumes ... --plan-only').
 """
 import argparse
 import os
@@ -63,6 +65,57 @@ Logs: /var/log/mig-batch/<time>/ (plan-<id>.log, migrate-<id>.log). State: /var/
 Configuration: /opt/mig/migrate.conf (or $MIG_CONF), bash KEY=VALUE, template migrate.conf.example.
 Precedence: option > environment > migrate.conf > default. MIG_DEFAULT_OPTS="--opt ..." is applied
 before the command-line options, so the command line wins."""
+PLAN_NOTE = """Volumes without their VM: %(prog)s volume --project P --available|--attached|--all, or
+%(prog)s volume --vm a,b = the dry-run of 'migrate volume' (%(prog)s volume --help).
+
+"""
+VOLUME_EPILOG = """
+  %(prog)s <volume> [--in-use]   one volume (name or ID) of the source project, no prompt
+  %(prog)s --project P --available    every available volume of P (keeps its name)
+  %(prog)s --project P --attached     the volumes of P's VMs (= migrate --volumes-only)
+  %(prog)s --project P --all          both: attached first, then available
+  %(prog)s --vm a,b                   the volumes of those VMs
+A selection asks 'Type yes' unless --yes. State: /var/lib/mig-migrate/vol-<id>/.
+Dry-run of a selection: migrate plan volume <the same selection>."""
+PLAN_VOLUME_EPILOG = """
+  %(prog)s --project P --available    the available volumes of P that 'migrate volume' would copy
+  %(prog)s --project P --attached     the VMs of P: each one's preflight with --volumes-only
+  %(prog)s --project P --all          both: attached first, then available
+  %(prog)s --vm a,b                   those VMs: each one's preflight with --volumes-only
+Changes nothing and never asks. An available volume has no plan of its own: it shows READY
+('migrate volume' checks it right before copying it), as the batch's --plan-only did. Exit 1 when a
+plan fails or every selected row is a SKIP. A single volume has no dry-run: 'migrate volume <volume>'
+runs its read-only checks first and stops on a FAIL before creating anything."""
+
+
+def add_volume_args(vp, plan):
+    """The selection and options of 'volume'; 'plan volume' takes the same minus what only a run uses."""
+    g = vp.add_argument_group("selection")
+    for opt, metavar, h in SELECTOR_HELP:
+        g.add_argument(opt, metavar=metavar, help=h)
+    g.add_argument("--available", action="store_true", help="with --project: its available volumes.")
+    g.add_argument("--attached", action="store_true", help="the volumes of the selected VMs (default with --vm).")
+    g.add_argument("--all", action="store_true", help="with --project: attached first, then available.")
+    if not plan:
+        g.add_argument("--yes", action="store_true",
+                       help="no confirmation prompt (required when stdin is not a terminal).")
+        g.add_argument("--continue-on-error", action="store_true", help="go on after a failure.")
+    g = vp.add_argument_group("options")
+    if not plan:
+        g.add_argument("--in-use", action="store_true",
+                       help="one volume only: copy an attached volume from a clone taken while attached "
+                            "(crash-consistent).")
+    for opt, metavar, h in VM_OPTIONS:
+        if opt in ("--volume-type", "--az", "--verify"):
+            g.add_argument(opt, metavar=metavar, help=h)
+
+
+def build_plan_volume_parser():
+    text = "read-only dry-run of 'migrate volume' over a selection: list it, plan the VMs of --attached"
+    p = argparse.ArgumentParser(prog="migrate plan volume", description=text, epilog=PLAN_VOLUME_EPILOG,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_volume_args(p, plan=True)
+    return p
 
 
 def build_parser():
@@ -73,10 +126,12 @@ def build_parser():
     p.add_argument("--version", action="version", version="migrate " + __version__)
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
     for name, text in (("plan", "read-only dry-run: list the selection, export each VM, run the destination "
-                                "preflight; exit 1 when a plan fails"),
+                                "preflight; exit 1 when a plan fails ('plan volume <selection>': the dry-run "
+                                "of 'volume')"),
                        ("migrate", "plan the selection, ask 'Type yes' (unless --yes), then migrate one VM at a time "
                                    "(cold stops it first, live only at the cutover)")):
-        sp = sub.add_parser(name, help=text, description=text, epilog=EPILOG, formatter_class=fmt)
+        sp = sub.add_parser(name, help=text, description=text, formatter_class=fmt,
+                            epilog=(PLAN_NOTE + EPILOG) if name == "plan" else EPILOG)
         sp.add_argument("vm", nargs="?", help="VM name or ID (same as --vm <vm>)")
         g = sp.add_argument_group("selection")
         for opt, metavar, h in SELECTOR_HELP:
@@ -93,28 +148,9 @@ def build_parser():
             else:
                 g.add_argument(opt, action="store_true", help=h)
     text = "copy volumes without creating a server: one volume, or the volumes of a selection"
-    vp = sub.add_parser("volume", help=text, description=text, formatter_class=fmt, epilog="""
-  %(prog)s <volume> [--in-use]   one volume (name or ID) of the source project, no prompt
-  %(prog)s --project P --available    every available volume of P (keeps its name)
-  %(prog)s --project P --attached     the volumes of P's VMs (= migrate --volumes-only)
-  %(prog)s --project P --all          both: attached first, then available
-  %(prog)s --vm a,b                   the volumes of those VMs
-A selection asks 'Type yes' unless --yes. State: /var/lib/mig-migrate/vol-<id>/.""")
+    vp = sub.add_parser("volume", help=text, description=text, formatter_class=fmt, epilog=VOLUME_EPILOG)
     vp.add_argument("volume", nargs="?", help="volume name or ID (alone: no selector options)")
-    g = vp.add_argument_group("selection")
-    for opt, metavar, h in SELECTOR_HELP:
-        g.add_argument(opt, metavar=metavar, help=h)
-    g.add_argument("--available", action="store_true", help="with --project: its available volumes.")
-    g.add_argument("--attached", action="store_true", help="the volumes of the selected VMs (default with --vm).")
-    g.add_argument("--all", action="store_true", help="with --project: attached first, then available.")
-    g.add_argument("--yes", action="store_true", help="no confirmation prompt (required when stdin is not a terminal).")
-    g.add_argument("--continue-on-error", action="store_true", help="go on after a failure.")
-    g = vp.add_argument_group("options")
-    g.add_argument("--in-use", action="store_true",
-                   help="one volume only: copy an attached volume from a clone taken while attached (crash-consistent).")
-    for opt, metavar, h in VM_OPTIONS:
-        if opt in ("--volume-type", "--az", "--verify"):
-            g.add_argument(opt, metavar=metavar, help=h)
+    add_volume_args(vp, plan=False)
     rb = sub.add_parser("rollback", help="delete the destination objects, restore and start the source VM; or delete "
                                          "a volume copy",
                         description="delete the destination objects, restore and start the source VM; or delete a "
@@ -123,9 +159,9 @@ A selection asks 'Type yes' unless --yes. State: /var/lib/mig-migrate/vol-<id>/.
     return p
 
 
-def _help(argv):
+def _help(argv, parser=None):
     try:
-        build_parser().parse_args(argv)
+        (parser or build_parser()).parse_args(argv)
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else 0
     return 0
@@ -156,6 +192,9 @@ def _main(argv):
     if argv[0] in ("-h", "--help", "--version"):
         return _help(argv)
     cmd, rest = argv[0], argv[1:]
+    # 'plan volume ...' is the dry-run of 'volume' (a VM named "volume" is planned with --vm volume).
+    if cmd == "plan" and rest[:1] == ["volume"]:
+        return run_plan_volume(rest[1:])
     if cmd in ("plan", "migrate", "volume", "rollback"):
         if not rest:
             _help([cmd, "--help"])
@@ -185,6 +224,21 @@ def _main(argv):
     if cmd == "migrate-volume":
         raise Die("'migrate-volume' is now: %s volume <volume> [--in-use]" % prog())
     raise Die("unknown command " + cmd)
+
+
+def run_plan_volume(args):
+    """migrate plan volume <selection>: the batch's '--volumes attached|available|all --plan-only'."""
+    if not args:
+        _help(["--help"], build_plan_volume_parser())
+        return 2
+    if "-h" in args or "--help" in args:
+        return _help(["--help"], build_plan_volume_parser())
+    s = selector.split_args("volume", args, plan_only=True)
+    if s.positional:
+        raise Die("%s plan volume takes a selection: --project <p> --available|--attached|--all, or --vm <vms>. "
+                  "A single volume has no dry-run: %s volume <volume> runs its read-only checks first and stops "
+                  "on a FAIL before creating anything" % (prog(), prog()))
+    return selector.run("volume", args, plan_only=True)
 
 
 def run_vm(cmd, vm, args):

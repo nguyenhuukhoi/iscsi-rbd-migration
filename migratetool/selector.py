@@ -1,4 +1,4 @@
-"""Selector runs of 'migrate plan|migrate|volume' (port of migrate-batch.sh).
+"""Selector runs of 'migrate plan|migrate|volume' and 'migrate plan volume' (port of migrate-batch.sh).
 
 One VM is a selection of one: list, Selected/Plan/Summary tables, one child process per row with
 its own SRC_PROJECT/DST_PROJECT and its own log file under /var/log/mig-batch/<time>/.
@@ -18,7 +18,11 @@ from .options import FLAG_OPTS, VALUE_OPTS, Options
 from .util import UUID_RE, Die, jq_dump, log, out, prog
 
 # The child entry: one VM or one volume, never a selection (no recursion, no prompt).
-CHILD = [sys.executable, "-m", "migratetool.single"]
+# -I (isolated): the child imports the installed package even when the current directory holds a
+# migratetool/ source tree (a repo clone), which 'python -m' would otherwise put first on sys.path.
+# The child still gets its whole environment (SRC_RC, SRC_PROJECT/DST_PROJECT, MIG_CONF, ...) through
+# Popen's env; -I only stops the interpreter itself from reading PYTHON* variables and user site-packages.
+CHILD = [sys.executable, "-I", "-m", "migratetool.single"]
 SELECTORS = ("--vm", "--host", "--project", "--vm-file")
 SCOPES = ("--available", "--attached", "--all")
 VOLUME_PASS = ("--volume-type", "--az", "--verify", "--mode")  # what a lone volume accepts (batch VOLPASS)
@@ -56,8 +60,9 @@ def _tail1(text):
 
 
 class Selection:
-    def __init__(self, verb):
+    def __init__(self, verb, plan_only=False):
         self.verb = verb            # plan | migrate | volume
+        self.plan_only = plan_only  # 'migrate plan volume': the volume selection, planned only
         self.hosts, self.projects, self.vms = [], [], []
         self.vm_file = ""
         self.positional = []
@@ -70,9 +75,9 @@ class Selection:
         return bool(self.hosts or self.projects or self.vms or self.vm_file or self.scope)
 
 
-def split_args(verb, args):
+def split_args(verb, args, plan_only=False):
     """One option namespace: selectors and run control stay here, every other option goes to each child."""
-    s = Selection(verb)
+    s = Selection(verb, plan_only)
     i = 0
     while i < len(args):
         a = args[i]
@@ -109,9 +114,15 @@ def split_args(verb, args):
         elif a == "--":
             raise Die("no '--' any more: the options for each VM go on the same command line")
         elif a == "--plan-only":
+            if verb == "volume":
+                raise Die("--plan-only is now a command of its own: %s plan volume --project <p> "
+                          "--available|--attached|--all, or %s plan volume --vm <vms>" % (prog(), prog()))
             raise Die("--plan-only is now a command of its own: %s plan <vm> (or --vm/--host/--project/--vm-file)"
                       % prog())
         elif a == "--volumes":
+            if verb == "plan":
+                raise Die("--volumes is now: %s plan volume --project <p> --available|--attached|--all, or "
+                          "%s plan volume --vm <vms>" % (prog(), prog()))
             raise Die("--volumes is now: %s volume --project <p> --available|--attached|--all, or %s volume --vm <vms>"
                       % (prog(), prog()))
         elif a.startswith("-") and a != "-":
@@ -146,15 +157,16 @@ def finish(s):
                       "--vm-file")
         raise Die("select something: <vm>, --vm, --host, --project or --vm-file")
     if verb == "volume":
+        what = "migrate plan volume" if s.plan_only else "migrate volume"
         if not s.scope:
             if s.projects and not s.vms:
-                raise Die("migrate volume --project needs --available, --attached or --all")
+                raise Die("%s --project needs --available, --attached or --all" % what)
             s.scope = "attached"
         if s.scope == "attached" and not (s.projects or s.vms):
-            raise Die("migrate volume --attached needs --project or --vm/--vm-file (--host only narrows them)")
+            raise Die("%s --attached needs --project or --vm/--vm-file (--host only narrows them)" % what)
         if s.scope in ("available", "all"):
             if not s.projects:
-                raise Die("migrate volume --%s needs --project" % s.scope)
+                raise Die("%s --%s needs --project" % (what, s.scope))
             if s.hosts:
                 raise Die("--host filters VMs: use it with --attached only")
             if s.scope == "available" and s.vms:
@@ -457,8 +469,9 @@ class Runner:
                 r.res = "READY"  # migrate-volume checks at run time
                 continue
             f = os.path.join(self.log_dir, "plan-%s.log" % r.id)
-            # 'migrate plan' shows each preflight as it runs; inside 'migrate migrate' it goes to the log only.
-            if self.child(r, "plan", vmx + s.passed, f, tee=(verb == "plan")) == 0:
+            # 'migrate plan' (and 'plan volume') shows each preflight as it runs; inside 'migrate migrate'
+            # and 'migrate volume' it goes to the log only.
+            if self.child(r, "plan", vmx + s.passed, f, tee=(verb == "plan" or s.plan_only)) == 0:
                 r.res = "PLAN-OK"
             else:
                 with open(f, encoding="utf-8", errors="replace") as fh:
@@ -477,8 +490,11 @@ class Runner:
             for line in r.info.split("\n"):
                 out("    " + line.lstrip(" "))
         self.hints()
-        if verb == "plan":
+        if verb == "plan" or s.plan_only:
             # A dry-run fails on a PLAN-FAIL, and when nothing it selected could be planned at all.
+            # 'plan volume' stops here as the batch's '--volumes ... --plan-only' did: an available
+            # volume has no plan of its own (READY, migrate-volume checks it at run time), the VMs of
+            # --attached ran 'plan --volumes-only' above.
             return 1 if self.count("PLAN-FAIL") or not (self.count("PLAN-OK") + self.count("READY")) else 0
 
         # --- migrate, one at a time ------------------------------------------------------------
@@ -546,9 +562,9 @@ class Runner:
         return 1 if self.count("FAIL*") or not self.count("OK*") else 0
 
 
-def run(verb, args):
-    """migrate plan|migrate|volume over a selection."""
-    s = finish(split_args(verb, args))
+def run(verb, args, plan_only=False):
+    """migrate plan|migrate|volume over a selection; plan_only with 'volume' = 'migrate plan volume'."""
+    s = finish(split_args(verb, args, plan_only))
     cfg = config.load()
     check_child_options(s, cfg)
     return Runner(s, cfg).run()

@@ -1,7 +1,7 @@
 """Live mode: hash-cached pre-sync passes while the source VM runs, then one delta pass at cutover
 (bash sync_volume_pass and the live loop of cmd_migrate).
 
-blocksync.py ships inside this package, byte-identical to the repository's blocksync.py, and is run
+blocksync.py ships inside this package, byte-identical to the bash build's archive/blocksync.py, and is run
 as a file by the SYSTEM python (SYS_PY, default /usr/bin/python3): the librbd bindings
 (python3-rbd) live there, not in the venv that runs migrate. It is never imported by migrate.
 Bundled rather than installed separately in /usr/local/bin: one 'pip install' then carries both
