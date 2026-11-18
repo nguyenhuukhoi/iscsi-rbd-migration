@@ -56,10 +56,11 @@
 # Source volumes are never modified or deleted; rollback restores everything.
 # Destination volumes are named <vm>-<device> (app01-vda, app01-vdb), ports <vm>-<ip>.
 # Environment overrides: SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP COPY_STREAMS
-# MIG_MULTIPATH MIG_AZ AZ_TYPE_MAP; the same keys may be set in $MIG_CONF (default
-# /opt/mig/migrate.conf), and the environment wins over that file. SRC_PROJECT / DST_PROJECT run each
-# side in that project of the openrc's account (password openrc only: an application credential is
-# bound to one project).
+# MIG_MULTIPATH MIG_AZ AZ_TYPE_MAP MIG_DEFAULT_OPTS; the same keys may be set in $MIG_CONF (default
+# /opt/mig/migrate.conf, template: migrate.conf.example), and the environment wins over that file.
+# SRC_PROJECT / DST_PROJECT run each side in that project of the openrc's account (password openrc
+# only: an application credential is bound to one project). MIG_DEFAULT_OPTS="--opt …" is parsed
+# before the command-line options of plan/migrate/migrate-volume, so the command line wins.
 set -euo pipefail
 
 # Precedence: CLI option > environment > $MIG_CONF > defaults below. Variables already set in the
@@ -68,7 +69,7 @@ MIG_CONF=${MIG_CONF:-/opt/mig/migrate.conf}
 if [ -r "$MIG_CONF" ]; then
   declare -A _env_saved=()
   for _v in SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH \
-            COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT MIG_AZ AZ_TYPE_MAP; do
+            COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT MIG_AZ AZ_TYPE_MAP MIG_DEFAULT_OPTS; do
     [ -z "${!_v+x}" ] || _env_saved[$_v]=${!_v}
   done
   source "$MIG_CONF"
@@ -84,6 +85,7 @@ RBD_POOL=${RBD_POOL:-mig-volumes}
 RBD_POOL_MAP=${RBD_POOL_MAP:-}
 MIG_AZ=${MIG_AZ:-}
 AZ_TYPE_MAP=${AZ_TYPE_MAP:-}
+MIG_DEFAULT_OPTS=${MIG_DEFAULT_OPTS:-}
 RBD_USER=${RBD_USER:-mig-xfer}
 COPY_STREAMS=${COPY_STREAMS:-8}
 export MIG_ISCSI_IP=${MIG_ISCSI_IP:-10.77.0.20}
@@ -164,35 +166,104 @@ MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PO
 OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0
 KEEP_SG=0 IN_USE=0 AZ_CLI=0 TYPE_CLI=0
 
-parse_options() {
+# MIG_DEFAULT_OPTS (conf or environment) is parsed before the command line, so the command line wins.
+# Whitespace-separated tokens only: a value containing spaces is not supported. Only a typed --az /
+# --volume-type sets AZ_CLI / TYPE_CLI, so MIG_AZ / AZ_TYPE_MAP still refine a default from here.
+DEF_OPTS=() DEF_SHOWN=() DEF_NOTES=() KEEP_SG_FROM="" SERVER_GROUP_FROM=""
+declare -A CLI_GIVEN=()
+load_default_opts() {  # command ; MIG_DEFAULT_OPTS -> DEF_OPTS (to parse), DEF_SHOWN, DEF_NOTES
+  local cmd=$1 toks t v i=0 skipped=()
+  read -ra toks <<<"$MIG_DEFAULT_OPTS"
+  while [ "$i" -lt ${#toks[@]} ]; do
+    t=${toks[$i]} v=""
+    case $t in
+      --start-source|--keep-source-ports|--keep-server-group|--volumes-only|--in-use) i=$((i+1));;
+      --mode|--volume-type|--az|--ip|--flavor|--security-group|--server-group|--max-passes|--delta-limit|--verify)
+        [ $((i+1)) -lt ${#toks[@]} ] || die "MIG_DEFAULT_OPTS: $t needs a value (MIG_DEFAULT_OPTS=\"$MIG_DEFAULT_OPTS\")"
+        v=${toks[$((i+1))]}; i=$((i+2));;
+      *) die "MIG_DEFAULT_OPTS: unknown option '$t' (MIG_DEFAULT_OPTS=\"$MIG_DEFAULT_OPTS\")";;
+    esac
+    case $t in
+      --mode)   case $v in cold|live) ;; *) die "MIG_DEFAULT_OPTS: --mode takes cold or live, not '$v'";; esac;;
+      --verify) case $v in readback|full|none) ;; *) die "MIG_DEFAULT_OPTS: --verify takes readback, full or none, not '$v'";; esac;;
+      # Copying an attached volume live is a decision per run, never a standing default.
+      --in-use) DEF_NOTES+=("--in-use in MIG_DEFAULT_OPTS ignored: it is only taken from the command line"); continue;;
+    esac
+    if [ "$cmd" = migrate-volume ]; then
+      case $t in --volume-type|--az|--verify) ;; *) skipped+=("$t${v:+ $v}"); continue;; esac
+    fi
+    DEF_OPTS+=("$t"); [ -z "$v" ] || DEF_OPTS+=("$v")
+    DEF_SHOWN+=("$t${v:+ $v}")
+  done
+  [ ${#skipped[@]} -eq 0 ] || DEF_NOTES+=("MIG_DEFAULT_OPTS options that do not apply to migrate-volume, ignored: ${skipped[*]}")
+}
+
+drop_shown() {  # option ; remove it from DEF_SHOWN
+  local s kept=()
+  for s in "${DEF_SHOWN[@]}"; do [ "${s%% *}" = "$1" ] || kept+=("$s"); done
+  DEF_SHOWN=("${kept[@]}")
+}
+
+default_opts_info() {  # preflight lines: what MIG_DEFAULT_OPTS applied, and what it left out
+  local s out=() n joined
+  for s in "${DEF_SHOWN[@]}"; do
+    if [[ $s == *' '* ]] && [ -n "${CLI_GIVEN[${s%% *}]:-}" ]; then out+=("$s (command line wins)"); else out+=("$s"); fi
+  done
+  if [ ${#out[@]} -gt 0 ]; then
+    joined=$(printf '%s, ' "${out[@]}")
+    echo "  INFO  MIG_DEFAULT_OPTS applied before the command line: ${joined%, }"
+  fi
+  for n in "${DEF_NOTES[@]}"; do echo "  INFO  $n"; done
+}
+
+parse_option_list() {  # cli|defaults options...
+  local from=$1 in=""; shift
+  [ "$from" = cli ] || in=" (in MIG_DEFAULT_OPTS)"
   while [ $# -gt 0 ]; do
+    [ "$from" != cli ] || [ -z "$1" ] || CLI_GIVEN[$1]=1
     case $1 in
       --mode)        MODE=$2; shift 2;;
-      --volume-type) VOLUME_TYPE=$2; TYPE_CLI=1; shift 2;;
-      --az)          DEST_AZ=$2; AZ_CLI=1; shift 2;;
+      --volume-type) VOLUME_TYPE=$2; [ "$from" != cli ] || TYPE_CLI=1; shift 2;;
+      --az)          DEST_AZ=$2; [ "$from" != cli ] || AZ_CLI=1; shift 2;;
       --ip)          if [ "$2" = same ] || [ "$2" = new ]; then IPMODE=$2
                      elif [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then IPMODE=addr; IPADDR=$2
-                     else die "--ip takes same, new or an IPv4 address"; fi; shift 2;;
+                     else die "--ip takes same, new or an IPv4 address$in"; fi; shift 2;;
       --start-source) START_SOURCE=1; shift;;
       --keep-source-ports) KEEP_PORTS=1; shift;;
       --flavor)       OV_FLAVOR=$2; shift 2;;
       --security-group) OV_SG=$2; shift 2;;
-      --server-group) SERVER_GROUP=$2; shift 2;;
-      --keep-server-group) KEEP_SG=1; shift;;
+      --server-group) SERVER_GROUP=$2; SERVER_GROUP_FROM=$from; shift 2;;
+      --keep-server-group) KEEP_SG=1; KEEP_SG_FROM=$from; shift;;
       --in-use)       IN_USE=1; shift;;
       --volumes-only) VOLUMES_ONLY=1; shift;;
       --max-passes)  MAX_PASSES=$2; shift 2;;
       --delta-limit) DELTA_LIMIT_MB=$2; shift 2;;
       --verify)      VERIFY=$2; shift 2;;
-      *) die "unknown option $1";;
+      *) die "unknown option $1$in";;
     esac
   done
+}
+
+parse_options() {  # command-line options, parsed after DEF_OPTS; then checks on the merged result
+  [ ${#DEF_OPTS[@]} -eq 0 ] || parse_option_list defaults "${DEF_OPTS[@]}"
+  parse_option_list cli "$@"
   case $MODE in cold|live) ;; *) die "--mode takes cold or live";; esac
   case $VERIFY in readback|full|none) ;; *) die "--verify takes readback, full or none";; esac
   [ "$VOLUMES_ONLY" = 0 ] || [ "$MODE" = cold ] || die "--volumes-only is cold only: drop --mode live"
   # --volumes-only creates no destination VM, so a restarted source cannot clash on MAC/IP.
   [ "$START_SOURCE" = 0 ] || [ "$IPMODE" != same ] || [ "$VOLUMES_ONLY" = 1 ] || die "--start-source needs --ip new or --ip <addr>: with the same MAC and IP both VMs cannot be up at once"
-  [ -z "$SERVER_GROUP" ] || [ "$KEEP_SG" = 0 ] || die "choose one: --server-group <name> or --keep-server-group"
+  # One of the two from MIG_DEFAULT_OPTS, the other typed: the typed one wins.
+  if [ -n "$SERVER_GROUP" ] && [ "$KEEP_SG" = 1 ] && [ "$KEEP_SG_FROM" != "$SERVER_GROUP_FROM" ]; then
+    if [ "$KEEP_SG_FROM" = defaults ]; then
+      KEEP_SG=0; drop_shown --keep-server-group
+      DEF_NOTES+=("--keep-server-group from MIG_DEFAULT_OPTS dropped: --server-group $SERVER_GROUP is on the command line")
+    else
+      drop_shown --server-group
+      DEF_NOTES+=("--server-group $SERVER_GROUP from MIG_DEFAULT_OPTS dropped: --keep-server-group is on the command line")
+      SERVER_GROUP=""
+    fi
+  fi
+  [ -z "$SERVER_GROUP" ] || [ "$KEEP_SG" = 0 ] || die "choose one: --server-group <name> or --keep-server-group$([ "$KEEP_SG_FROM" != defaults ] || echo " (both in MIG_DEFAULT_OPTS)")"
 }
 
 pool_for_type() {  # prints the RBD pool backing $VOLUME_TYPE
@@ -430,6 +501,7 @@ preflight() {
   [ "$KEEP_SG" = 0 ] || ksg=" keep-server-group"
   echo "Destination preflight (mode=$MODE$vo ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}${SERVER_GROUP:+ server-group=$SERVER_GROUP}$ksg):"
   conf_origin_info
+  default_opts_info
   if [ -n "$DEST_AZ" ]; then
     [ "$VOLUMES_ONLY" = 1 ] || check "compute AZ $DEST_AZ" "dst availability zone list --compute -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
     check "volume AZ $DEST_AZ"  "dst availability zone list --volume  -f value -c \"Zone Name\" | grep -qx -- \"$DEST_AZ\""
@@ -1118,6 +1190,7 @@ volume_preflight() {  # dir ; destination checks for the volume in $dir/volume.j
   vid=$(jq -r .id "$dir/volume.json")
   echo "Destination preflight (migrate-volume type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}):"
   conf_origin_info
+  default_opts_info
   if [ "$IN_USE" = 1 ]; then
     if [ "$(jq -r .status "$dir/volume.json")" = available ]; then
       echo "  INFO  --in-use ignored: $vid is available, copied as usual"
@@ -1244,10 +1317,11 @@ cmd_rollback_volume() {  # volume name, ID or vol-<id> ; deletes the copy, never
 [ $# -ge 2 ] || { sed -n '2,51p' "$0"; exit 2; }
 CMD=$1 VM=$2; shift 2
 case $CMD in
-  plan|migrate) parse_options "$@"
+  plan|migrate) load_default_opts "$CMD"; parse_options "$@"
                 [ "$IN_USE" = 0 ] || die "--in-use belongs to migrate-volume: plan and migrate move a VM with its volumes (--mode live keeps it running until the cutover)"
                 apply_az_defaults; POOL=$(pool_for_type); check_project_scope;;
-  migrate-volume) volume_options_only "$@"; parse_options "$@"; apply_az_defaults; POOL=$(pool_for_type); check_project_scope;;
+  # volume_options_only checks the typed options only; load_default_opts filters the defaults.
+  migrate-volume) volume_options_only "$@"; load_default_opts "$CMD"; parse_options "$@"; apply_az_defaults; POOL=$(pool_for_type); check_project_scope;;
   rollback) [ $# -eq 0 ] || die "rollback takes no options"; check_project_scope;;
   *) die "unknown command $CMD";;
 esac

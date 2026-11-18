@@ -1,0 +1,78 @@
+# migrate.conf.example — mẫu đầy đủ cho /opt/mig/migrate.conf (migrate-vm.sh, migrate-batch.sh)
+#
+# Cài:   install -m 600 migrate.conf.example /opt/mig/migrate.conf    rồi bỏ dấu # ở dòng cần dùng.
+# Đổi đường dẫn file: env MIG_CONF=/đường/dẫn/khác.conf
+#
+# File là bash KEY=VALUE, tool `source` nó lúc khởi động, không cần export. Giá trị có khoảng trắng
+# thì đặt trong nháy kép.
+#
+# Thứ tự ưu tiên: option CLI > biến môi trường > file này > mặc định trong script.
+#   - Biến đã có trong env (kể cả rỗng) thắng file. Ví dụ COPY_STREAMS=4 migrate-vm.sh migrate vm-a
+#     chỉ đổi cho lần chạy đó.
+#   - Tắt một biến của file cho một lần chạy thì đặt rỗng trong env: MIG_AZ= migrate-vm.sh ...
+#   - Dòng còn dấu # thì biến lấy mặc định trong script (ghi ở từng dòng dưới).
+#
+# migrate-batch.sh chỉ đọc SRC_RC, DST_RC, PROJECT_MAP_FILE từ file này. Mọi biến còn lại do từng lần
+# gọi migrate-vm.sh tự đọc, nên batch hưởng đủ.
+# Giá trị dưới đây là ví dụ (IP dải TEST-NET). Hướng dẫn chi tiết: GUIDE.md mục 2 và 2b.
+
+# ---- Kết nối 2 cloud ---------------------------------------------------------------------------
+# Openrc cloud nguồn (iSCSI). Chạy đa project (SRC_PROJECT/DST_PROJECT) thì phải là password openrc.
+# Mặc định: /opt/mig/src/admin-openrc.sh
+#SRC_RC=/opt/mig/src/admin-openrc.sh
+# Openrc cloud đích (Ceph RBD). Mặc định: /opt/mig/dst/admin-openrc.sh
+#DST_RC=/opt/mig/dst/admin-openrc.sh
+
+# ---- Ceph đích ---------------------------------------------------------------------------------
+# Pool RBD mặc định của Cinder đích: nơi chứa volume khi type không có trong RBD_POOL_MAP.
+# Mặc định: mig-volumes
+#RBD_POOL=volumes
+# Map volume type -> pool RBD, dạng "type:pool,type:pool", không có khoảng trắng. Tool ghi thẳng
+# vào Ceph nên phải biết Cinder đổ type nào vào pool nào (GUIDE 2b.1b). Mặc định: rỗng
+#RBD_POOL_MAP="nvme-az1:volumes-nvme-az1,nvme-az2:volumes-nvme-az2"
+# User Ceph của host chuyển, cần caps trên mọi pool sẽ ghi vào. Mặc định: mig-xfer
+#RBD_USER=mig-xfer
+# ceph.conf của cụm đích (mỗi AZ một cụm thì mỗi AZ một file conf). Mặc định: /etc/ceph/ceph.conf
+#CEPH_CONF=/etc/ceph/ceph.conf
+
+# ---- Host chuyển ------------------------------------------------------------------------------
+# IP của host chuyển trên mạng iSCSI. Mặc định trong script là IP của lab, nên production luôn
+# phải đặt giá trị thật.
+#MIG_ISCSI_IP=192.0.2.20
+# 1 = attach qua multipath (SAN nhiều portal, cần multipathd); 0 = một đường. Mặc định: 0
+#MIG_MULTIPATH=0
+# Số luồng ghi của qemu-img convert (cold). Mặc định: 8
+#COPY_STREAMS=8
+
+# ---- Project -----------------------------------------------------------------------------------
+# Chạy phía nguồn / đích trong project này của account openrc (cần password openrc). Thường không
+# ghi ở đây: đặt theo từng lần chạy, batch tự đặt cho từng VM. Mặc định: rỗng (không scope thêm)
+#SRC_PROJECT=proj-a
+#DST_PROJECT=proj-a
+# File map project nguồn -> đích, mỗi dòng "nguồn đích" phân cách bằng khoảng trắng. Chỉ
+# migrate-batch.sh đọc. Mặc định: rỗng (project đích cùng tên)
+#PROJECT_MAP_FILE=/opt/mig/project-map.conf
+
+# ---- AZ (v4) -----------------------------------------------------------------------------------
+# AZ đích khi không truyền --az; --az trên CLI thắng. Mặc định: rỗng (scheduler đích tự chọn)
+#MIG_AZ=AZ1
+# Volume type theo AZ, áp khi có AZ hiệu lực mà không truyền --volume-type; --volume-type trên CLI
+# thắng. AZ không có trong map thì như không có map. Mặc định: rỗng
+#AZ_TYPE_MAP="AZ1:nvme-az1,AZ2:nvme-az2"
+
+# ---- Option mặc định (v4) ----------------------------------------------------------------------
+# Option luôn muốn có, khỏi gõ mỗi lần. Chuỗi được parse TRƯỚC option CLI của plan/migrate/
+# migrate-volume, nên CLI thắng với option có giá trị (vd conf --verify none, gõ --verify full thì
+# full thắng). Mặc định: rỗng.
+#   - Tách token theo khoảng trắng: giá trị chứa khoảng trắng không dùng được ở đây.
+#   - Option kiểu cờ (--keep-source-ports, --keep-server-group…) không tắt được từ CLI. Muốn bỏ hết
+#     option mặc định cho một lần chạy: MIG_DEFAULT_OPTS="" migrate-vm.sh ...
+#   - --keep-server-group ở đây mà CLI gõ --server-group <x>: bỏ keep, báo INFO, không dừng
+#     (và ngược lại). Cả hai cùng nằm ở đây thì dừng.
+#   - migrate-volume chỉ lấy --volume-type, --az, --verify. Option khác bị bỏ kèm 1 dòng INFO.
+#   - --in-use không bao giờ được lấy từ đây (bỏ kèm INFO), phải gõ tay.
+#   - rollback không dùng biến này.
+#   - Token sai chính tả hoặc thiếu giá trị: tool dừng ngay, thông báo nêu MIG_DEFAULT_OPTS.
+#   - --az / --volume-type ở đây có ưu tiên thấp hơn MIG_AZ / AZ_TYPE_MAP.
+#   - Preflight in 1 dòng INFO liệt kê option đã áp.
+#MIG_DEFAULT_OPTS="--keep-server-group --verify none"

@@ -190,13 +190,16 @@ MIG_ISCSI_IP=<ip-iscsi-host>
 MIG_MULTIPATH=0
 COPY_STREAMS=8
 PROJECT_MAP_FILE=/opt/mig/project-map.conf
+MIG_DEFAULT_OPTS=""                 # v4: option luôn áp, vd "--verify none"; CLI thắng
 # SRC_PROJECT= / DST_PROJECT= : để trống ở đây, đặt theo lần chạy (batch tự đặt cho từng VM)
 EOF
 chmod 600 /opt/mig/migrate.conf
 ```
 
 Danh sách biến đọc từ file: `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP
-MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`.
+MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`, từ v4 thêm `MIG_AZ AZ_TYPE_MAP
+MIG_DEFAULT_OPTS`. Mẫu đủ mọi biến kèm mô tả từng dòng: [migrate.conf.example](migrate.conf.example)
+(có thể dùng thay heredoc trên: `install -m 600 migrate.conf.example /opt/mig/migrate.conf`).
 Cloud đích nhiều AZ hoặc nhiều pool: khai `RBD_POOL_MAP` (và từ v4 `MIG_AZ`, `AZ_TYPE_MAP`) theo
 GUIDE mục 2b.1b, nơi giải thích chuỗi AZ → volume type → pool, lý do phải khai và cách tra ngược.
 

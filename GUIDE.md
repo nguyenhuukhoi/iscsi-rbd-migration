@@ -170,6 +170,7 @@ Biến môi trường để trỏ sang hệ thống khác:
 | `RBD_POOL_MAP` | (trống) | `typeA:poolA,typeB:poolB` — pool cho từng volume type. Vì sao phải khai, cách tra ngược type → pool: mục 2b.1b |
 | `MIG_AZ` | (trống) | (v4) AZ mặc định khi không truyền `--az`; truyền `--az` thì CLI thắng (mục 2b.1b) |
 | `AZ_TYPE_MAP` | (trống) | (v4) `AZ1:typeA,AZ2:typeB` — volume type theo AZ khi không truyền `--volume-type`; `--volume-type` tay luôn thắng (mục 2b.1b) |
+| `MIG_DEFAULT_OPTS` | (trống) | (v4) Option mặc định, vd `"--keep-server-group --verify none"`, parse trước option CLI nên CLI thắng; `MIG_DEFAULT_OPTS=""` tắt cho một lần chạy. Quy tắc đủ: [migrate.conf.example](migrate.conf.example) |
 | `CEPH_CONF` | `/etc/ceph/ceph.conf` | Cấu hình Ceph |
 | `MIG_ISCSI_IP` | `10.77.0.20` | IP host chuyển trên mạng iSCSI |
 | `MIG_MULTIPATH` | `0` | `1`: attach qua multipath (SAN nhiều portal kiểu PowerStore) — cần `multipathd` chạy; brick từ chối device không phải dm và so kích thước device với volume (chặn LUN lạ khác cỡ) |
@@ -205,7 +206,8 @@ muốn đè conf cho một lần chạy thì chỉ cần đặt env trước l�
 
 Biến đọc từ file (ý nghĩa xem bảng biến môi trường ở mục 2): `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP
 RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT`,
-từ v4 thêm `MIG_AZ AZ_TYPE_MAP` (mục 2b.1b).
+từ v4 thêm `MIG_AZ AZ_TYPE_MAP` (mục 2b.1b) và `MIG_DEFAULT_OPTS`. Mẫu đủ mọi biến, mỗi biến có mô tả:
+[migrate.conf.example](migrate.conf.example) (`install -m 600 migrate.conf.example /opt/mig/migrate.conf`).
 `migrate-batch.sh` cũng đọc file này, nhưng chỉ lấy `SRC_RC`, `DST_RC`, `PROJECT_MAP_FILE`. Các biến còn
 lại do từng lần gọi `migrate-vm.sh` tự đọc.
 
@@ -217,6 +219,7 @@ RBD_POOL=volumes-nvme
 RBD_POOL_MAP="nvme-az1:volumes-nvme-az1,nvme-az2:volumes-nvme-az2"
 MIG_AZ=AZ1                               # v4: AZ khi không truyền --az
 AZ_TYPE_MAP="AZ1:nvme-az1,AZ2:nvme-az2"  # v4: volume type theo AZ khi không truyền --volume-type
+MIG_DEFAULT_OPTS="--verify none"         # v4: option luôn áp, CLI thắng; MIG_DEFAULT_OPTS="" tắt
 RBD_USER=mig-xfer
 CEPH_CONF=/etc/ceph/ceph.conf
 MIG_ISCSI_IP=192.0.2.20
