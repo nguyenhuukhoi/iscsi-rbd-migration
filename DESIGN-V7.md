@@ -18,18 +18,30 @@ vào V7.
 - CLI một bộ parser (argparse, subcommands) — **không còn dấu `--`**:
 
 ```
-migrate plan     <vm>  [options]          # như migrate-vm.sh plan
-migrate migrate  <vm>  [options]          # như migrate-vm.sh migrate (chấp nhận chữ lặp; verb giữ
-                                          #  nguyên để thói quen + test cũ chuyển thẳng)
+migrate plan     [<vm> | --vm a,b | --host h1,h2 | --project p | --vm-file f] [options per-VM]
+                 # dry-run cho 1 hay N VM — THAY LUÔN --plan-only của batch cũ
+migrate migrate  [<vm> | selector như trên] [options per-VM] [--yes] [--continue-on-error]
 migrate rollback <vm|volume|id>
-migrate volume   <volume> [--in-use] [--volume-type t] [--az z] [--verify v]   # = migrate-volume
-migrate batch    [--host …] [--project …] [--vm …] [--vm-file f] [--volumes …]
-                 [--plan-only|--yes] [--continue-on-error] [MỌI option per-VM đặt thẳng ở đây]
+migrate volume   [<volume> | --project p (--available|--attached|--all) | --vm a,b]
+                 [--in-use] [--volume-type t] [--az z] [--verify v]
 ```
 
-- `migrate batch --vm a,b --az AZ1 --verify none --yes`: một namespace duy nhất — parser biết
-  option nào là của batch (selector/điều khiển), option nào là per-VM (tự truyền xuống từng VM).
-  Trùng tên không xảy ra: bộ option hiện tại đã phân biệt sẵn (`--volumes` ≠ `--volumes-only`).
+**Chốt bổ sung 18/11 (đợt 2, user):** KHÔNG có subcommand `batch` — selector hóa toàn bộ,
+migrate 1 VM chỉ là đợt có 1 con; positional `<vm>` = shorthand của `--vm <vm>`:
+
+- Selector giải ra N VM → N=1 hay N=100 đi cùng một đường: enumerate (--all-projects khi cần),
+  bảng Selected/Plan/Summary, mỗi VM một tiến trình con + scope project riêng + log riêng,
+  SKIP phân loại như batch cũ.
+- **`migrate migrate` LUÔN hỏi `Type yes` trừ khi có `--yes`** — kể cả khi chỉ 1 VM. Đây là
+  thay đổi hành vi CÓ CHỦ ĐÍCH so với migrate-vm.sh cũ (chạy thẳng), user chốt vì an toàn —
+  ngoại lệ được phép của hợp đồng parity §2. Hệ quả: script/cron phải `--yes`; bộ test cũ khi
+  sed đổi lệnh thêm `--yes` vào các dòng `migrate migrate` (thay thế máy móc, liệt kê dòng).
+  stdin không phải terminal mà thiếu `--yes` → die như batch cũ.
+- Volume theo đợt gộp vào `migrate volume` (không còn `--volumes` của batch cũ):
+  `migrate volume --project p --available|--attached|--all`, `migrate volume --vm a,b`
+  (= attached của các VM đó). Quy tắc naming/giữ tên như V3/V4.
+- Một namespace option duy nhất — parser biết option nào là điều phối (selector/--yes/
+  --continue-on-error) và option nào per-VM; không còn dấu `--`.
 - Gõ kiểu cũ `migrate-vm.sh …` sau khi chuyển đổi: không còn (user chốt thay thế hẳn). Bản bash
   chuyển vào `archive/` như v1, kèm ghi chú commit cuối còn hỗ trợ.
 
