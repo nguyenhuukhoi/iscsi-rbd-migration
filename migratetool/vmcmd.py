@@ -3,6 +3,7 @@ import time
 
 from . import livesync, proc
 from .copyvol import cleanup_attach, copy_volume_cold, create_dest_volume
+from .ephemeral import migrate_ephemeral_root
 from .preflight import preflight
 from .server import create_destination, detach_source_ports
 from .util import Die, Exit, jqs, log, out, prog
@@ -35,8 +36,6 @@ def cmd_migrate(r, st):
     r.ephemeral = detect_boot(st)
     if not preflight(r, st):
         raise Exit(1)
-    if r.ephemeral:
-        raise Die("ephemeral (image-backed) root disk: " + NOT_PORTED)
     st.write("options", "MODE=%s IPMODE=%s IPADDR=%s VOLUME_TYPE=%s POOL=%s VERIFY=%s FLAVOR=%s SG=%s EPHEMERAL=%s AZ=%s\n"
              % (o.mode, o.ipmode, o.ipaddr, o.volume_type, r.pool, o.verify, o.ov_flavor, o.ov_sg,
                 1 if r.ephemeral else 0, o.dest_az))
@@ -69,6 +68,8 @@ def cmd_migrate(r, st):
         # --volumes-only never detaches: no destination port will take over the MAC+IP.
         if not o.volumes_only and o.ipmode == "same" and not o.keep_ports:
             detach_source_ports(r, vm, st, sid)
+        if r.ephemeral:
+            migrate_ephemeral_root(r, vm, st, sid)
         r.src.out("server", "lock", sid)
         if o.volumes_only:
             log("source stopped and locked; ports left attached (--volumes-only creates no destination port)")
