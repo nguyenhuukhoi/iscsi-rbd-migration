@@ -44,7 +44,7 @@
 # Số luồng ghi của qemu-img convert (cold). Mặc định: 8
 #COPY_STREAMS=8
 
-# ---- Project -----------------------------------------------------------------------------------
+# ---- Project và file map ----------------------------------------------------------------------
 # Chạy phía nguồn / đích trong project này của account openrc (cần password openrc). Thường không
 # ghi ở đây: đặt theo từng lần chạy, batch tự đặt cho từng VM. Mặc định: rỗng (không scope thêm)
 #SRC_PROJECT=proj-a
@@ -52,6 +52,21 @@
 # File map project nguồn -> đích, mỗi dòng "nguồn đích" phân cách bằng khoảng trắng. Chỉ
 # migrate-batch.sh đọc. Mặc định: rỗng (project đích cùng tên)
 #PROJECT_MAP_FILE=/opt/mig/project-map.conf
+# (v5) File map flavor nguồn -> đích. Chỉ dùng khi chạy với --flavor-fallback (gõ tay, hoặc đặt trong
+# MIG_DEFAULT_OPTS), và chỉ khi đích KHÔNG có flavor cùng tên với nguồn. Có cùng tên thì dùng luôn,
+# không tra map; --flavor gõ tay luôn thắng.
+#   - Flavor đích trong map phải có sẵn ở đích: tool không bao giờ tạo flavor.
+#   - Flavor map ra nhỏ hơn nguồn (vCPU hoặc RAM): preflight in WARN, vẫn chạy.
+#   - Bật flag mà biến này rỗng, hoặc file không đọc được: tool dừng.
+#   - Format giống project map: mỗi dòng "flavor-nguồn flavor-đích" phân cách bằng khoảng trắng,
+#     # là comment, dòng sai dạng (kể cả "a = b") thì tool dừng.
+# Ví dụ /opt/mig/flavor-map.conf:
+#     m1.large      c2.large
+#     m1.xlarge     c2.xlarge
+#     legacy.tiny   m1.small
+# Chỉ migrate-vm.sh đọc; batch truyền -- --flavor-fallback thì mỗi VM tra map theo flavor của nó.
+# Mặc định: rỗng
+#FLAVOR_MAP_FILE=/opt/mig/flavor-map.conf
 
 # ---- AZ (v4) -----------------------------------------------------------------------------------
 # AZ đích khi không truyền --az; --az trên CLI thắng. Mặc định: rỗng (scheduler đích tự chọn)

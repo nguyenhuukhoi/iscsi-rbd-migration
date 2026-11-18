@@ -265,7 +265,7 @@ VOLPASS=() DROPPED=()
 for ((j=0; j<${#PASS[@]}; j++)); do
   case ${PASS[$j]} in
     --volume-type|--az|--verify|--mode) VOLPASS+=("${PASS[$j]}" "${PASS[$((j+1))]:-}"); j=$((j+1));;
-    --start-source|--keep-source-ports|--volumes-only|--keep-server-group|--in-use) DROPPED+=("${PASS[$j]}");;
+    --start-source|--keep-source-ports|--volumes-only|--keep-server-group|--in-use|--flavor-fallback) DROPPED+=("${PASS[$j]}");;
     *) DROPPED+=("${PASS[$j]} ${PASS[$((j+1))]:-}"); j=$((j+1));;
   esac
 done

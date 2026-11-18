@@ -24,6 +24,9 @@
 #                           (for clouds with per-AZ backends / cross_az_attach=false).
 #                           Default: MIG_AZ when set, else let the destination schedulers pick.
 #   --flavor <name>         flavor for the destination VM (default: same name as the source).
+#   --flavor-fallback       destination lacks the source's flavor name: use the flavor FLAVOR_MAP_FILE
+#                           maps it to ("source-flavor destination-flavor" lines). Never creates a
+#                           flavor; --flavor still wins; an existing same-name flavor is kept.
 #   --security-group <sgs>  comma-separated security groups for every destination port
 #                           (default: the same group names the source ports carry).
 #   --ip same|new|<addr>    same (default): keep MAC+IP, detach source ports at cutover.
@@ -56,8 +59,9 @@
 # Source volumes are never modified or deleted; rollback restores everything.
 # Destination volumes are named <vm>-<device> (app01-vda, app01-vdb), ports <vm>-<ip>.
 # Environment overrides: SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP COPY_STREAMS
-# MIG_MULTIPATH MIG_AZ AZ_TYPE_MAP MIG_DEFAULT_OPTS; the same keys may be set in $MIG_CONF (default
-# /opt/mig/migrate.conf, template: migrate.conf.example), and the environment wins over that file.
+# MIG_MULTIPATH MIG_AZ AZ_TYPE_MAP MIG_DEFAULT_OPTS FLAVOR_MAP_FILE; the same keys may be set in
+# $MIG_CONF (default /opt/mig/migrate.conf, template: migrate.conf.example), and the environment wins
+# over that file.
 # SRC_PROJECT / DST_PROJECT run each side in that project of the openrc's account (password openrc
 # only: an application credential is bound to one project). MIG_DEFAULT_OPTS="--opt …" is parsed
 # before the command-line options of plan/migrate/migrate-volume, so the command line wins.
@@ -69,7 +73,8 @@ MIG_CONF=${MIG_CONF:-/opt/mig/migrate.conf}
 if [ -r "$MIG_CONF" ]; then
   declare -A _env_saved=()
   for _v in SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP MIG_MULTIPATH \
-            COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT MIG_AZ AZ_TYPE_MAP MIG_DEFAULT_OPTS; do
+            COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT MIG_AZ AZ_TYPE_MAP MIG_DEFAULT_OPTS \
+            FLAVOR_MAP_FILE; do
     [ -z "${!_v+x}" ] || _env_saved[$_v]=${!_v}
   done
   source "$MIG_CONF"
@@ -86,6 +91,7 @@ RBD_POOL_MAP=${RBD_POOL_MAP:-}
 MIG_AZ=${MIG_AZ:-}
 AZ_TYPE_MAP=${AZ_TYPE_MAP:-}
 MIG_DEFAULT_OPTS=${MIG_DEFAULT_OPTS:-}
+FLAVOR_MAP_FILE=${FLAVOR_MAP_FILE:-}
 RBD_USER=${RBD_USER:-mig-xfer}
 COPY_STREAMS=${COPY_STREAMS:-8}
 export MIG_ISCSI_IP=${MIG_ISCSI_IP:-10.77.0.20}
@@ -164,7 +170,7 @@ src_sg_id() {  # name-or-id ; prints the group's ID in the source project, nothi
 # --- options -------------------------------------------------------------------
 MODE=cold IPMODE=same IPADDR="" VOLUME_TYPE="" DEST_AZ="" START_SOURCE=0 KEEP_PORTS=0 MAX_PASSES=5 DELTA_LIMIT_MB=64 VERIFY=readback
 OV_FLAVOR="" OV_SG="" EPHEMERAL=0 SERVER_GROUP="" VOLUMES_ONLY=0
-KEEP_SG=0 IN_USE=0 AZ_CLI=0 TYPE_CLI=0
+KEEP_SG=0 IN_USE=0 AZ_CLI=0 TYPE_CLI=0 FLAVOR_FALLBACK=0
 
 # MIG_DEFAULT_OPTS (conf or environment) is parsed before the command line, so the command line wins.
 # Whitespace-separated tokens only: a value containing spaces is not supported. Only a typed --az /
@@ -177,7 +183,7 @@ load_default_opts() {  # command ; MIG_DEFAULT_OPTS -> DEF_OPTS (to parse), DEF_
   while [ "$i" -lt ${#toks[@]} ]; do
     t=${toks[$i]} v=""
     case $t in
-      --start-source|--keep-source-ports|--keep-server-group|--volumes-only|--in-use) i=$((i+1));;
+      --start-source|--keep-source-ports|--keep-server-group|--volumes-only|--in-use|--flavor-fallback) i=$((i+1));;
       --mode|--volume-type|--az|--ip|--flavor|--security-group|--server-group|--max-passes|--delta-limit|--verify)
         [ $((i+1)) -lt ${#toks[@]} ] || die "MIG_DEFAULT_OPTS: $t needs a value (MIG_DEFAULT_OPTS=\"$MIG_DEFAULT_OPTS\")"
         v=${toks[$((i+1))]}; i=$((i+2));;
@@ -234,6 +240,7 @@ parse_option_list() {  # cli|defaults options...
       --security-group) OV_SG=$2; shift 2;;
       --server-group) SERVER_GROUP=$2; SERVER_GROUP_FROM=$from; shift 2;;
       --keep-server-group) KEEP_SG=1; KEEP_SG_FROM=$from; shift;;
+      --flavor-fallback) FLAVOR_FALLBACK=1; shift;;
       --in-use)       IN_USE=1; shift;;
       --volumes-only) VOLUMES_ONLY=1; shift;;
       --max-passes)  MAX_PASSES=$2; shift 2;;
@@ -487,6 +494,63 @@ keep_sg_ensure() {  # dir ; finds or creates $KSG_DST at the destination, sets K
   echo "$KSG_ID created=$created" > "$dir/dst-server-group"
 }
 
+# --flavor-fallback: only when the destination lacks the source's flavor name, FLAVOR_MAP_FILE
+# ("source-flavor destination-flavor" lines, same format as the batch project map) names the
+# replacement. The mapped flavor must already exist: the tool never creates flavors.
+declare -A FLAVOR_MAP=()
+load_flavor_map() {  # FLAVOR_MAP_FILE -> FLAVOR_MAP ; the flag was asked for, so a missing map is fatal
+  local line a b extra
+  [ -n "$FLAVOR_MAP_FILE" ] || die "--flavor-fallback needs FLAVOR_MAP_FILE (lines 'source-flavor destination-flavor'), set it in $MIG_CONF or the environment"
+  [ -f "$FLAVOR_MAP_FILE" ] && [ -r "$FLAVOR_MAP_FILE" ] || die "--flavor-fallback: FLAVOR_MAP_FILE $FLAVOR_MAP_FILE is not a readable file"
+  while IFS= read -r line || [ -n "$line" ]; do
+    a="" b="" extra=""
+    read -r a b extra <<<"${line%%#*}" || true
+    [ -n "$a" ] || continue
+    [ -n "$b" ] && [ -z "$extra" ] || die "$FLAVOR_MAP_FILE: expected 'source-flavor destination-flavor', got: $line"
+    FLAVOR_MAP[$a]=$b
+  done < "$FLAVOR_MAP_FILE"
+}
+
+flavor_fallback_preflight() {  # dir ; called from preflight, sets its fail; a map hit sets OV_FLAVOR
+  local srcf mapped dj sv sr dv dr sj
+  if [ -n "$OV_FLAVOR" ]; then
+    echo "  INFO  --flavor-fallback has no effect: --flavor $OV_FLAVOR is given"
+    check "flavor $OV_FLAVOR" "dst flavor show '$OV_FLAVOR'"
+    return 0
+  fi
+  srcf=$(jq -r '.flavor | if type=="object" then (.original_name // .name) else (. | split(" ")[0]) end' "$1/server.json")
+  # A same-name flavor at the destination wins: the map is a fallback, not an override.
+  if dst flavor show "$srcf" >/dev/null 2>&1; then echo "  OK    flavor $srcf"; return 0; fi
+  mapped=""
+  [ -z "$srcf" ] || mapped=${FLAVOR_MAP[$srcf]:-}
+  if [ -z "$mapped" ]; then
+    echo "  FAIL  flavor $srcf — not at the destination and not in $FLAVOR_MAP_FILE: add a line '$srcf <dest-flavor>' to $FLAVOR_MAP_FILE"
+    fail=1; return 0
+  fi
+  echo "  INFO  flavor $srcf -> $mapped from FLAVOR_MAP_FILE"
+  if ! dj=$(dst flavor show "$mapped" -f json 2>/dev/null); then
+    echo "  FAIL  flavor $mapped (mapped from $srcf in $FLAVOR_MAP_FILE) not found at the destination — the tool never creates flavors"
+    fail=1; return 0
+  fi
+  echo "  OK    flavor $mapped"
+  OV_FLAVOR=$mapped
+  # The source side comes from the server's own embedded flavor when present (exact, survives a
+  # deleted source flavor); flavor show otherwise.
+  sv=$(jq -r '.flavor | if type=="object" then (.vcpus // empty) else empty end' "$1/server.json")
+  sr=$(jq -r '.flavor | if type=="object" then (.ram // empty) else empty end' "$1/server.json")
+  if [ -z "$sv" ] || [ -z "$sr" ]; then
+    if sj=$(src flavor show "$srcf" -f json 2>/dev/null); then
+      sv=$(jq -r '.vcpus // empty' <<<"$sj"); sr=$(jq -r '.ram // empty' <<<"$sj")
+    fi
+  fi
+  dv=$(jq -r '.vcpus // empty' <<<"$dj"); dr=$(jq -r '.ram // empty' <<<"$dj")
+  if ! [[ $sv =~ ^[0-9]+$ && $sr =~ ^[0-9]+$ && $dv =~ ^[0-9]+$ && $dr =~ ^[0-9]+$ ]]; then
+    echo "  INFO  flavor sizes not compared: vcpus/ram of $srcf or $mapped unreadable"
+  elif [ "$dv" -lt "$sv" ] || [ "$dr" -lt "$sr" ]; then
+    echo "  WARN  mapped flavor $mapped is smaller than $srcf (vcpus $sv -> $dv, ram $sr -> $dr MB)"
+  fi
+}
+
 preflight() {
   local dir=$1 fail=0
   check() { if eval "$2" >/dev/null 2>&1; then echo "  OK    $1"; else echo "  FAIL  $1"; fail=1; fi; }
@@ -499,6 +563,7 @@ preflight() {
   [ "$VOLUMES_ONLY" = 0 ] || vo=" volumes-only"
   local ksg=""
   [ "$KEEP_SG" = 0 ] || ksg=" keep-server-group"
+  [ "$FLAVOR_FALLBACK" = 0 ] || ksg+=" flavor-fallback"
   echo "Destination preflight (mode=$MODE$vo ip=$IPMODE${IPADDR:+ $IPADDR} type=${VOLUME_TYPE:-default} pool=$POOL${DEST_AZ:+ az=$DEST_AZ}${OV_FLAVOR:+ flavor=$OV_FLAVOR}${OV_SG:+ sg=$OV_SG}${SERVER_GROUP:+ server-group=$SERVER_GROUP}$ksg):"
   conf_origin_info
   default_opts_info
@@ -511,6 +576,7 @@ preflight() {
     # Volumes recorded in this VM's own state are not a clash (plan run after a migrate).
     [ -z "$SERVER_GROUP" ] || echo "  INFO  --server-group $SERVER_GROUP ignored: --volumes-only creates no server"
     [ "$KEEP_SG" = 0 ] || echo "  INFO  --keep-server-group ignored: --volumes-only creates no server"
+    [ "$FLAVOR_FALLBACK" = 0 ] || echo "  INFO  --flavor-fallback ignored: --volumes-only creates no server"
     local svid dname dids did clash
     for svid in $(jq -r '.[]."Volume ID"' "$dir/attachments.json"); do
       dname=$(dest_volume_name "$svid" "$dir")
@@ -536,7 +602,11 @@ preflight() {
       echo "  FAIL  destination already has a server named $vmname ($dsid) from an earlier migration — inspect it; to redo the migration run: $0 rollback $(basename "$dir") (DELETES that destination server and its volumes)"
       fail=1
     fi
-    check "flavor $flavor" "dst flavor show '$flavor'"
+    if [ "$FLAVOR_FALLBACK" = 0 ]; then
+      check "flavor $flavor" "dst flavor show '$flavor'"
+    else
+      flavor_fallback_preflight "$dir"
+    fi
     # Nova cannot assign another user's keypair; the key itself is inside the disk anyway.
     if [ -n "$key" ]; then
       if dst keypair show "$key" >/dev/null 2>&1; then
@@ -1156,7 +1226,7 @@ cmd_rollback() {
 volume_options_only() {  # raw options ; refuse the options that only make sense with a server
   local a prev="" bad=""
   for a in "$@"; do
-    case $a in --ip|--flavor|--security-group|--server-group|--keep-server-group|--start-source|--keep-source-ports|--volumes-only) bad+=" $a";; esac
+    case $a in --ip|--flavor|--flavor-fallback|--security-group|--server-group|--keep-server-group|--start-source|--keep-source-ports|--volumes-only) bad+=" $a";; esac
     [ "$prev" != --mode ] || [ "$a" != live ] || bad+=" --mode live"
     prev=$a
   done
@@ -1314,11 +1384,12 @@ cmd_rollback_volume() {  # volume name, ID or vol-<id> ; deletes the copy, never
   log "rollback done; source volume $vid was never modified"
 }
 
-[ $# -ge 2 ] || { sed -n '2,51p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '2,54p' "$0"; exit 2; }
 CMD=$1 VM=$2; shift 2
 case $CMD in
   plan|migrate) load_default_opts "$CMD"; parse_options "$@"
                 [ "$IN_USE" = 0 ] || die "--in-use belongs to migrate-volume: plan and migrate move a VM with its volumes (--mode live keeps it running until the cutover)"
+                [ "$FLAVOR_FALLBACK" = 0 ] || [ "$VOLUMES_ONLY" = 1 ] || load_flavor_map
                 apply_az_defaults; POOL=$(pool_for_type); check_project_scope;;
   # volume_options_only checks the typed options only; load_default_opts filters the defaults.
   migrate-volume) volume_options_only "$@"; load_default_opts "$CMD"; parse_options "$@"; apply_az_defaults; POOL=$(pool_for_type); check_project_scope;;
