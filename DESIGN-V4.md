@@ -124,6 +124,43 @@ trước check). Fix: trong `create_dest_volume`, ghi volume-map vào state ngay
 (trước `wait_volume`/check pool), như `create_volume_copy` đang làm. Sau fix, die ở bất kỳ điểm nào
 sau khi tạo volume → `rollback <vm>` dọn hết. GUIDE 2b.1b bỏ gạch đầu dòng "xóa tay".
 
+## 2e. Feature E — MIG_DEFAULT_OPTS: option mặc định trong conf (user chốt 18/11)
+
+Yêu cầu user: "đưa 'lần nào cũng nhớ truyền' thành default đi; trong .conf ghi hết tất cả các
+option có thể overwrite vào và nhớ mô tả".
+
+### Hành vi
+
+- Biến conf/env mới `MIG_DEFAULT_OPTS` (vào conf loader như các biến khác, env thắng conf):
+  chuỗi option được chèn vào TRƯỚC option CLI của `plan`/`migrate`/`migrate-volume`.
+  Tách token theo khoảng trắng (giá trị có khoảng trắng không hỗ trợ — ghi rõ trong docs).
+- Ưu tiên: vì defaults parse trước, **CLI luôn thắng** với option có giá trị (--verify, --az...,
+  gán sau đè gán trước). Tắt toàn bộ cho một lần chạy: `MIG_DEFAULT_OPTS="" migrate-vm.sh ...`.
+- Xung đột mềm: `--keep-server-group` đến từ DEFAULTS + CLI truyền `--server-group x` → bỏ keep,
+  log INFO, không die (cần theo dõi nguồn gốc flag, kiểu AZ_CLI). Gõ tay cả hai trên CLI → die như cũ.
+- `migrate-volume`: chỉ nhận subset hợp lệ từ defaults (`--volume-type --az --verify`); token
+  khác trong defaults bị bỏ kèm 1 dòng INFO (không die — defaults là policy chung cho cả VM lẫn
+  volume). `--in-use` KHÔNG nhận từ defaults (quyết định nguy hiểm, phải gõ tay).
+- Token không phải option hợp lệ → die nêu rõ `MIG_DEFAULT_OPTS` và token sai (bắt typo sớm).
+- Preflight in 1 dòng INFO liệt kê defaults đã áp (tự giải thích log).
+- rollback không nhận defaults (rollback takes no options — giữ nguyên).
+- Batch không đổi: từng lần gọi migrate-vm.sh tự đọc conf nên defaults áp tự động.
+
+### migrate.conf.example (file mới trong repo)
+
+Template đầy đủ MỌI biến conf, mỗi biến một dòng mô tả + giá trị ví dụ/TEST-NET, nhóm theo:
+kết nối (SRC_RC DST_RC), Ceph (RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF), host chuyển
+(MIG_ISCSI_IP MIG_MULTIPATH COPY_STREAMS), project (SRC_PROJECT DST_PROJECT PROJECT_MAP_FILE),
+AZ (MIG_AZ AZ_TYPE_MAP), defaults (MIG_DEFAULT_OPTS). DEPLOY 7b + GUIDE 2b.1 trỏ tới file này
+thay vì chép template dài.
+
+### Test plan bổ sung
+
+(20) conf `MIG_DEFAULT_OPTS="--keep-server-group --verify none"` → plan hiện cả hai + INFO nguồn
+gốc; `--verify full` CLI thắng; `MIG_DEFAULT_OPTS=""` env tắt hết. (21) default keep-server-group
++ CLI `--server-group <x>` → INFO bỏ keep, dùng x, không die. (22) `migrate-volume` với defaults
+chứa option VM-only → INFO bỏ, chạy tiếp. (23) token rác trong MIG_DEFAULT_OPTS → die nêu tên biến.
+
 ## 3. Những gì KHÔNG đổi
 
 Toàn bộ V1–V3: luồng migrate/plan/rollback, naming, guard, conf, batch selectors, `--volumes`,
