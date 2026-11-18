@@ -9,27 +9,48 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING.md](DEVELOPING.md) mục 5.
 
-## [v4] — 2026-11-18 · nhánh `feature/v4-sg-inuse-vol` · ĐANG TEST
+## [v4] — 2026-11-18 · nhánh `feature/v4-sg-inuse-vol` · test xong, CHỜ MERGE
 
-Thiết kế: [DESIGN-V4.md](DESIGN-V4.md). Test: regression gate (5 bộ test cũ chạy nguyên văn) và
-feature test (19 case ở DESIGN-V4 §4) **đang chạy, báo cáo sẽ bổ sung** (`TEST-REPORT-<ngày>.md`).
-Chưa merge.
+Thiết kế: [DESIGN-V4.md](DESIGN-V4.md). Test: [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md).
+Hướng dẫn: [GUIDE.md](GUIDE.md) mục 2b.1, 2b.1b, 2b.9–2b.11.
+
+### Test
+
+- Regression gate (5 bộ test cũ chạy nguyên văn, không sửa dòng nào trong `tests/`):
+  - vòng 5 = **140/0** trên build A+B+C (`e4d76d0`);
+  - vòng 6 = **140/0** trên build cuối (`51aa611`).
+- Feature test trên lab: 4 phase = **64 PASS / 0 FAIL**, phủ đủ 27 case của DESIGN-V4 §4.
+- Harness giả lập (không gọi cloud): A/B 27/27, C + batch filter 17/17, §2d 9/9, §2e 28/28.
+- Chưa test trên lab, mới phủ bằng harness giả lập:
+  - `--keep-server-group` với group có `rules` (`max_server_per_host`);
+  - client từ chối `--rule`;
+  - microversion bị ghim dưới 2.64 (trả `policies[]`).
 
 ### Thêm
 
 - `migrate-volume <volume> --in-use`: copy volume đang gắn vào VM, không stop, không lock, không
   detach. Bản copy lấy từ một clone crash-consistent. Tool in mốc giờ clone (UTC) và ghi vào state
   `clone-time`. Không truyền flag thì volume in-use vẫn bị từ chối như v3, message gợi ý `--in-use`.
-  Volume in-use mà multiattach thì bị từ chối.
+  Volume in-use mà multiattach thì bị từ chối. Lab đã chứng minh mốc: dữ liệu ghi trước clone có
+  trong bản copy, ghi sau thì không.
 - `--keep-server-group` (cho `plan`/`migrate`): VM đích vào server group `az-<tên group nguồn>` ở project
   đích, cùng policy với group nguồn (và cùng rules nếu client nhận `--rule`).
   - Group chưa có thì `migrate` tạo ngay trước khi tạo server; `plan` không tạo gì.
   - Group có sẵn nhưng khác policy, hoặc nhiều group trùng tên: preflight FAIL.
   - Không dùng chung với `--server-group`.
   - State ghi `dst-server-group`; rollback không xóa group.
+  - Migrate rải rác nhiều lần (hoặc qua batch) vẫn dồn về cùng một group.
 - `MIG_AZ` và `AZ_TYPE_MAP` (conf hoặc env): AZ mặc định và volume type theo AZ, áp dụng khi không truyền
   `--az` / `--volume-type`. CLI luôn thắng. Preflight in nguồn gốc giá trị. Chuỗi AZ → type → pool
   giải thích ở [GUIDE.md](GUIDE.md) mục 2b.1b.
+- `MIG_DEFAULT_OPTS` (conf hoặc env): option mặc định, parse trước option CLI nên CLI thắng.
+  - `MIG_DEFAULT_OPTS=""` tắt cho một lần chạy.
+  - `--keep-server-group` từ defaults gặp `--server-group` gõ tay: bỏ keep kèm INFO, không die.
+  - `migrate-volume` chỉ lấy `--volume-type`, `--az`, `--verify`.
+  - `--in-use` không bao giờ được lấy từ defaults.
+  - Token sai thì die nêu tên biến.
+  - Preflight in 1 dòng INFO liệt kê option đã áp.
+- `migrate.conf.example`: mẫu đủ mọi biến conf, chia nhóm, mỗi biến có mô tả và ví dụ.
 
 ### Sửa
 
@@ -38,11 +59,30 @@ Chưa merge.
   mất.
 - Rollback dọn được volume đích mồ côi. `create_dest_volume` ghi `volume-map` ngay khi có ID volume
   (trước bước chờ và check pool RBD), và rollback VM xử lý được volume đang `error` hoặc đã bị xóa.
+  Lab: volume đích rơi `error` thì rollback vẫn chạy hết và dọn được; code cũ die ở bước này.
+
+### Tài liệu
+
+- [WORKFLOW.md](WORKFLOW.md): từng bước migrate một VM, cold 10 bước / live 11 bước với option mặc định
+  (lệnh thật, state, fail thì sao, thời lượng lab).
+- [DEVELOPING.md](DEVELOPING.md): hướng dẫn cho người phát triển tiếp (kiến trúc, state, lớp cấu hình,
+  quy ước, quy trình, test, checklist thêm option).
+- CHANGELOG.md (file này).
+- GUIDE: 2b.1b (chuỗi AZ → type → pool), `MIG_DEFAULT_OPTS` ở 2b.1, 2b.9 `--in-use`,
+  2b.10 `--keep-server-group`, 2b.11 ví dụ v4.
+- DEPLOY: sửa chỗ ghi sai vị trí WWN và `brick-attach.err` (mục 9), thêm phần chưa test của v4 (mục 10).
 
 ### Commit
 
-Code: `b46e51b` (in-use + keep-server-group), `e4d76d0` (MIG_AZ/AZ_TYPE_MAP + fix batch), `af151e2`
-(volume mồ côi). Thiết kế: `6eb2d9e`, `30b9da2`, `e105dd1`. Docs: `1353cc5` (GUIDE 2b.1b).
+Code:
+
+- `b46e51b`: in-use + keep-server-group.
+- `e4d76d0`: MIG_AZ/AZ_TYPE_MAP + fix batch.
+- `af151e2`: volume mồ côi.
+- `51aa611`: MIG_DEFAULT_OPTS + `migrate.conf.example`.
+
+Thiết kế: `6eb2d9e`, `30b9da2`, `e105dd1`, `7bed2c8`. Report: `2111b1d`.
+Docs: `1353cc5`, `1641270`, `797089b`, cùng commit docs chốt v4.
 
 ## [v3] — 2026-11-17/18 · nhánh `feature/batch-migrate` · test xong, CHỜ MERGE
 

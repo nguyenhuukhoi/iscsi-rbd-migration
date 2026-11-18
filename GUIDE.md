@@ -7,6 +7,9 @@ Bản v2 (thêm live mode, chọn volume type, chọn IP) thiết kế ở [DESI
 Bản v3 (file cấu hình, chạy theo project, đặt tên theo instance, `--server-group`, `--volumes-only`,
 lệnh `migrate-volume`, chạy lô bằng `migrate-batch.sh`) thiết kế ở [DESIGN-V3.md](DESIGN-V3.md), test
 ngày 2026-11-17/18: [TEST-REPORT-20261117.md](TEST-REPORT-20261117.md); hướng dẫn ở mục 2b.
+Bản v4 (`migrate-volume --in-use`, `--keep-server-group`, `MIG_AZ`/`AZ_TYPE_MAP`, `MIG_DEFAULT_OPTS`)
+thiết kế ở [DESIGN-V4.md](DESIGN-V4.md), test ngày 2026-11-18: [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md);
+hướng dẫn ở mục 2b.1, 2b.1b, 2b.9–2b.11. Lịch sử các bản: [CHANGELOG.md](CHANGELOG.md).
 Triển khai lên host convert production (từ git, step-by-step): [DEPLOY.md](DEPLOY.md).
 
 ## 1. Cách làm
@@ -74,8 +77,9 @@ migrate-vm.sh plan     <vm> [options]  # chỉ đọc: xuất cấu hình nguồ
 migrate-vm.sh migrate  <vm> [options]  # chuyển thật
 migrate-vm.sh rollback <vm>            # xóa phía đích, trả VM về nguồn
 # v3:
-migrate-vm.sh migrate-volume <volume> [--volume-type t] [--az z] [--verify v]
+migrate-vm.sh migrate-volume <volume> [--volume-type t] [--az z] [--verify v] [--in-use]
                                        # 1 volume available, nguồn không bị đụng (mục 2b.4)
+                                       # v4 --in-use: volume đang gắn, copy nóng crash-consistent (mục 2b.9)
 migrate-vm.sh rollback <volume>        # xóa bản copy của volume đó ở đích
 migrate-batch.sh <selector…> [--volumes …] [--plan-only] [--yes] [-- <options>]
                                        # chạy lô theo host/project/danh sách VM (mục 2b.6)
@@ -97,6 +101,7 @@ Options (mặc định = hành vi v1: cold, giữ IP/MAC, volume type mặc đ�
 | `--delta-limit <MB>` | live: cutover khi delta một lượt ≤ ngưỡng (mặc định 64) |
 | `--verify readback\|full\|none` | live: `readback` (mặc định) đọc lại từng chunk vừa ghi; `full` thêm `qemu-img compare` toàn bộ trong cutover; `none` không kiểm. Cold: compare toàn bộ trừ khi `none` (compare đọc lại cả 2 phía, 1 luồng — thường lâu bằng/hơn copy; bỏ thì nên checksum trong guest sau khi VM đích boot) |
 | `--server-group <tên\|ID>` | (v3) VM đích vào server group đó (`--hint group=<id>`). Group phải có sẵn trong project đích, tool không tự tạo; thiếu thì preflight FAIL kèm lệnh tạo gợi ý (mục 2b.5) |
+| `--keep-server-group` | (v4) VM đích vào server group `az-<tên group nguồn>` ở project đích, cùng policy. Chưa có thì `migrate` tạo, `plan` không tạo; rollback không xóa group. Không dùng chung với `--server-group` (mục 2b.10) |
 | `--volumes-only` | (v3) Chỉ cold. Copy volume, **không tạo port/VM đích**; nguồn vẫn stop + lock, port nguồn để nguyên (mục 2b.5) |
 
 VM nguồn **luôn phải tắt lúc cutover**, kể cả live mode — hai cloud độc lập không live-migrate kiểu
@@ -189,11 +194,14 @@ Live mode cần thêm `blocksync.py` trong `/usr/local/bin` và `python3-rbd` tr
 
 Khi chạy thật ổn định và không cần rollback nữa, tự xóa bằng tay ở nguồn: server, volume, port. Công cụ cố ý không có lệnh này.
 
-## 2b. Bản v3: file cấu hình, project, đặt tên, chạy lô
+## 2b. Bản v3 + v4: file cấu hình, project, đặt tên, chạy lô, copy nóng, server group
 
 Mọi option và cách chạy ở mục 2 giữ nguyên hành vi. Không có `migrate.conf`, không đặt
 `SRC_PROJECT`/`DST_PROJECT` thì tool chạy y như v2. Có 2 thay đổi hành vi: tên volume/port ở đích
 (mục 2b.3), và keypair thiếu ở đích không còn làm preflight FAIL (mục 2).
+
+v4 chỉ **thêm**, mọi thứ đều opt-in. Không truyền flag mới, không đặt biến mới thì build v4 chạy y như
+v3: regression gate 140/0 hai vòng, xem [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md).
 
 ### 2b.1. File cấu hình `/opt/mig/migrate.conf`
 
@@ -234,6 +242,22 @@ migrate-vm.sh plan app-vm01                                    # mọi giá tr�
 COPY_STREAMS=4 migrate-vm.sh migrate app-vm01                  # env đè conf cho riêng lần này
 MIG_CONF=/opt/mig/migrate-az2.conf migrate-vm.sh plan app-vm01 # dùng bộ conf khác
 ```
+
+**`MIG_DEFAULT_OPTS` (v4): option "lần nào cũng phải nhớ truyền" đưa vào conf.**
+
+- Chuỗi option được parse **trước** option gõ trên CLI của `plan`/`migrate`/`migrate-volume`. Vì vậy với
+  option có giá trị, CLI luôn thắng: conf có `--verify none`, gõ `--verify full` thì `full` thắng.
+- Preflight in 1 dòng nói rõ đã áp những gì:
+  `INFO  MIG_DEFAULT_OPTS applied before the command line: --keep-server-group, --verify none (command line wins)`.
+- Option dạng cờ (`--keep-server-group`, `--keep-source-ports`…) không tắt được từ CLI. Một lần chạy không
+  muốn dùng default nào thì đặt env rỗng: `MIG_DEFAULT_OPTS="" migrate-vm.sh …`.
+- Tách theo khoảng trắng, nên giá trị chứa khoảng trắng không dùng được ở đây.
+- Gõ sai tên option hoặc thiếu giá trị thì tool dừng ngay, thông báo nêu `MIG_DEFAULT_OPTS`.
+- `migrate-volume` chỉ lấy `--volume-type`, `--az`, `--verify`; option khác bị bỏ kèm 1 dòng INFO.
+- `--in-use` **không bao giờ** được lấy từ đây.
+- `rollback` không dùng biến này.
+- Đủ quy tắc (xung đột với `--server-group`, thứ tự so với `MIG_AZ`/`AZ_TYPE_MAP`) ghi ở
+  [migrate.conf.example](migrate.conf.example). Ví dụ kết hợp: mục 2b.11.
 
 ### 2b.1b. Chuỗi AZ → volume type → pool: `AZ_TYPE_MAP` và `RBD_POOL_MAP`
 
@@ -415,8 +439,8 @@ migrate-vm.sh rollback <volume-id>                                   # xóa bả
 - Chỉ nhận `--volume-type`, `--az`, `--verify`. Option dành cho server (`--ip`, `--flavor`,
   `--security-group`, `--server-group`, `--start-source`, `--keep-source-ports`, `--volumes-only`,
   `--mode live`) bị từ chối.
-- Volume `in-use` bị từ chối, kèm gợi ý cách đúng là `migrate-vm.sh migrate <vm> --volumes-only`. Mọi
-  trạng thái khác `available` cũng bị từ chối.
+- Volume `in-use` bị từ chối, kèm gợi ý 2 cách: đi theo VM (`migrate-vm.sh migrate <vm> --volumes-only`),
+  hoặc từ v4 copy nóng bằng `--in-use` (mục 2b.9). Trạng thái khác `available`/`in-use` thì bị từ chối.
 - Có nhiều volume cùng tên trong project nguồn: tool die và liệt kê ID, chạy lại bằng ID.
 - Không có lệnh `plan` riêng. Preflight chạy ngay đầu lệnh: AZ, volume type, volume không mã hóa, đích
   chưa có bản copy, quyền RBD, `iscsid`. FAIL thì dừng trước khi tạo gì.
@@ -442,6 +466,8 @@ migrate-vm.sh rollback <volume-id>                                   # xóa bả
 - Anti-affinity mà không đủ host thì Nova báo NoValidHost lúc tạo VM. Preflight không đoán trước được
   scheduler, nên trường hợp này phải rollback.
 - Dùng chung với `--volumes-only` thì bị bỏ qua (preflight báo `INFO`), vì không có server nào được tạo.
+- Muốn VM đích vào group **tương ứng group nguồn**, tool tự tạo khi chưa có: dùng `--keep-server-group`
+  (v4, mục 2b.10).
 
 **`--volumes-only`** (dùng với `plan`, `migrate`; chỉ cold):
 
@@ -621,6 +647,171 @@ migrate-batch.sh --host cmp-01 --project proj-a --yes \
 
 ```
 WARN reserve port <port-id> has no security group default; after a rollback re-add them: openstack port set --security-group default <port-id>
+```
+
+### 2b.9. (v4) Copy nóng volume đang gắn: `migrate-volume <volume> --in-use`
+
+Copy một volume **đang gắn vào VM đang chạy**, không tắt VM. Bản copy là **crash-consistent**: giống
+hệt đĩa nếu VM bị rút điện đúng lúc clone.
+
+```bash
+migrate-vm.sh migrate-volume data-01 --in-use     # data-01 đang gắn vào app-vm01, VM vẫn chạy
+migrate-vm.sh rollback <id-volume-nguồn>          # xóa bản copy ở đích; nguồn không bị đụng
+```
+
+Không có `--in-use` thì volume in-use vẫn bị từ chối như v3, và thông báo gợi ý cả 2 cách:
+
+```
+ERROR: volume data-01 (<id>) is in-use: an attached volume goes with its VM (/usr/local/bin/migrate-vm.sh migrate <vm> --volumes-only), or copy it live with --in-use (crash-consistent)
+```
+
+Có `--in-use` thì preflight nói rõ cách copy:
+
+```
+Destination preflight (migrate-volume type=default pool=volumes):
+  INFO  <id> is in-use: copied from a clone taken while attached (crash-consistent); its VM keeps running
+  OK    volume not multiattach
+  OK    volume not encrypted
+  OK    no earlier copy of <id> at the destination
+  …
+```
+
+Luồng giống hệt volume available: clone → attach clone vào host chuyển → tạo volume đích (giữ tên
+nguồn, description `migrated from <id>`) → `qemu-img convert` → `qemu-img compare` → xóa clone. **VM và
+volume nguồn không bị stop, lock hay detach.** Cuối lệnh, tool in khối sau (giờ thật thay cho
+`YYYY-MM-DDTHH:MM:SSZ`):
+
+```
+Volume copied crash-consistent as of YYYY-MM-DDTHH:MM:SSZ: data written after that moment
+is NOT in the copy (like a sudden power-off; a busy DB will need crash recovery on first mount).
+Source VM and volume untouched.
+Volume migrated: data-01 <id-nguồn> -> <id-đích>. Source volume untouched (still in-use). Rollback: /usr/local/bin/migrate-vm.sh rollback <id-nguồn>
+```
+
+**Hiểu đúng "crash-consistent":**
+
+- Mốc in ra là lúc tool gửi lệnh clone (UTC). Backend chụp ngay sau đó vài giây. Mốc này được ghi vào
+  state `/var/lib/mig-migrate/vol-<id>/clone-time`.
+- Dữ liệu guest đã ghi **và flush** xuống đĩa trước mốc thì có trong bản copy. Dữ liệu ghi sau mốc thì
+  không có. Lab đã chứng minh: dòng đánh dấu ghi trước clone có trong image đích, dòng ghi sau
+  `clone attached` thì không ([TEST-REPORT-20261118.md](TEST-REPORT-20261118.md), phase 2).
+- Phần còn nằm trong page cache của guest, chưa flush, thì **không** có, giống hệt rút điện.
+  Filesystem sẽ replay journal. DB đang ghi nhiều sẽ phải chạy crash recovery lần đầu mount/start.
+- Cần bản copy nhất quán mức ứng dụng thì người vận hành tự quiesce trước (dừng app, flush DB,
+  `fsfreeze`), vì tool không đụng vào VM. Cách khác là đi theo VM bằng `migrate <vm> --volumes-only`:
+  VM tắt êm rồi mới copy.
+
+| Cách | VM nguồn | Bản copy |
+|---|---|---|
+| `migrate-vm.sh migrate <vm> --volumes-only` | stop + lock, xong vẫn SHUTOFF | Nhất quán tại lúc VM tắt êm; copy mọi volume của VM, tên `<vm>-<device>` |
+| `migrate-vm.sh migrate-volume <vol> --in-use` | chạy tiếp, không bị đụng | Crash-consistent tại mốc clone; từng volume một, giữ tên nguồn |
+
+**Quy tắc:**
+
+- Vẫn từ chối: volume mã hóa, volume in-use **multiattach** (preflight `FAIL  volume not multiattach`),
+  và trạng thái khác `available`/`in-use`.
+- `--in-use` trên volume `available` thì chỉ báo `INFO  --in-use ignored: <id> is available, copied as usual`,
+  rồi copy như thường, không in khối crash-consistent.
+- Chạy lại trên cùng volume thì bị chặn, vì đích đã có bản copy (`description` guard). Muốn copy lại thì
+  `rollback` trước.
+- Rollback bằng **ID** volume nguồn (state ở `vol-<id>/`): chỉ xóa bản copy ở đích.
+- `migrate-batch.sh --volumes available` **không** gom volume in-use. Muốn copy nóng volume của VM đang
+  chạy thì gọi `migrate-volume <id> --in-use` cho từng volume.
+- `--in-use` không bao giờ được lấy từ `MIG_DEFAULT_OPTS`: phải gõ tay mỗi lần.
+
+### 2b.10. (v4) Giữ server group: `--keep-server-group`
+
+VM nguồn nằm trong server group nào thì VM đích vào group **tương ứng** ở đích. Group đó tên là
+`az-<tên group nguồn>`, cùng policy, tool tự tạo khi chưa có.
+
+| Cách chạy | VM đích vào group nào | Group ở đích |
+|---|---|---|
+| Không flag | Không group nào | — |
+| `--server-group <tên\|ID>` | Đúng group chỉ định | Phải có sẵn, tool không tạo (mục 2b.5) |
+| `--keep-server-group` | `az-<tên group nguồn>` | Tool tạo nếu chưa có (lúc `migrate`), có rồi thì dùng lại |
+
+Preflight in ra (ví dụ group nguồn `web-anti`, policy soft-anti-affinity):
+
+```
+  INFO  source server group web-anti (<id>, policy soft-anti-affinity) -> destination az-web-anti
+  OK    will create az-web-anti (policy soft-anti-affinity)
+```
+
+Các trường hợp khác ở đích:
+
+| Ở đích | Preflight |
+|---|---|
+| Đã có, cùng policy | `OK    server group az-web-anti exists (<id>, policy soft-anti-affinity): reused` |
+| Đã có nhưng **khác policy** | `FAIL  server group az-web-anti has policy affinity at the destination, source group web-anti has soft-anti-affinity — to use it anyway drop --keep-server-group and pass --server-group <id>` |
+| Có từ 2 group trùng tên | `FAIL` ambiguous, khi đó dùng `--server-group <id>` |
+| VM nguồn không thuộc group nào | `INFO  source VM is in no server group`, chạy tiếp như không có flag |
+
+**Quy tắc:**
+
+- Tra group nguồn trong **project nguồn**, theo danh sách member có ID của VM.
+- Chép `policy`. Microversion cũ trả `policies[]` thì lấy phần tử đầu.
+- Có `rules` (vd `max_server_per_host`) thì chép theo. Client không nhận `--rule` thì tool WARN rồi tạo
+  group không có rules.
+- **`plan` không tạo gì.** `migrate` tạo group ngay trước khi tạo server, log
+  `created destination server group az-web-anti (<id>, policy …)`. Lần sau thấy có sẵn thì log
+  `destination server group az-web-anti (<id>) exists: the VM joins it`.
+- VM đích vào group qua `server create --hint group=<id>`. State ghi `dst-server-group`
+  (`<id> created=yes|no`).
+- **Rollback không xóa group**, vì có thể VM khác đang là member; group rỗng thì vô hại. Rollback chỉ báo
+  `INFO destination server group kept (<id> created=…): rollback never deletes a server group`.
+- Migrate rải rác nhiều ngày vẫn hội tụ: mỗi lần chạy đều tra lại `az-<tên>`, con đầu tạo, các con sau
+  dùng lại (miễn là chưa ai xóa group).
+- Batch: `-- --keep-server-group` áp cho mọi VM, **mỗi VM theo group của chính nó**. Batch chạy tuần tự
+  nên con đầu tạo group, con sau vào cùng group.
+- Dùng chung với `--server-group`: gõ tay cả hai thì die
+  `choose one: --server-group <name> or --keep-server-group`. Nếu một trong hai đến từ
+  `MIG_DEFAULT_OPTS` thì cái gõ tay thắng, cái kia bị bỏ kèm INFO.
+- `--volumes-only`: bị bỏ qua (INFO), vì không tạo server.
+- Anti-affinity cứng mà đích thiếu host thì Nova báo NoValidHost lúc tạo server, phải rollback.
+  Soft-anti-affinity không chặn.
+
+**Cẩn thận: quên flag một lần là VM đó đứng ngoài group, không add lại được.** Nova không cho đưa server
+đã tồn tại vào group. Cách sửa duy nhất là `rollback` VM đó (khi nguồn chưa bị xóa) rồi migrate lại có
+flag. Nên đưa flag vào conf: `MIG_DEFAULT_OPTS="--keep-server-group"`. Làm vậy an toàn, vì VM không thuộc
+group nào thì chỉ có một dòng INFO và chạy bình thường.
+
+### 2b.11. Ví dụ v4
+
+Rút từ các lệnh đã chạy thật trong [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md); tên đã đổi
+sang tên chung.
+
+```bash
+# 1. Copy nóng volume dữ liệu đang gắn VM đang chạy, rồi hoàn tác nếu cần
+migrate-vm.sh migrate-volume data-01 --in-use
+migrate-vm.sh rollback <id-volume-nguồn>
+
+# 2. Volume available mà vẫn thêm --in-use (vd script dùng chung): chỉ INFO, copy như thường
+migrate-vm.sh migrate-volume data-02 --in-use
+
+# 3. Giữ server group: xem trước (không tạo gì ở đích), rồi chạy lô 2 VM cùng group nguồn web-anti
+migrate-vm.sh plan web-01 --keep-server-group --verify none
+migrate-batch.sh --vm web-01,web-02 --yes -- --keep-server-group --verify none
+#    con 1 log "created destination server group az-web-anti …", con 2 "… exists: the VM joins it"
+#    hoàn tác (batch chạy theo ID); az-web-anti vẫn còn sau đó, kể cả khi rỗng:
+migrate-vm.sh rollback <id-web-01>
+migrate-vm.sh rollback <id-web-02>
+
+# 4. Đưa vào conf: lần nào cũng giữ group và bỏ compare, khỏi nhớ truyền
+echo 'MIG_DEFAULT_OPTS="--keep-server-group --verify none"' >> /opt/mig/migrate.conf
+migrate-vm.sh plan web-03                  # INFO  MIG_DEFAULT_OPTS applied before the command line: --keep-server-group, --verify none
+migrate-vm.sh plan web-03 --verify full    # … --verify none (command line wins)
+migrate-batch.sh --project proj-web --yes  # mỗi VM theo group nguồn của nó; VM không có group: INFO, chạy bình thường
+migrate-vm.sh migrate web-04 --server-group db-anti   # VM này vào group khác: keep tự bỏ (INFO), không die
+MIG_DEFAULT_OPTS="" migrate-vm.sh migrate web-05      # lần này không dùng default nào
+migrate-vm.sh migrate-volume data-03                  # chỉ nhận --verify none; --keep-server-group bị bỏ kèm INFO
+
+# 5. Volume rời của project, passthrough có option chỉ dành cho VM: --volume-type vẫn tới đúng volume
+migrate-batch.sh --project proj-a --volumes available --yes -- --keep-server-group --volume-type nvme-az1
+#    log "available volumes: ignoring VM-only options --keep-server-group"
+
+# 6. AZ + volume type từ conf (MIG_AZ, AZ_TYPE_MAP, RBD_POOL_MAP; mục 2b.1b): không truyền gì
+migrate-vm.sh migrate app-vm01   # INFO  availability zone AZ1 from MIG_AZ
+                                 # INFO  volume type nvme-az1 from AZ_TYPE_MAP (AZ1)
 ```
 
 ## 3. Quy hoạch network cho 2 cloud chung VLAN

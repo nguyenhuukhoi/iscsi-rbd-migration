@@ -6,8 +6,8 @@ Tài liệu cho người sửa hoặc mở rộng tool. Đọc kèm:
 - `DESIGN-V*.md`: vì sao làm như vậy.
 - [CHANGELOG.md](CHANGELOG.md): đã thay đổi những gì.
 
-Số dòng trong tài liệu này tính theo commit `af151e2` (nhánh `feature/v4-sg-inuse-vol`). Code đổi thì
-số dòng lệch, khi đó tìm theo tên hàm.
+Số dòng trong tài liệu này tính theo commit code cuối của V4, `51aa611` (nhánh `feature/v4-sg-inuse-vol`).
+Code đổi thì số dòng lệch, khi đó tìm theo tên hàm.
 
 ## 1. Kiến trúc
 
@@ -35,35 +35,37 @@ chép lại.
 
 | Giai đoạn | Hàm (dòng) | Ghi chú |
 |---|---|---|
-| Khởi động | conf loader (67–77), giá trị mặc định (81–96), `source` mig-venv (98) | Mục 3 |
-| Gọi cloud | `scope_project` (103), `src_env`/`dst_env` (108–109), `src`/`dst` (110–111) | Mọi lệnh `openstack` đi qua `src`/`dst`, chạy trong subshell |
-| Lỗi / log | `die` (113), `log` (112), `check_project_scope` (115) | |
-| Dispatch | dòng 1244–1260 | `plan\|migrate` → `parse_options` → `apply_az_defaults` → `pool_for_type`. `migrate-volume` chạy `volume_options_only` trước |
-| Option | `parse_options` (167), `pool_for_type` (198), `apply_az_defaults` (213), `volume_options_only` (1084) | Kiểm tra xung đột đặt ở cuối `parse_options` |
-| Đọc nguồn | `export_definition` (298), `detect_boot` (555), `dest_volume_name` (332) | Ghi `server.json`, `attachments.json`, `ports.json`… |
-| Preflight | `preflight` (419), `keep_sg_preflight` (349), `volume_preflight` (1115), `cmd_plan` (560) | Chỉ đọc. In dòng `OK`/`FAIL`/`INFO` |
-| Migrate | `cmd_migrate` (889) | Thứ tự trong hàm, xem bảng dưới |
-| Copy | `create_dest_volume` (575), `attach_clone` (608), `copy_volume_cold` (627), `sync_volume_pass` (656), `drop_clone` (620) | Luôn đọc từ **clone**, không đọc volume gốc |
-| Tiến độ / dọn | `progress_watch` (263), `stop_watch` (290), `cleanup_attach` (573) | `cleanup_attach` là trap EXIT (dòng 897) |
-| Nguồn ephemeral | `migrate_ephemeral_root` (678) | Đi đường Glance snapshot + REST |
-| Tạo đích | `create_destination` (784), `keep_sg_ensure` (391) | Tạo port → server group → `server create` |
-| Rollback | `cmd_rollback` (998), `cmd_rollback_volume` (1219), `drop_volume` (1203) | |
-| migrate-volume | `cmd_migrate_volume` (1168), `resolve_volume` (1094), `dst_volumes_described` (1103), `create_volume_copy` (1146) | |
-| Hàm chờ | `wait_volume` (230), `wait_image` (239), `wait_server` (248) | Status `error*` thì die |
-| Tên → ID | `dst_sg_id` (135), `src_sg_id` (151), `dst_project_id` (131) | Resolve trong project của token |
+| Khởi động | conf loader (68–78), giá trị mặc định (82–98), `source` mig-venv (100) | Mục 3 |
+| Gọi cloud | `scope_project` (105), `src_env`/`dst_env` (110–111), `src`/`dst` (112–113) | Mọi lệnh `openstack` đi qua `src`/`dst`, chạy trong subshell |
+| Lỗi / log | `die` (115), `log` (114), `check_project_scope` (117) | |
+| Dispatch | dòng 1317–1334 | `plan\|migrate` → `load_default_opts` → `parse_options` → `apply_az_defaults` → `pool_for_type`. `migrate-volume` chạy `volume_options_only` trước |
+| Option | `load_default_opts` (174), `parse_option_list` (219), `parse_options` (247), `pool_for_type` (269), `apply_az_defaults` (284), `volume_options_only` (1156) | `parse_options` parse `MIG_DEFAULT_OPTS` trước rồi tới CLI, kiểm tra xung đột ở cuối hàm |
+| Đọc nguồn | `export_definition` (369), `detect_boot` (627), `dest_volume_name` (403) | Ghi `server.json`, `attachments.json`, `ports.json`… |
+| Preflight | `preflight` (490), `keep_sg_preflight` (420), `volume_preflight` (1187), `cmd_plan` (632), `conf_origin_info` (296), `default_opts_info` (207) | Chỉ đọc. In dòng `OK`/`FAIL`/`INFO` |
+| Migrate | `cmd_migrate` (961) | Thứ tự trong hàm, xem bảng dưới |
+| Copy | `create_dest_volume` (647), `attach_clone` (680), `copy_volume_cold` (699), `sync_volume_pass` (728), `drop_clone` (692) | Luôn đọc từ **clone**, không đọc volume gốc |
+| Tiến độ / dọn | `progress_watch` (334), `stop_watch` (361), `cleanup_attach` (645) | `cleanup_attach` là trap EXIT (dòng 969) |
+| Nguồn ephemeral | `migrate_ephemeral_root` (750) | Đi đường Glance snapshot + REST |
+| Tạo đích | `create_destination` (856), `keep_sg_ensure` (462) | Tạo port → server group → `server create` |
+| Rollback | `cmd_rollback` (1070), `cmd_rollback_volume` (1292), `drop_volume` (1276) | |
+| migrate-volume | `cmd_migrate_volume` (1241), `resolve_volume` (1166), `dst_volumes_described` (1175), `create_volume_copy` (1219) | |
+| Hàm chờ | `wait_volume` (301), `wait_image` (310), `wait_server` (319) | Status `error*` thì die |
+| Tên → ID | `dst_sg_id` (137), `src_sg_id` (153), `dst_project_id` (133), `dst_server_groups_named` (413) | Resolve trong project của token |
 
 Thứ tự bên trong `cmd_migrate`:
 
-1. Guard state: `volume-map` đã có thì die (891).
-2. `export_definition`, `detect_boot`, `preflight` (892–894); ghi `options` (895).
-3. Bật trap EXIT `cleanup_attach` (897), tạo `volume-map` rỗng (899).
-4. Chỉ live: pre-sync bằng `create_dest_volume` + `sync_volume_pass` lặp tới khi hội tụ (904–918).
-5. Cutover (920): ghi `t-stop`; nguồn đang bị lock thì unlock kèm WARN; stop (932).
-6. `detach_source_ports` (941), `migrate_ephemeral_root` (943), **rồi mới** `src server lock` (944).
+1. Guard state: `volume-map` đã có thì die (963).
+2. `export_definition`, `detect_boot`, `preflight` (964–966); ghi `options` (967).
+3. Bật trap EXIT `cleanup_attach` (969), tạo `volume-map` rỗng (971).
+4. Chỉ live: pre-sync bằng `create_dest_volume` + `sync_volume_pass` lặp tới khi hội tụ (976–990).
+5. Cutover (992): ghi `t-stop`; nguồn đang bị lock thì unlock kèm WARN; stop (1004).
+6. `detach_source_ports` (1013), `migrate_ephemeral_root` (1015), **rồi mới** `src server lock` (1016).
    Lock của Nova chặn các thao tác này với creds không-admin, nên lock phải đứng sau.
 7. Copy lần cuối: cold dùng `create_dest_volume` + `copy_volume_cold`, live dùng lượt
    `sync_volume_pass` cuối.
-8. `create_destination` (969), tắt trap (972), `--start-source` nếu có.
+8. `create_destination` (1041), tắt trap (1044), `--start-source` nếu có.
+
+Đi từng bước kèm lệnh thật, state và cách fail của cold/live mặc định: [WORKFLOW.md](WORKFLOW.md).
 
 ### 1.4. `migrate-batch.sh`
 
@@ -84,7 +86,7 @@ Hai file có **hợp đồng chuỗi** với nhau: batch đọc output của `mi
 
 ## 2. State
 
-Gốc state là `STATE_ROOT=/var/lib/mig-migrate` (dòng 91). Mỗi lần chạy có một thư mục riêng. Rollback
+Gốc state là `STATE_ROOT=/var/lib/mig-migrate` (dòng 93). Mỗi lần chạy có một thư mục riêng. Rollback
 thành công thì thư mục được đổi tên thành `<dir>.rolled-back.<epoch>`.
 
 ### 2.1. VM: `/var/lib/mig-migrate/<vm>/`
@@ -133,36 +135,55 @@ thành công thì thư mục được đổi tên thành `<dir>.rolled-back.<epo
   rollback không dọn được.
 - `volume-map` tồn tại nghĩa là có state. `migrate` và `migrate-volume` từ chối chạy đè, batch đánh
   dấu `SKIP(state-exists)`.
-- Dispatcher rollback (1259): có `<arg>/server.json` thì là rollback VM, không thì là rollback volume.
+- Dispatcher rollback (1333): có `<arg>/server.json` thì là rollback VM, không thì là rollback volume.
 
 ## 3. Lớp cấu hình
 
 Thứ tự ưu tiên: **CLI > biến môi trường > `$MIG_CONF` > mặc định trong script.**
 
-Conf loader (67–77) làm như sau:
+Conf loader (68–78) làm như sau:
 
-1. Với mỗi biến trong danh sách (70–71), nếu biến đó đã có trong env thì lưu lại (`${!_v+x}`).
+1. Với mỗi biến trong danh sách (71–72), nếu biến đó đã có trong env thì lưu lại (`${!_v+x}`).
 2. `source "$MIG_CONF"`.
 3. Ghi đè lại các giá trị env đã lưu.
 
 Nhờ vậy env luôn thắng file, và cách chạy cũ bằng `export` không đổi hành vi. Sau đó các dòng
-`VAR=${VAR:-default}` (81–96) lấp chỗ trống. `MIG_MULTIPATH` được `export` vì `brick_attach.py` đọc nó
-từ env (79). CLI thắng nhờ `parse_options` gán sau cùng. Riêng `MIG_AZ`/`AZ_TYPE_MAP` chỉ lấp phần CLI
-bỏ trống, thông qua `apply_az_defaults` (213) và hai cờ `AZ_CLI`/`TYPE_CLI`.
+`VAR=${VAR:-default}` (82–98) lấp chỗ trống. `MIG_MULTIPATH` được `export` vì `brick_attach.py` đọc nó
+từ env (80).
 
 Các biến conf loader đọc: `SRC_RC DST_RC RBD_POOL RBD_POOL_MAP RBD_USER CEPH_CONF MIG_ISCSI_IP
-MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT MIG_AZ AZ_TYPE_MAP`. Ý nghĩa và mặc
-định xem bảng biến môi trường ở [GUIDE.md](GUIDE.md) mục 2. `MIG_CONF` chọn file conf (mặc định
-`/opt/mig/migrate.conf`).
+MIG_MULTIPATH COPY_STREAMS PROJECT_MAP_FILE SRC_PROJECT DST_PROJECT MIG_AZ AZ_TYPE_MAP MIG_DEFAULT_OPTS`.
+Ý nghĩa và mặc định: bảng biến môi trường ở [GUIDE.md](GUIDE.md) mục 2, và mẫu có mô tả từng dòng
+[migrate.conf.example](migrate.conf.example). `MIG_CONF` chọn file conf (mặc định `/opt/mig/migrate.conf`).
+
+**Option đi qua 3 nguồn**, theo thứ tự ưu tiên tăng dần:
+
+| Nguồn | Hàm | Quy tắc |
+|---|---|---|
+| `MIG_DEFAULT_OPTS` (v4) | `load_default_opts` (174) | Tách token theo khoảng trắng, kiểm tên option, kiểm có giá trị, kiểm giá trị `--mode`/`--verify`; sai thì die nêu tên biến. `--in-use` luôn bị bỏ (INFO). Với `migrate-volume` chỉ giữ `--volume-type --az --verify` |
+| `MIG_AZ` / `AZ_TYPE_MAP` (v4) | `apply_az_defaults` (284) | Chạy **sau** khi parse. Chỉ lấp AZ/type khi CLI không gõ, dựa vào cờ `AZ_CLI`/`TYPE_CLI`. Hai cờ này chỉ bật khi **gõ tay**, nên `MIG_AZ`/`AZ_TYPE_MAP` vẫn chỉnh được `--az`/`--volume-type` đến từ `MIG_DEFAULT_OPTS` |
+| Option CLI | `parse_option_list cli` | Parse sau `MIG_DEFAULT_OPTS`, nên gán sau đè gán trước |
+
+`parse_options` (247) gọi `parse_option_list` hai lượt (`defaults` rồi `cli`). Mỗi lượt ghi lại nguồn
+gốc: `CLI_GIVEN[<option>]` cho option gõ tay, `KEEP_SG_FROM`/`SERVER_GROUP_FROM` cho cặp server group.
+Sau đó nó kiểm tra trên kết quả đã gộp:
+
+- `--keep-server-group` và `--server-group` mà một cái đến từ defaults: cái gõ tay thắng, cái kia bị
+  bỏ kèm INFO. Cả hai gõ tay thì die như cũ.
+- Option dạng cờ đến từ defaults không tắt được từ CLI. Muốn bỏ thì chạy với `MIG_DEFAULT_OPTS=""`.
+
+`default_opts_info` (207) in ở preflight 1 dòng `INFO  MIG_DEFAULT_OPTS applied before the command line: …`
+(option có giá trị bị CLI gõ đè thì kèm `(command line wins)`), và các dòng INFO về option bị bỏ. Không
+có `MIG_DEFAULT_OPTS` thì không in gì, output giống bản trước từng chữ.
 
 `migrate-batch.sh` có loader riêng (dòng 28–34), chỉ lấy `SRC_RC DST_RC PROJECT_MAP_FILE`. Các biến
 còn lại do mỗi lần gọi `migrate-vm.sh` tự đọc.
 
 Thêm một biến conf mới cần đủ 3 chỗ:
 
-1. Thêm tên biến vào danh sách ở dòng 70–71.
+1. Thêm tên biến vào danh sách ở dòng 71–72.
 2. Thêm dòng mặc định `VAR=${VAR:-…}`.
-3. Thêm dòng vào bảng env trong GUIDE mục 2.
+3. Thêm dòng vào bảng env trong GUIDE mục 2, và thêm biến kèm mô tả vào `migrate.conf.example`.
 
 Thiếu bước 1 thì env sẽ không thắng được file.
 
@@ -288,25 +309,27 @@ Ví dụ thật: `--keep-server-group` (v4).
    - các case test (7)–(14).
 
    Chờ user chốt.
-2. **Usage header** (dòng 41–43). Help in ra bằng `sed -n '2,51p'` (dòng 1244): header dài thêm thì
+2. **Usage header** (dòng 41–43). Help in ra bằng `sed -n '2,51p'` (dòng 1317): header dài thêm thì
    tăng số dòng cuối, rồi chạy `migrate-vm.sh` không tham số để thấy option cuối vẫn hiện đủ.
 3. **Biến + parse**:
-   - giá trị mặc định tắt: `KEEP_SG=0` (dòng 165);
-   - nhánh `case` trong `parse_options` (dòng 181): option không tham số dùng `shift`, có tham số dùng
-     `X=$2; shift 2`;
-   - kiểm tra xung đột ở cuối `parse_options` (dòng 195).
+   - giá trị mặc định tắt: `KEEP_SG=0` (dòng 167);
+   - nhánh `case` trong `parse_option_list` (dòng 236): option không tham số dùng `shift`, có tham số
+     dùng `X=$2; shift 2`. Ghi nguồn gốc (`KEEP_SG_FROM=$from`) nếu option có thể xung đột;
+   - thêm option vào danh sách tên mà `load_default_opts` (174) chấp nhận, để nó dùng được trong
+     `MIG_DEFAULT_OPTS`. Option không được phép làm mặc định thì bỏ kèm INFO, như `--in-use`;
+   - kiểm tra xung đột ở cuối `parse_options` (dòng 266).
 4. **Từ chối ở lệnh không áp dụng**:
-   - `migrate-volume`: thêm vào `volume_options_only` (dòng 1087);
-   - ngược lại, `--in-use` bị `plan`/`migrate` từ chối ngay tại dispatcher (dòng 1248);
+   - `migrate-volume`: thêm vào `volume_options_only` (dòng 1159);
+   - ngược lại, `--in-use` bị `plan`/`migrate` từ chối ngay tại dispatcher (dòng 1321);
    - batch: option không tham số thì thêm vào bộ lọc `VOLPASS` (`migrate-batch.sh:268`).
-5. **Preflight (chỉ đọc)**: `keep_sg_preflight` (349), gắn vào `preflight` ở dòng 493.
+5. **Preflight (chỉ đọc)**: `keep_sg_preflight` (420), gắn vào `preflight` ở dòng 565.
    - Chỉ in dòng OK/FAIL/INFO và đặt `fail=1` khi FAIL.
-   - Thêm chữ ` keep-server-group` vào dòng tiêu đề preflight (430).
-   - `--volumes-only` thì in INFO "ignored" (441).
-6. **Hành động**: `keep_sg_ensure` (391), gọi ở dòng 850 bên trong `create_destination`, ngay trước
+   - Thêm chữ ` keep-server-group` vào dòng tiêu đề preflight (501).
+   - `--volumes-only` thì in INFO "ignored" (513).
+6. **Hành động**: `keep_sg_ensure` (462), gọi ở dòng 922 bên trong `create_destination`, ngay trước
    `server create`. Kiểm lại hiện trạng vì có thể đã đổi từ lúc preflight (copy có khi mất hàng giờ).
-7. **State**: ghi `dst-server-group` (416) ngay khi có ID.
-8. **Rollback**: quyết định dọn hay giữ. Group dùng chung nên giữ, chỉ in INFO (dòng 1008). Rollback
+7. **State**: ghi `dst-server-group` (487) ngay khi có ID.
+8. **Rollback**: quyết định dọn hay giữ. Group dùng chung nên giữ, chỉ in INFO (dòng 1080). Rollback
    phải chạy được dù hành động làm dở chừng.
 9. **Test**:
    - harness giả lập cho logic (không có group / sẽ tạo / dùng lại / khác policy / trùng tên /

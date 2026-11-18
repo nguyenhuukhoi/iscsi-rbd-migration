@@ -255,12 +255,28 @@ migrate-batch.sh --host <compute-host> --yes         # 5. migrate tuần tự, d
 
 `<compute-host>` lấy ở cột Host của `openstack compute service list`, không phải `hypervisor_hostname`.
 
-Với PowerStore: **trước khi copy, đối chiếu WWN của device vừa gắn (ghi trong state
-`/var/lib/mig-migrate/<vm>/`) với volume trên mảng** — guard kích thước của tool không bắt được
-LUN lạ cùng cỡ (bằng chứng: sự cố stale-backstore 13/11, chỉ checksum trong guest phát hiện).
+Với PowerStore: **đối chiếu WWN của device đang gắn với volume trên mảng**. Guard kích thước của
+tool không bắt được LUN lạ cùng cỡ (bằng chứng: sự cố stale-backstore 13/11, chỉ checksum trong guest
+phát hiện ra).
+
+Device đang gắn là **clone** `mig-clone-<id-volume-nguồn>`, không phải volume gốc, nên phải so với volume
+clone đó trên mảng. WWN chỉ đọc được **trong lúc clone còn gắn**, tức lúc copy/verify volume đó (cold),
+hoặc trong từng lượt blocksync (live):
+
+- `/var/lib/mig-attach/<clone-id>.json`, trường `scsi_wwn` (và `path`). File này do `brick_attach.py`
+  ghi khi attach và **bị xóa khi detach**, nên xong copy là mất.
+- Hoặc đọc thẳng từ device in ở log `clone attached at /dev/sdX`:
+  `lsblk -dno WWN /dev/sdX`, `/lib/udev/scsi_id -g -u -d /dev/sdX`, hoặc `multipath -ll` khi
+  `MIG_MULTIPATH=1`.
+
+```bash
+# shell thứ hai, trong lúc log đang ở bước copy/verify của volume đó
+jq -r '"\(.path) \(.scsi_wwn)"' /var/lib/mig-attach/*.json
+```
 
 State từng VM nằm ở `/var/lib/mig-migrate/<vm>/`; job chết giữa chừng thì `rollback` dọn được
-cả state dở dang. Log attach lỗi: `/var/lib/mig-migrate/<vm>/brick-attach.err`.
+cả state dở dang. Log attach lỗi: `/var/lib/mig-migrate/brick-attach.err` (một file chung ở gốc
+state, không theo từng VM).
 V3: state của `migrate-volume` ở `/var/lib/mig-migrate/vol-<id-volume-nguồn>/`; batch ghi state theo
 **ID** VM (`/var/lib/mig-migrate/<id>/`) và log mỗi lần chạy ở `/var/log/mig-batch/<YYYYmmdd-HHMMSS>/`.
 
@@ -273,3 +289,13 @@ object/CHAP của driver PowerStore, và tốc độ đường mạng thật (ư
 
 V3 (mục "Chưa test" của [TEST-REPORT-20261117.md](TEST-REPORT-20261117.md)): `PROJECT_MAP_FILE`
 có cặp project khác tên thật, `--continue-on-error` gặp FAIL giữa chừng thật, `--volumes all`.
+
+V4 (cuối [TEST-REPORT-20261118.md](TEST-REPORT-20261118.md)). Ba nhánh của `--keep-server-group` **chỉ
+mới phủ bằng harness giả lập**, chưa chạy với cloud thật:
+
+- group nguồn có `rules` (vd `max_server_per_host`) trên cloud thật, microversion ≥ 2.64;
+- client openstack từ chối `--rule`: tool WARN rồi tạo group không có rules;
+- compute microversion bị ghim dưới 2.64, trả `policies[]` thay cho `policy`.
+
+Gặp một trong các trường hợp này ở production thì chạy `plan` trước và kiểm group đích sau lần
+migrate đầu tiên (`openstack server group show az-<tên> -f json`).
