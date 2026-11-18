@@ -583,10 +583,11 @@ create_dest_volume() {  # source-volume-id dir ; sets DVID, appends to volume-ma
   DVID=$(dst volume create "$name" --size "$size" ${VOLUME_TYPE:+--type "$VOLUME_TYPE"} \
          ${DEST_AZ:+--availability-zone "$DEST_AZ"} \
          --description "migrated from $vid" -f value -c id)
+  # Recorded before the wait and the pool check, so that rollback also removes a volume that dies there.
+  echo "$vid $DVID" >> "$dir/volume-map"
   wait_volume dst "$DVID" available
   rbd -c "$CEPH_CONF" --id "$RBD_USER" -p "$POOL" info "volume-$DVID" >/dev/null 2>&1 \
     || die "volume-$DVID not visible in pool $POOL: wrong RBD_POOL_MAP for type '${VOLUME_TYPE:-default}', or $RBD_USER lacks caps on that pool"
-  echo "$vid $DVID" >> "$dir/volume-map"
   copy_volume_props "$vj" "$DVID"
 }
 
@@ -1025,9 +1026,10 @@ cmd_rollback() {
   if [ -e "$dir/volume-map" ]; then
     local svid dvid
     while read -r svid dvid; do
-      wait_volume dst "$dvid" available 300
-      dst volume delete "$dvid"
-      log "deleted destination volume $dvid"
+      # Recorded before it became available, so it may be in error or already gone: drop_volume
+      # handles both. Still in-use right after the server delete: wait for the detach, as before.
+      [ "$(dst volume show "$dvid" -f value -c status 2>/dev/null)" != in-use ] || wait_volume dst "$dvid" available 300
+      drop_volume dst "$dvid" "destination volume"
     done < "$dir/volume-map"
   fi
   # Ephemeral path leftovers: uploaded destination images (by name too, for a run that died

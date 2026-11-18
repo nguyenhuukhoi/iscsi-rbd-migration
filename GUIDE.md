@@ -311,10 +311,10 @@ Lưới an toàn này **không nằm trong preflight**. Preflight chỉ kiểm `
 chỉ tới (`rbd ls`); nó chưa biết Cinder sẽ đổ volume vào đâu. Khi bị chặn:
 
 - Cold: VM nguồn đã stop + lock (và tháo port nếu `--ip same`). Live: vẫn đang pre-sync, VM nguồn chạy.
-- Volume đích vừa tạo **chưa được ghi vào state**, nên rollback không dọn nó. Xóa tay bằng ID trong
-  thông báo: `openstack volume delete <id>`.
-- Sau đó `migrate-vm.sh rollback <vm>` (trả VM nguồn, dọn volume đã ghi state), sửa map, chạy lại.
-- Với `migrate-volume`, volume đích đã nằm trong state: `migrate-vm.sh rollback <volume>` dọn hết.
+- Từ v4, volume đích được ghi vào state ngay khi tạo, nên rollback tự dọn cả volume vừa tạo này
+  (kể cả khi nó kẹt ở trạng thái error hoặc đã bị xóa tay trước đó).
+- Chạy `migrate-vm.sh rollback <vm>` (trả VM nguồn, dọn phía đích), sửa map, chạy lại.
+- Với `migrate-volume`: `migrate-vm.sh rollback <volume>` dọn hết, như trước.
 
 Vì vậy nên kiểm map một lần trước đợt chạy thật, theo một trong hai cách dưới.
 
