@@ -307,7 +307,7 @@ Design: [DESIGN-V7.md](DESIGN-V7.md) mục P6. Hướng dẫn: [GUIDE-PYTHON.md]
 **giả lập** (Opus, stub, không gọi cloud); phần lab thật Fable ghi sau.
 
 Mở màn: `a4ecb38` (nhánh `feature/v7-python-app`) đặt version `7.0.0`; nhánh `feature/p6-port-fidelity` tách từ
-đó, commit đầu `d63b4b0` đặt `7.1.0.dev1`.
+đó, commit đầu `87192b6` đặt `7.1.0.dev1` (hash sau rebase lên `3fe861b`).
 
 ### Harness
 
