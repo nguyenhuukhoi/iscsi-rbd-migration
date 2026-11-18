@@ -9,6 +9,14 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING.md](DEVELOPING.md) mục 5.
 
+## [v6] — 2026-11-18 · nhánh `feature/v6-batch-hint` (fork từ v5) · test xong: 6/6 lab + 8/8 giả lập
+
+Chỉ đổi message lỗi của `migrate-batch.sh`: gõ `plan`/`migrate`/`rollback` như lệnh con (thói quen
+từ migrate-vm.sh — 2 lỗi thật trên production 18/11) → die kèm hint chỉ cả hai cách gõ đúng.
+Logic, exit code, các message khác giữ nguyên văn; `migrate-vm.sh` không đổi (md5 `5706e763`) nên
+gate vòng 7 của v5 còn hiệu lực. Thiết kế: [DESIGN-V6.md](DESIGN-V6.md). Test:
+[TEST-REPORT-20261118-v6.md](TEST-REPORT-20261118-v6.md). Commit: code `aa457dd`, design `9368fe4`.
+
 ## [v5] — 2026-11-18 · nhánh `feature/v5-flavor-map` (fork từ v4) · test xong, CHỜ MERGE: feature 16/16, gate vòng 7 = 140/0
 
 Thiết kế: [DESIGN-V5.md](DESIGN-V5.md). Test: [TEST-REPORT-20261118-v5.md](TEST-REPORT-20261118-v5.md).

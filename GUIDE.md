@@ -508,7 +508,7 @@ là option truyền xuống `migrate-vm.sh`.** Hai lỗi đã gặp thật trên
 
 | Gõ sai | Lỗi | Gõ đúng |
 |---|---|---|
-| `migrate-batch.sh plan app-vm01` | `ERROR: unknown option plan (options for migrate-vm.sh go after --)` | `migrate-batch.sh --vm app-vm01 --plan-only` |
+| `migrate-batch.sh plan app-vm01` | (v6) `ERROR: migrate-batch.sh has no 'plan' command — use: migrate-vm.sh plan <vm>, or: migrate-batch.sh --vm <vm> --plan-only` | `migrate-batch.sh --vm app-vm01 --plan-only` |
 | `migrate-batch.sh --vm app-vm01 --az AZ1 --yes` | `ERROR: unknown option --az (options for migrate-vm.sh go after --)` | `migrate-batch.sh --vm app-vm01 --yes -- --az AZ1` |
 
 | `migrate-vm.sh` | `migrate-batch.sh` tương đương | Ghi chú |
