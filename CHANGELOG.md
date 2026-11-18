@@ -9,7 +9,7 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING.md](DEVELOPING.md) mục 5.
 
-## [v5] — 2026-11-18 · nhánh `feature/v5-flavor-map` (fork từ v4) · feature 16/16 PASS, gate vòng 7 đang chạy
+## [v5] — 2026-11-18 · nhánh `feature/v5-flavor-map` (fork từ v4) · test xong, CHỜ MERGE: feature 16/16, gate vòng 7 = 140/0
 
 Thiết kế: [DESIGN-V5.md](DESIGN-V5.md). Test: [TEST-REPORT-20261118-v5.md](TEST-REPORT-20261118-v5.md).
 Hướng dẫn: [GUIDE.md](GUIDE.md) mục 2b.12.
