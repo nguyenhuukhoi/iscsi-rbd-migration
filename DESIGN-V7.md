@@ -122,6 +122,25 @@ Hiện trạng: tool từ chối port có allowed-address-pairs từ v1, và kh�
 - Port giữ chỗ phía nguồn (tạo lại khi Nova xóa port của nó giữa cutover) cũng phải mang đủ
   pairs/port-security/description như port gốc — không chỉ MAC/IP/SG như hiện tại.
 - Multiple fixed-IP per port: VẪN từ chối (ngoài phạm vi).
+
+**Copy security group (user chốt 18/11, gộp vào P6):**
+
+- **Bỏ hẳn map-theo-tên-trùng.** Mọi SG trên port nguồn → port đích gắn **`az-<tên SG nguồn>`**
+  trong project đích (quy ước prefix như server group). `az-<tên>` chưa có → tạo + copy rule;
+  có rồi → dùng luôn, không so lại rule (như server group "có rồi thì thui").
+- Copy rule đầy đủ: direction, ethertype, protocol, port range, remote CIDR, description.
+  SG mới do Neutron tạo kèm sẵn 2 rule egress-any → XÓA trước rồi mới chép rule nguồn,
+  để bộ rule đích = nguồn từng rule.
+- **Rule trỏ-group (remote group): copy đệ quy SG được trỏ** thành `az-<tên nó>` rồi rule trỏ
+  sang bản az- (user chốt sau khi xem bằng chứng default SG của lab). Trỏ chính mình (default)
+  → trỏ sang chính `az-<tên>`. Phải chống vòng lặp (A trỏ B, B trỏ A) bằng visited set.
+- `--security-group` override của user vẫn thắng: tên user đưa dùng NGUYÊN VĂN ở đích,
+  không thêm prefix. Port nguồn không có SG → đích vẫn `--no-security-group`.
+- Rollback: GIỮ az-SG (dùng chung giữa các VM, như server group).
+- Preflight in rõ: `will create az-web-tier (5 rules, + az-db-tier referenced)` / `found az-web-tier`.
+- ⚠ Đổi hành vi so với bash/P1–P5 (trước: đòi SG trùng tên có sẵn, thiếu là FAIL): các check SG
+  trong suite cũ sẽ lệch — khi gate P6, những dòng suite bám tên SG cũ phải được liệt kê và
+  sửa máy móc có ghi lại, như lệ sed đổi lệnh.
 - Policy cần verify trên lab bằng member thật (như V3): `allowed_address_pairs` và
   `port_security_enabled` thường là admin_or_network_owner.
 - Test plan: VM có pairs (mô phỏng VIP) --ip same end-to-end + rollback; VM port-security-off
