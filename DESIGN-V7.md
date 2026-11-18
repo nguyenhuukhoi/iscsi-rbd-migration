@@ -127,8 +127,12 @@ xanh (TEST-REPORT V7 mục Phase 6); chờ Fable review diff + nghiệm thu lab 
   y hệt, `--ip <addr>` thì pair đi theo MAC mới. MAC khác (VRRP) giữ nguyên.
 - `dns_name` chỉ chép khi đúng là hostname Nova sẽ đặt (tên VM viết thường, `a-z0-9-`): Nova từ chối port có
   `dns_name` khác hostname (`PortNotUsableDNS`). Không đủ điều kiện → WARN, không chép.
-- `--keep-server-group` vẫn xung đột với `--server-group` như cũ, và với `--no-server-group` (cái gõ tay thắng cái
-  trong `MIG_DEFAULT_OPTS`).
+- ~~`--keep-server-group` vẫn xung đột với `--server-group` như cũ, và với `--no-server-group` (cái gõ tay thắng cái
+  trong `MIG_DEFAULT_OPTS`)~~ **user chốt 19/11: BỎ HẲN `--keep-server-group`**, không giữ làm no-op nữa:
+  gõ nó là die `unknown option` như mọi option lạ; nằm trong `MIG_DEFAULT_OPTS` cũng die ngay lúc đọc conf
+  (luật sẵn có "token sai thì dừng, thông báo nêu MIG_DEFAULT_OPTS"). Script/conf thời 7.0 dùng cờ này phải
+  tự bỏ cờ khi lên 7.1 — ghi vào GUIDE-PYTHON mục chuyển từ 7.0 và CHANGELOG (breaking). Suite/harness đang
+  gõ cờ này (p4feat C1/B4, kịch bản keep trong harness giả lập, GUIDE ví dụ 10) phải sửa theo, có ghi lại.
 
 Hiện trạng: tool từ chối port có allowed-address-pairs từ v1, và không chép port_security_enabled
 → VM kiểu VIP/keepalived qua đích bị sai hành vi mạng. User chốt 18/11:
