@@ -87,7 +87,12 @@ tiến trình cho cả đợt.
 | P2 | Live mode (livesync + blocksync) | blocksync-unit 8/0 + live 26/0 |
 | P3 | ip new/addr, voltype, ephemeral, multi-NIC, flavor/SG override, properties | newip-voltype 26/0 + extras 30/0 |
 | P4 | `volume` (available + --in-use), `batch`, 3 map, MIG_DEFAULT_OPTS, keep-server-group, flavor-fallback, AZ conf | port các harness feature V3–V6 (đã ghi trong 4 TEST-REPORT) chạy lại PASS đủ |
-| P5 | Thay thế: install mới (pip), bash scripts → `archive/`, viết lại GUIDE/DEPLOY/WORKFLOW/DEVELOPING/README cho một app, CHANGELOG v7, TEST-REPORT tổng | Leak-check; user duyệt |
+| P5 | Thay thế: install mới (pip), bash scripts → `archive/`, docs cho một app, CHANGELOG v7, TEST-REPORT tổng | Leak-check; user duyệt |
+
+Docs P5 (user chốt 18/11): hướng dẫn app Python viết vào **file MỚI `GUIDE-PYTHON.md`**;
+`GUIDE.md` cũ GIỮ NGUYÊN làm tài liệu bản bash (bản bash nằm `archive/` vẫn tra cứu được).
+README trỏ cả hai, ghi rõ bản nào cho bản tool nào. DEPLOY/WORKFLOW/DEVELOPING xử tương tự
+khi tới P5 sẽ hỏi user (mặc định đề xuất: cũng file -PYTHON mới, bản cũ giữ).
 
 Mỗi phase: Opus code → Fable review diff → test lab → phase sau. Phase chưa xong thì bản bash
 trên host convert KHÔNG bị gỡ (hai bản song song trên host lab; production chỉ đổi khi user quyết).
