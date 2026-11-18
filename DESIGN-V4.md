@@ -1,6 +1,7 @@
-# DESIGN V4 — migrate-volume cho volume in-use + server group aware
+# DESIGN V4 — migrate-volume cho volume in-use + server group aware + AZ trong conf
 
-Trạng thái: user chốt 18/11/2026. Nhánh: `feature/v4-sg-inuse-vol`, fork từ `feature/batch-migrate`
+Trạng thái: user chốt 18/11/2026 (A+B); Feature C (AZ conf/map) user chốt cùng ngày, bổ sung sau.
+Nhánh: `feature/v4-sg-inuse-vol`, fork từ `feature/batch-migrate`
 (cần code V3: `migrate-volume`, scoping, naming). Quy ước chung V3 (naming, guard, state, rollback,
 conf) giữ nguyên — V4 chỉ THÊM, không đổi hành vi có sẵn.
 
@@ -74,6 +75,46 @@ TẠO, có rồi thì dùng luôn; VM đích được add vào lúc tạo server
 - Anti-affinity thiếu host → NoValidHost lúc tạo server như V3: rollback, preflight không đoán
   scheduler.
 
+## 2b. Feature C — AZ mặc định + map AZ→volume-type trong conf
+
+Yêu cầu user 18/11: "AZ trong conf/map — khai AZ mặc định trong /opt/mig/migrate.conf hoặc map
+AZ→volume-type→pool để khỏi truyền tay mỗi lần". Production có 2 AZ, mỗi AZ một backend/pool,
+cross_az_attach=false → mỗi lần chạy đang phải truyền tay cặp `--az` + `--volume-type` khớp nhau.
+
+### Hành vi
+
+- 2 biến conf/env mới (vào danh sách conf loader hiện có, cùng thứ tự ưu tiên CLI > env > conf > mặc định):
+  - `MIG_AZ`: AZ mặc định khi KHÔNG truyền `--az`. Truyền `--az` thì CLI thắng. Rỗng → như hiện tại.
+  - `AZ_TYPE_MAP`: map AZ → volume type, format như RBD_POOL_MAP: `"AZ1:nvme-az1,AZ2:nvme-az2"`.
+- Khi có AZ hiệu lực (từ `--az` hoặc `MIG_AZ`) và KHÔNG truyền `--volume-type`: tra `AZ_TYPE_MAP`;
+  có entry → dùng type đó (log 1 dòng INFO `volume type <t> from AZ_TYPE_MAP (<az>)`); không có
+  entry → như hiện tại (type mặc định cloud đích + `RBD_POOL` fallback).
+- `--volume-type` truyền tay LUÔN thắng map. Pool vẫn resolve qua chuỗi sẵn có type→pool
+  (`RBD_POOL_MAP`) — không thêm map pool mới, chuỗi đầy đủ là AZ → type (AZ_TYPE_MAP) → pool (RBD_POOL_MAP).
+- Áp cho `migrate`, `plan`, `migrate-volume`. Batch hưởng tự động (mỗi lần gọi migrate-vm.sh tự
+  đọc conf), không cần option batch mới.
+- Preflight in rõ nguồn gốc giá trị khi lấy từ conf/map (để log tự giải thích).
+
+### Ví dụ production (2 AZ)
+
+```bash
+# /opt/mig/migrate.conf
+MIG_AZ=AZ1
+AZ_TYPE_MAP="AZ1:nvme-az1,AZ2:nvme-az2"
+RBD_POOL_MAP="nvme-az1:volumes-nvme-az1,nvme-az2:volumes-nvme-az2"
+
+migrate-vm.sh migrate app-vm01                 # az=AZ1, type=nvme-az1, pool=volumes-nvme-az1 — không truyền gì
+migrate-vm.sh migrate app-vm02 --az AZ2        # az=AZ2 → type=nvme-az2 theo map
+migrate-vm.sh migrate app-vm03 --az AZ2 --volume-type nvme-az1   # type tay thắng map (tự chịu lệch)
+```
+
+## 2c. Fix kèm V4 — bộ lọc passthrough của migrate-batch.sh
+
+Bug Opus phát hiện 18/11 khi code Feature B: vòng lọc VOLPASS (migrate-batch.sh:268) coi mọi
+option lạ là CÓ tham số đi kèm → `-- --keep-server-group --volume-type X` làm `--keep-server-group`
+nuốt luôn `--volume-type`, volume rời bị copy bằng type mặc định. Fix: thêm `--keep-server-group`
+(và `--in-use` nếu lọt vào đây) vào nhánh option-không-tham-số (`--start-source|--keep-source-ports|--volumes-only`).
+
 ## 3. Những gì KHÔNG đổi
 
 Toàn bộ V1–V3: luồng migrate/plan/rollback, naming, guard, conf, batch selectors, `--volumes`,
@@ -98,6 +139,17 @@ dùng lại `az-web-anti`, 2 member; (9) tạo trước `az-web-anti` policy kh�
 → die; (12) `plan --keep-server-group` khi đích chưa có group → báo will-create nhưng KHÔNG tạo
 (list group trước/sau giống nhau); (13) rollback không xóa group; (14) batch 2 VM passthrough
 `-- --keep-server-group` → cùng group đích.
+
+Feature C: (15) `MIG_AZ` trong conf, không truyền `--az` → plan/preflight ra đúng AZ; truyền
+`--az` khác → CLI thắng; (16) `AZ_TYPE_MAP` chọn type khi không truyền `--volume-type`, volume
+rơi đúng pool theo RBD_POOL_MAP; `--volume-type` tay thắng map; (17) AZ không có trong map →
+chạy như không có map. Fix 2c: (18) batch `--volumes available` + `-- --keep-server-group
+--volume-type X` → volume đích đúng type X (không bị nuốt option).
+
+Docs đợt V4 (sau khi test xanh): GUIDE 2b thêm `--in-use`/`--keep-server-group`/`MIG_AZ`/
+`AZ_TYPE_MAP`; thêm giải thích RBD_POOL_MAP là map volume-type→pool (tool ghi thẳng RBD nên phải
+biết Cinder đổ type nào vào pool nào; kèm cách tra ngược và lỗi "not visible in pool" khi map sai)
+— user yêu cầu 18/11.
 
 Sau test: cập nhật TEST-REPORT (file mới theo ngày chạy) đủ lệnh nguyên văn + kết quả; GUIDE
 mục 2b thêm 2 flag; DEPLOY nếu đụng.
