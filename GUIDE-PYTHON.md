@@ -249,6 +249,18 @@ Kết quả: 2 volume sẽ được copy, thoát mã 0. Nếu chỉ còn 2 hàng
 
 ## 6. Rollback
 
+Rollback = hoàn tác một lần migrate: **xóa những gì tool đã tạo bên đích, trả VM nguồn về như trước khi
+chạy**. Nguồn không bao giờ mất gì — tool không xóa hay sửa VM/volume/port gốc. Cụ thể, theo thứ tự:
+
+1. Xóa VM đích, các port tool tạo ở đích, và mọi volume đã copy sang đích (kể cả clone tạm `mig-*` còn
+   sót nếu lần migrate chết giữa chừng).
+2. Server group `az-<tên>` ở đích (nếu có, do `--keep-server-group` tạo) **được giữ lại** — các VM khác
+   có thể đang là member.
+3. Phía nguồn: gắn lại port nếu đã tháo, mở khóa (unlock) và bật lại VM. Ví dụ sau
+   `migrate migrate web-01 --yes` thì `web-01` nguồn đang SHUTOFF + locked; `migrate rollback web-01`
+   đưa nó về ACTIVE như cũ.
+4. Với state volume (`vol-<id>`): chỉ xóa bản copy ở đích, volume nguồn không bị đụng.
+
 **Rollback bằng đúng chữ đã dùng lúc migrate.** State nằm ở thư mục mang đúng chữ đó, và tool in sẵn lệnh
 rollback ở cuối mỗi lần migrate.
 
