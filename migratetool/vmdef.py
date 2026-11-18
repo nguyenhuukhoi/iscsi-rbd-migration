@@ -26,11 +26,17 @@ def export_definition(r, vm, st):
         cidr = r.src.value("subnet", "show", jqs(first.get("subnet_id")), "-f", "value", "-c", "cidr")
         sgs = [r.src.value("security", "group", "show", sg, "-f", "value", "-c", "name")
                for sg in (pj.get("security_group_ids") or [])]
-        ports.append({
+        entry = {
             "network": net, "cidr": cidr, "security_groups": sgs, "mac": pj.get("mac_address"),
             "ip": first.get("ip_address"), "extra_ips": len(fixed) - 1,
             "port_security": pj.get("port_security_enabled"), "aap": pj.get("allowed_address_pairs"),
-        })
+        }
+        # P6 copies these too. Recorded only when set, so that a plain port's entry stays what the bash
+        # build writes (either build reads the other's state; the bash build ignores these keys).
+        for key in ("description", "dns_name"):
+            if isinstance(pj.get(key), str) and pj.get(key):
+                entry[key] = pj[key]
+        ports.append(entry)
     st.write("ports.json", jq_dump(ports))
 
     vols = [r.src.json("volume", "show", a["Volume ID"], "-f", "json") for a in st.json("attachments.json")]

@@ -32,21 +32,27 @@ VM_OPTIONS = (
     ("--volume-type", "TYPE", "Cinder volume type for every destination volume (default: cloud default, or the "
                               "AZ's entry in AZ_TYPE_MAP). RBD_POOL_MAP maps types to RBD pools."),
     ("--az", "ZONE", "destination availability zone for BOTH the volumes and the server (default: MIG_AZ, else "
-                     "the destination schedulers pick)."),
+                     "the destination schedulers pick). Also the <AZ> of the copied group names (without --az and "
+                     "MIG_AZ: the destination's only compute AZ)."),
     ("--flavor", "NAME", "flavor for the destination VM (default: same name as the source)."),
     ("--flavor-fallback", None, "destination lacks the source's flavor name: use the flavor FLAVOR_MAP_FILE maps it "
                                 "to. Never creates a flavor; --flavor still wins."),
-    ("--security-group", "SGS", "comma-separated security groups for every destination port (default: the "
-                                "source ports' group names)."),
+    ("--security-group", "SGS", "comma-separated destination security groups for every destination port, names "
+                                "taken as typed (default: each source group copied as <AZ>-<name>)."),
+    ("--no-copy-secgroup", None, "do not copy the source security groups: each port takes the destination groups "
+                                 "of the same names, which must exist (the behaviour up to 7.0)."),
     ("--ip", "same|new|ADDR", "same (default): keep MAC+IP, detach source ports at cutover. new: new MAC+IP, "
                               "source ports stay attached. ADDR: that address, new MAC (single-NIC VMs)."),
     ("--start-source", None, "after a successful migrate, unlock and start the source VM again (with --ip new|ADDR, "
                              "or with --volumes-only)."),
     ("--keep-source-ports", None, "with --ip same: do NOT detach the source ports. UNSAFE: only SHUTOFF+lock keeps "
                                   "the old VM off the wire."),
-    ("--server-group", "NAME", "existing destination server group the new VM joins (--hint group=<id>)."),
-    ("--keep-server-group", None, "the new VM joins az-<source group name>, created when missing (by migrate, "
-                                  "never by plan). Not with --server-group."),
+    ("--server-group", "NAME", "existing destination server group the new VM joins (--hint group=<id>), instead "
+                               "of the copy of the source group."),
+    ("--no-server-group", None, "do not follow the source server group (by default the new VM joins <AZ>-<source "
+                                "group name>, same policy, created by migrate when missing)."),
+    ("--keep-server-group", None, "accepted for old scripts, changes nothing: following the source server group is "
+                                  "the default now. Not with --server-group or --no-server-group."),
     ("--volumes-only", None, "cold only: copy the volumes, create no destination port or server."),
     ("--max-passes", "N", "live: maximum pre-sync passes (default 5)."),
     ("--delta-limit", "MB", "live: cut over once a pass changed at most this much (default 64)."),

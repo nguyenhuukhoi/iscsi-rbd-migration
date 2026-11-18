@@ -45,6 +45,10 @@ def rollback_vm(r, st):
     if st.nonempty("dst-server-group"):
         log("INFO destination server group kept (%s): rollback never deletes a server group"
             % st.read("dst-server-group").rstrip("\n"))
+    # P6: the '<AZ>-<name>' security group copies are shared the same way.
+    if st.nonempty("dst-security-groups"):
+        kept = [l.split()[1] for l in st.read("dst-security-groups").splitlines() if len(l.split()) >= 2]
+        log("INFO destination security groups kept (%s): rollback never deletes a security group" % ", ".join(kept))
     # Destination ports go by the IDs create_destination recorded, whatever their name. The
     # mig-<arg>-<i> name sweep below also covers state written before dst-ports existed.
     if st.nonempty("dst-ports"):

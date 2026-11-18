@@ -1,7 +1,7 @@
 """plan and migrate of one VM (bash cmd_plan, cmd_migrate): cold and live."""
 import time
 
-from . import livesync, proc
+from . import livesync, proc, secgroups
 from .copyvol import cleanup_attach, copy_volume_cold, create_dest_volume
 from .ephemeral import migrate_ephemeral_root
 from .preflight import preflight
@@ -37,6 +37,10 @@ def cmd_migrate(r, st):
     st.write("options", "MODE=%s IPMODE=%s IPADDR=%s VOLUME_TYPE=%s POOL=%s VERIFY=%s FLAVOR=%s SG=%s EPHEMERAL=%s AZ=%s\n"
              % (o.mode, o.ipmode, o.ipaddr, o.volume_type, r.pool, o.verify, o.ov_flavor, o.ov_sg,
                 1 if r.ephemeral else 0, o.dest_az))
+    # P6: the security group copies are made while the source still runs, not inside the downtime window.
+    # A failure here leaves no volume-map: fix and re-run migrate (no rollback needed).
+    if r.sgplan is not None:
+        secgroups.ensure(r, r.sgplan, st)
     try:  # bash: trap cleanup_attach EXIT ... trap - EXIT
         sid = st.json("server.json").get("id")
         st.write("volume-map", "")

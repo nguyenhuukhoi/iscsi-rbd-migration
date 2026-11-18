@@ -13,6 +13,38 @@ preserve_hostname: true
 """
 
 
+# --- port fidelity (P6) -------------------------------------------------------------------------
+def pair_args(port):
+    """--allowed-address options recreating the port's allowed-address-pairs. A pair carrying the port's
+    own MAC is written without it: Neutron fills in the MAC of the port it lands on, which is what the
+    source port had (same MAC with --ip same and on the reserve port, the new port's own with --ip <addr>).
+    Any other MAC (a VRRP virtual MAC, say) is kept as it is."""
+    own = jqs(port.get("mac")).lower()
+    args = []
+    for x in port.get("aap") or []:
+        if not isinstance(x, dict) or not x.get("ip_address"):
+            continue
+        spec = "ip-address=" + x["ip_address"]
+        mac = x.get("mac_address")
+        if mac and mac.lower() != own:
+            spec += ",mac-address=" + mac
+        args += ["--allowed-address", spec]
+    return args
+
+
+def fidelity_args(port):
+    """Port security off, allowed-address-pairs, description: what a copy of the port carries beyond
+    network, MAC/IP and security groups (the reserve port and, unless --ip new drops the pairs, the
+    destination port)."""
+    args = []
+    if port.get("port_security") is False:
+        args.append("--disable-port-security")
+    args += pair_args(port)
+    if port.get("description"):
+        args += ["--description", port["description"]]
+    return args
+
+
 # --- source ports ------------------------------------------------------------------------------
 # A stopped VM with its port attached can still be started, by an admin too, despite the lock. In
 # the lab that gave two VMs on one IP and MAC. Disabling the port is not an option: the source cloud
@@ -66,8 +98,9 @@ def _reserve_port(r, vm, st, port, i):
                 % (sg, r.cfg.SRC_PROJECT or r.src._pid or "?", why))
     if not sg_args:
         sg_args = ["--no-security-group"]
+    # P6: the port rollback reattaches carries what the original carried (same cloud, same MAC).
     res = r.src.run("port", "create", "mig-reserve-%s-%d" % (vm, i), "--network", net, "--mac-address", mac,
-                    "--fixed-ip", "ip-address=" + ip, *sg_args, "-f", "value", "-c", "id")
+                    "--fixed-ip", "ip-address=" + ip, *sg_args, *fidelity_args(port), "-f", "value", "-c", "id")
     if res.rc != 0:
         raise Die("could not re-create a port holding %s %s on %s: that address is no longer reserved for rollback"
                   % (ip, mac, net))
@@ -81,8 +114,8 @@ def _reserve_port(r, vm, st, port, i):
 
 
 # --- server group --------------------------------------------------------------------------------
-def keep_sg_ensure(r, st):
-    """Finds or creates r.ksg_dst at the destination, sets r.ksg_id, records it."""
+def server_group_ensure(r, st):
+    """Finds or creates r.ksg_dst (<AZ>-<source group>) at the destination, sets r.ksg_id, records it."""
     try:
         dlist = dst_server_groups_named(r, r.ksg_dst)
     except Die:
@@ -119,8 +152,8 @@ def keep_sg_ensure(r, st):
         r.ksg_id = did
         log("destination server group %s (%s) exists: the VM joins it" % (r.ksg_dst, r.ksg_id))
     else:
-        raise Die("%d server groups are named %s in the destination project: drop --keep-server-group and pass "
-                  "--server-group <id>" % (len(dlist), r.ksg_dst))
+        raise Die("%d server groups are named %s in the destination project: pass --server-group <id>, or "
+                  "--no-server-group" % (len(dlist), r.ksg_dst))
     st.write("dst-server-group", "%s created=%s\n" % (r.ksg_id, created))
 
 
@@ -130,6 +163,35 @@ def _compact(obj):
 
 
 # --- destination server -------------------------------------------------------------------------
+def _dst_sg_args(r, p):
+    """Security group options of the destination copy of source port p."""
+    o = r.opts
+    if p.get("port_security") is False:
+        # Neutron takes no group on a port without port security (the preflight refused --security-group).
+        if o.ov_sg:
+            raise Die("port %s has port security disabled: --security-group %s cannot apply" % (jqs(p.get("mac")), o.ov_sg))
+        return ["--no-security-group"]
+    if o.ov_sg:
+        sgs = ifs_split(o.ov_sg, ",")
+    else:
+        sgs = [s for s in (p.get("security_groups") or []) if s]
+        if sgs and not o.no_copy_sg:
+            # P6 default: the '<AZ>-<name>' copies, found or created by secgroups.ensure before the cutover.
+            if r.sgplan is None:
+                raise Die("the security group copies were not planned (preflight)")
+            return [x for s in sgs for x in ("--security-group", r.sgplan.dst_id(s))]
+    # By ID: a name such as "default" exists once per project and an admin sees them all.
+    sg_args = []
+    for sg in sgs:
+        sgid = r.dst.sg_id(sg)
+        if not sgid:
+            raise Die("security group %s not found in destination project %s" % (sg, r.cfg.DST_PROJECT or r.dst._pid))
+        sg_args += ["--security-group", sgid]
+    if not sg_args:
+        sg_args = ["--no-security-group"]
+    return sg_args
+
+
 def create_destination(r, vm, st):
     o = r.opts
     server = st.json("server.json")
@@ -144,34 +206,28 @@ def create_destination(r, vm, st):
         net, ip, mac, cidr = jqs(p.get("network")), jqs(p.get("ip")), jqs(p.get("mac")), jqs(p.get("cidr"))
         subnets = r.dst.json("subnet", "list", "--network", net, "-f", "json")
         subnet = "\n".join(s.get("ID") for s in subnets if s.get("Subnet") == cidr)
-        if o.ov_sg:
-            sgs = ifs_split(o.ov_sg, ",")
-        else:
-            sgs = [s for s in (p.get("security_groups") or []) if s]
-        # By ID: a name such as "default" exists once per project and an admin sees them all.
-        sg_args = []
-        for sg in sgs:
-            sgid = r.dst.sg_id(sg)
-            if not sgid:
-                raise Die("security group %s not found in destination project %s" % (sg, r.cfg.DST_PROJECT or r.dst._pid))
-            sg_args += ["--security-group", sgid]
-        if not sg_args:
-            sg_args = ["--no-security-group"]
+        sg_args = _dst_sg_args(r, p)
+        # P6: port security, allowed-address-pairs (not with --ip new: they point at the old addresses),
+        # description, dns_name (when the preflight found it safe to copy).
+        extra = fidelity_args(dict(p, aap=[]) if o.ipmode == "new" else p)
+        if i in r.dns_copy:
+            extra += ["--dns-name", p["dns_name"]]
         # Ports are named <vm>-<ip> but used and rolled back by ID: a name is not unique across
         # projects, and an admin's name lookup sees every project.
         if o.ipmode == "same":
             pname = "%s-%s" % (vmname, ip)
             pid = r.dst.value("port", "create", pname, "--network", net, "--mac-address", mac,
-                              "--fixed-ip", "subnet=%s,ip-address=%s" % (subnet, ip), *sg_args, "-f", "value", "-c", "id")
+                              "--fixed-ip", "subnet=%s,ip-address=%s" % (subnet, ip), *sg_args, *extra,
+                              "-f", "value", "-c", "id")
         elif o.ipmode == "new":
             # The address is unknown until Neutron allocates it: renamed right below.
             pname = "%s-pending%d" % (vmname, i)
             pid = r.dst.value("port", "create", pname, "--network", net, "--fixed-ip", "subnet=" + subnet,
-                              *sg_args, "-f", "value", "-c", "id")
+                              *sg_args, *extra, "-f", "value", "-c", "id")
         else:
             pname = "%s-%s" % (vmname, o.ipaddr)
             pid = r.dst.value("port", "create", pname, "--network", net,
-                              "--fixed-ip", "subnet=%s,ip-address=%s" % (subnet, o.ipaddr), *sg_args,
+                              "--fixed-ip", "subnet=%s,ip-address=%s" % (subnet, o.ipaddr), *sg_args, *extra,
                               "-f", "value", "-c", "id")
         st.append("dst-ports", pid)
         pj = r.dst.json("port", "show", pid, "-f", "json")
@@ -181,6 +237,9 @@ def create_destination(r, vm, st):
             pname = "%s-%s" % (vmname, pinfo.split(" ", 1)[0])
             r.dst.out("port", "set", "--name", pname, pid)
         log("destination port %s %s" % (pname, pinfo))
+        if o.ipmode == "new" and pair_args(p):
+            log("WARN allowed-address-pairs of source port %s not copied (--ip new); to add back what still applies: "
+                "openstack port set %s %s" % (jqs(p.get("mac")), " ".join(shlex.quote(a) for a in pair_args(p)), pid))
         nics += ["--port", pid]
 
     flavor = o.ov_flavor or flavor_name(server)
@@ -197,9 +256,10 @@ def create_destination(r, vm, st):
         if len(ids) != 1:
             raise Die("server group %s is missing or ambiguous in the destination project" % o.server_group)
         hint = ["--hint", "group=" + ids[0]]
-    # Set by preflight only with --keep-server-group and a source VM that is in a group.
+    # Set by the preflight when the source VM is in a server group (and neither --server-group nor
+    # --no-server-group is given).
     if r.ksg_dst:
-        keep_sg_ensure(r, st)
+        server_group_ensure(r, st)
         hint = ["--hint", "group=" + r.ksg_id]
 
     # Server metadata travels with the VM: properties and description.

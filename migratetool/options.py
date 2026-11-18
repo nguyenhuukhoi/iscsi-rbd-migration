@@ -8,7 +8,7 @@ import re
 from .util import Die, ifs_split
 
 FLAG_OPTS = ("--start-source", "--keep-source-ports", "--keep-server-group", "--volumes-only",
-             "--in-use", "--flavor-fallback")
+             "--in-use", "--flavor-fallback", "--no-server-group", "--no-copy-secgroup")
 VALUE_OPTS = ("--mode", "--volume-type", "--az", "--ip", "--flavor", "--security-group",
               "--server-group", "--max-passes", "--delta-limit", "--verify")
 IPV4_RE = re.compile(r"[0-9]{1,3}(\.[0-9]{1,3}){3}")
@@ -35,6 +35,11 @@ class Options:
         self.az_cli = False
         self.type_cli = False
         self.flavor_fallback = False
+        # P6: the source server group and security groups are recreated at the destination by default.
+        # --keep-server-group still parses (it asks for that default explicitly) but changes nothing.
+        self.no_server_group = False
+        self.no_copy_sg = False
+        self.no_server_group_from = ""
         # MIG_DEFAULT_OPTS bookkeeping
         self.def_opts = []
         self.def_shown = []
@@ -144,6 +149,10 @@ class Options:
                 self.keep_sg = True; self.keep_sg_from = origin; i += 1
             elif a == "--flavor-fallback":
                 self.flavor_fallback = True; i += 1
+            elif a == "--no-server-group":
+                self.no_server_group = True; self.no_server_group_from = origin; i += 1
+            elif a == "--no-copy-secgroup":
+                self.no_copy_sg = True; i += 1
             elif a == "--in-use":
                 self.in_use = True; i += 1
             elif a == "--volumes-only":
@@ -182,6 +191,22 @@ class Options:
                 self.server_group = ""
         if self.server_group and self.keep_sg:
             raise Die("choose one: --server-group <name> or --keep-server-group"
+                      + (" (both in MIG_DEFAULT_OPTS)" if self.keep_sg_from == "defaults" else ""))
+        # --keep-server-group asks for the default, --no-server-group opts out of it: same rule as above,
+        # the typed one beats the one from MIG_DEFAULT_OPTS (a conf may still carry --keep-server-group).
+        if self.keep_sg and self.no_server_group and self.keep_sg_from != self.no_server_group_from:
+            if self.keep_sg_from == "defaults":
+                self.keep_sg = False
+                self.drop_shown("--keep-server-group")
+                self.def_notes.append("--keep-server-group from MIG_DEFAULT_OPTS dropped: --no-server-group is on the "
+                                      "command line")
+            else:
+                self.no_server_group = False
+                self.drop_shown("--no-server-group")
+                self.def_notes.append("--no-server-group from MIG_DEFAULT_OPTS dropped: --keep-server-group is on the "
+                                      "command line")
+        if self.keep_sg and self.no_server_group:
+            raise Die("choose one: --keep-server-group (the default now) or --no-server-group"
                       + (" (both in MIG_DEFAULT_OPTS)" if self.keep_sg_from == "defaults" else ""))
 
     # --- AZ -> type -> pool ----------------------------------------------------------------

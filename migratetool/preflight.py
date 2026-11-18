@@ -1,12 +1,18 @@
 """Destination preflight: read-only checks, one '  OK    ' / '  FAIL  ' / '  INFO  ' / '  WARN  ' line
-each (bash preflight, keep_sg_preflight, flavor_fallback_preflight). Never creates anything."""
+each (bash preflight, keep_sg_preflight, flavor_fallback_preflight; P6: server group and security group
+copies, port fidelity). Never creates anything."""
 import json
 import os
+import re
 
-from . import proc
+from . import azname, proc, secgroups
 from .context import flavor_name
 from .util import Die, ifs_split, jq_alt, jqs, lines, out, prog
 from .vmdef import dest_volume_name
+
+# A dns_name Nova accepts on a port it is given: Nova refuses one that is not the new instance's hostname
+# (PortNotUsableDNS), and derives that hostname from the name. Copied only when it is plainly that name.
+HOSTNAME_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 
 
 class Checker:
@@ -48,7 +54,24 @@ def dst_server_groups_named(r, name):
             for g in groups if g.get("Name") == name]
 
 
-def keep_sg_preflight(r, st, c):
+def need_prefix(r, c):
+    """The '<AZ>' that names the destination copies; '' after one FAIL line when it cannot be told."""
+    if r.prefix is None:
+        try:
+            r.prefix, how = azname.resolve(r)
+        except Die as e:
+            r.prefix = ""
+            c.failed(str(e))
+        else:
+            if how:
+                out("  INFO  copies of the source server group and security groups are named %s-<source name>: %s"
+                    % (r.prefix, how))
+    return r.prefix
+
+
+def server_group_preflight(r, st, c):
+    """The source VM's server group, recreated at the destination as '<AZ>-<name>' with its policy (the
+    default since P6; --keep-server-group, with the literal prefix 'az-', before)."""
     sid = st.json("server.json").get("id")
     try:
         sgj = r.src.json("server", "group", "list", "--long", "-f", "json")
@@ -56,9 +79,11 @@ def keep_sg_preflight(r, st, c):
         return c.failed("cannot list source server groups")
     gids = [g.get("ID") for g in sgj if any(m == sid for m in (g.get("Members") or []))]
     if not gids:
-        return out("  INFO  source VM is in no server group")
+        if r.opts.keep_sg:
+            out("  INFO  source VM is in no server group")
+        return
     if len(gids) > 1:
-        return c.failed("source VM is in %d server groups (%s): drop --keep-server-group and pass --server-group <id>"
+        return c.failed("source VM is in %d server groups (%s): pass --server-group <id>, or --no-server-group"
                         % (len(gids), " ".join(gids)))
     gid = gids[0]
     try:
@@ -73,7 +98,10 @@ def keep_sg_preflight(r, st, c):
     r.ksg_policy = "" if pol is None else jqs(pol)
     rules = jq_alt(gj.get("rules"), {})
     r.ksg_rules = rules if isinstance(rules, dict) else {}
-    r.ksg_dst = "az-" + sname
+    prefix = need_prefix(r, c)
+    if not prefix:
+        return
+    r.ksg_dst = "%s-%s" % (prefix, sname)
     rtxt = ",".join("%s=%s" % (k, jqs(v)) for k, v in r.ksg_rules.items())
     out("  INFO  source server group %s (%s, policy %s%s) -> destination %s"
         % (sname, gid, r.ksg_policy or "unknown", (", rules " + rtxt) if rtxt else "", r.ksg_dst))
@@ -91,11 +119,80 @@ def keep_sg_preflight(r, st, c):
             out("  OK    server group %s exists (%s, policy %s): reused" % (r.ksg_dst, did, r.ksg_policy))
         else:
             c.failed("server group %s has policy %s at the destination, source group %s has %s — to use it "
-                     "anyway drop --keep-server-group and pass --server-group %s" % (r.ksg_dst, dpol, sname, r.ksg_policy, did))
+                     "anyway pass --server-group %s (or --no-server-group)" % (r.ksg_dst, dpol, sname, r.ksg_policy, did))
     else:
-        c.failed("%d server groups are named %s in the destination project (ambiguous): %s— drop "
-                 "--keep-server-group and pass --server-group <id>"
+        c.failed("%d server groups are named %s in the destination project (ambiguous): %s— pass "
+                 "--server-group <id>, or --no-server-group"
                  % (len(dlist), r.ksg_dst, "".join(i + " " for i, _ in dlist)))
+
+
+# --- port fidelity (P6) ---------------------------------------------------------------------------
+def net_extensions(r):
+    """Aliases of the destination's network extensions (cached); None when they cannot be listed."""
+    if r.net_ext is None:
+        res = r.dst.run("extension", "list", "--network", "-f", "value", "-c", "Alias", stderr=proc.DEVNULL)
+        r.net_ext = set(lines(res.stdout)) if res.rc == 0 else False
+    return r.net_ext if r.net_ext is not False else None
+
+
+def plain_hostname(dns_name, vmname):
+    """dns_name is the hostname any Nova derives from vmname (lowercase letters, digits, inner '-')."""
+    return dns_name == vmname.lower() and bool(HOSTNAME_RE.fullmatch(dns_name))
+
+
+def pair_text(pairs):
+    return ", ".join(jqs(x.get("ip_address")) + (" (%s)" % x["mac_address"] if x.get("mac_address") else "")
+                     for x in pairs)
+
+
+def port_security_conflict(r, ports):
+    """--security-group on a VM with a port-security-disabled port: Neutron takes no group on that port."""
+    o = r.opts
+    for p in ports:
+        if o.ov_sg and p.get("port_security") is False:
+            raise Die("port %s has port security disabled at the source, so its copy takes no security group: "
+                      "--security-group %s conflicts with it — drop --security-group, or enable port security on the "
+                      "source port first" % (jqs(p.get("mac")), o.ov_sg))
+
+
+def port_fidelity_preflight(r, p, i, vmname, c):
+    """Port security, allowed-address-pairs and dns_name of one source port (the description is copied as is)."""
+    mac = jqs(p.get("mac"))
+    if p.get("port_security") is False:
+        ext = net_extensions(r)
+        if ext is None:
+            c.failed("cannot list the destination network extensions (port %s has port security disabled)" % mac)
+        elif "port-security" not in ext:
+            c.failed("port %s has port security disabled at the source, the destination has no port-security "
+                     "extension to create its copy that way" % mac)
+        else:
+            out("  INFO  port %s: port security disabled at the source: the destination port is created with "
+                "--disable-port-security and no security group" % mac)
+    pairs = [x for x in (p.get("aap") or []) if isinstance(x, dict)]
+    if pairs:
+        if r.opts.ipmode == "new":
+            out("  WARN  port %s: allowed-address-pairs not copied with --ip new (they point at the old addresses; "
+                "add what still applies yourself): %s" % (mac, pair_text(pairs)))
+        else:
+            ext = net_extensions(r)
+            if ext is not None and "allowed-address-pairs" not in ext:
+                c.failed("port %s has allowed-address-pairs, the destination has no allowed-address-pairs extension"
+                         % mac)
+            else:
+                out("  INFO  port %s: allowed-address-pairs copied: %s" % (mac, pair_text(pairs)))
+    dns = p.get("dns_name") or ""
+    if dns:
+        ext = net_extensions(r)
+        if ext is None or "dns-integration" not in ext:
+            out("  WARN  port %s: dns_name %s not copied: the destination %s" % (
+                mac, dns, "network extensions cannot be listed" if ext is None else "has no dns-integration extension"))
+        elif not plain_hostname(dns, vmname):
+            out("  WARN  port %s: dns_name %s not copied: Nova refuses a port whose dns_name is not the new instance's "
+                "hostname, and %s is not plainly the hostname of '%s' (Nova sets the port's dns_name itself)"
+                % (mac, dns, dns, vmname))
+        else:
+            r.dns_copy.add(i)
+            out("  INFO  port %s: dns_name %s copied" % (mac, dns))
 
 
 def load_flavor_map(r):
@@ -173,7 +270,8 @@ def preflight(r, st):
     key = jq_alt(server.get("key_name"))
     key = "" if key is None else jqs(key)
     tail = (" volumes-only" if o.volumes_only else "")
-    extra = (" keep-server-group" if o.keep_sg else "") + (" flavor-fallback" if o.flavor_fallback else "")
+    extra = ((" keep-server-group" if o.keep_sg else "") + (" flavor-fallback" if o.flavor_fallback else "")
+             + (" no-server-group" if o.no_server_group else "") + (" no-copy-secgroup" if o.no_copy_sg else ""))
     out("Destination preflight (mode=%s%s ip=%s%s type=%s pool=%s%s%s%s%s%s):" % (
         o.mode, tail, o.ipmode, (" " + o.ipaddr) if o.ipaddr else "", o.volume_type or "default", r.pool,
         (" az=" + o.dest_az) if o.dest_az else "", (" flavor=" + o.ov_flavor) if o.ov_flavor else "",
@@ -214,6 +312,7 @@ def preflight(r, st):
                 c.failed("destination already has a volume named %s (%s) — rename or delete it first, the migrated "
                          "volume must be unambiguous" % (dname, " ".join(clash)))
     else:
+        port_security_conflict(r, st.json("ports.json"))
         # A same-named server already on the destination means an earlier migration of
         # this VM (finished, or interrupted after create). Proceeding would duplicate it.
         vmname = jqs(server.get("name"))
@@ -252,7 +351,11 @@ def preflight(r, st):
                     c.failed("%d server groups are named %s in the destination project — pass the ID to --server-group"
                              % (len(hits), o.server_group))
         if o.keep_sg:
-            keep_sg_preflight(r, st, c)
+            out("  INFO  --keep-server-group changes nothing now: the source server group is followed by default "
+                "(opt out: --no-server-group)")
+        # An explicit --server-group wins over the source group.
+        if not o.server_group and not o.no_server_group:
+            server_group_preflight(r, st, c)
 
     if o.volume_type:
         c.check("volume type " + o.volume_type, lambda: r.dst.ok("volume", "type", "show", o.volume_type))
@@ -278,7 +381,21 @@ def preflight(r, st):
     ports = [] if o.volumes_only else st.json("ports.json")
     if not o.volumes_only and o.ipmode == "addr" and len(ports) != 1:
         c.failed("--ip <addr> works only for single-NIC VMs (this one has %d ports)" % len(ports))
-    for p in ports:
+    # P6: the source groups are copied as '<AZ>-<name>' unless --security-group (names as typed) or
+    # --no-copy-secgroup (same-name groups that must already exist, as up to 7.0).
+    copy_sg = not o.volumes_only and not o.ov_sg and not o.no_copy_sg
+    if copy_sg:
+        names = []
+        for p in ports:
+            names += [s for s in (p.get("security_groups") or []) if s and s not in names]
+        if names and need_prefix(r, c):
+            try:
+                r.sgplan = secgroups.plan_copy(r, names, r.prefix)
+            except Die as e:
+                c.failed("cannot plan the security group copies: %s" % e)
+    shown = {}
+    vmname = jqs(server.get("name"))
+    for i, p in enumerate(ports):
         net, cidr, mac, ip = jqs(p.get("network")), jqs(p.get("cidr")), jqs(p.get("mac")), jqs(p.get("ip"))
         c.check("network %s exists" % net, lambda: r.dst.ok("network", "show", net))
         c.check("subnet %s on %s" % (cidr, net), lambda: cidr in r.dst.run(
@@ -294,12 +411,25 @@ def preflight(r, st):
                                                                     "ip-address=" + o.ipaddr, "-f", "value", "-c", "ID") == "")
         if jqs(p.get("extra_ips")) != "0":
             c.failed("port %s has several fixed IPs (not handled)" % mac)
-        if len(p.get("aap") or []) != 0:
-            c.failed("port %s has allowed-address-pairs (not handled)" % mac)
-        if not o.ov_sg:
-            for sg in p.get("security_groups") or []:
-                if sg:
-                    check_sg("security group " + sg, sg)
+        port_fidelity_preflight(r, p, i, vmname, c)
+        if o.ov_sg:
+            continue
+        for sg in p.get("security_groups") or []:
+            if not sg:
+                continue
+            if not copy_sg:
+                check_sg("security group " + sg, sg)
+            elif r.sgplan is not None:  # None: the FAIL line why is printed above
+                if sg in shown:  # a group on several ports: one full line, its FAIL once
+                    if shown[sg]:
+                        out("  OK    security group %s -> %s-%s (see above)" % (sg, r.prefix, sg))
+                    continue
+                good, text = secgroups.describe(r.sgplan, sg)
+                shown[sg] = good
+                if good:
+                    out("  OK    " + text)
+                else:
+                    c.failed(text)
 
     vols = st.json("volumes.json")
     c.check("no encrypted volume", lambda: all(v.get("encrypted") is not True for v in vols))

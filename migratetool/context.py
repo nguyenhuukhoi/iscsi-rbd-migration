@@ -16,11 +16,18 @@ class Run:
         self.pool = cfg.RBD_POOL
         self.ephemeral = False
         self.flavor_map = {}
-        # --keep-server-group
+        # the source server group, recreated at the destination (default since P6; --keep-server-group before)
         self.ksg_dst = ""
         self.ksg_policy = ""
         self.ksg_rules = {}
         self.ksg_id = ""
+        # P6: name prefix of the destination copies (azname.resolve; None = not asked yet, "" = unresolved),
+        # the security group copy plan (secgroups.Plan), the destination's network extension aliases, and
+        # the source ports whose dns_name is copied (by port index)
+        self.prefix = None
+        self.sgplan = None
+        self.net_ext = None
+        self.dns_copy = set()
         # set while a clone is attached to this host (bash ATTACHED); the watcher thread (WATCH_PID)
         self.attached = ""
         self.watcher = None
