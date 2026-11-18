@@ -274,3 +274,29 @@ xóa server xong xóa volume ngay, Cinder thỉnh thoảng còn giữ attachment
 clone thứ 11 → `VolumeLimitExceeded` → tool die đúng chuẩn kèm hint rollback; A4 vớ thêm 1 volume vô danh
 rò trong proj-b nên `OK 2` thay vì `OK 1`; các case sau dính dây chuyền. Xử lý: xóa 10 volume rác vô danh
 (cả 2 cloud), dọn state, quota về 2/10 → lượt 3 xanh tuyệt đối. Không có bug code nào trong cả 2 lượt.
+
+### Ví dụ GUIDE-PYTHON §8 ↔ case test — ĐẠT 2026-11-18 (Fable)
+
+Đối chiếu 13 ví dụ lệnh của [GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 8 với test thật: 9 ví dụ đã được các
+suite/case ở trên phủ; 4 ví dụ còn thiếu (3, 7, 9, 13) được chạy **nguyên văn** trên lab bằng harness mới
+`guidex.sh` (bản chạy + log ở `/root/mig-lab/tests/guidex.{sh,log}` trên mig-host). Kết quả: **11 check
+chức năng PASS cả 11**; check thứ 12 (dọn lab về baseline) FAIL oan vì 4 volume BFV vô danh của VM fixture
+rò lại (harness xóa server xong xóa volume ngay — đúng kiểu rò Cinder-giữ-attachment đã chẩn đoán ở case
+24; trong đó 3 cái rò từ p4feat lượt 3, 1 từ chính guidex). Đã xóa tay 4 volume, soát lại: 2 cloud về đúng
+baseline 2 volume demo. Không bug code.
+
+| Ví dụ §8 | Phủ bởi |
+|---|---|
+| 1 `plan <vm>` | suite `e2e-migrate-py.sh` (bước plan) |
+| 2 `migrate <vm> --yes` | suite `e2e-migrate-py.sh` |
+| 3 `plan` + `migrate --host <host> --az <az>` | guidex ex3: plan 2 PLAN-OK, migrate `Totals: OK 2`, rollback 2 VM bằng ID — 3/3 |
+| 4 `plan volume --project --available` rồi `volume --project --available --yes` | case 23 (plan volume sống) + p4feat (đợt volume theo project) |
+| 5 `volume <id> --in-use` | suite `e2e-migrate-py.sh` + p4feat |
+| 6 `rollback <đúng chữ đã gõ>` | mọi suite; rollback theo tên: p4feat A5/C1 |
+| 7 live `--max-passes 8 --delta-limit 32 --verify full` | guidex ex7: rc 0, đích ACTIVE, rollback sạch — 2/2 |
+| 8 `--ip new --volume-type --start-source` | suite `newip-voltype-py.sh` |
+| 9 `--vm-file` + `--yes --continue-on-error` (dòng rác + VM PLAN-FAIL + VM lành) | guidex ex9: `SKIP(not-found)` + `Totals: OK 1  FAIL 1  SKIP 1` + rc≠0, demo-vm vẫn sang đích — 2/2 |
+| 10 hai VM cùng group `--keep-server-group` | p4feat C1 |
+| 11 `--flavor-fallback` + FLAVOR_MAP_FILE | p4feat |
+| 12 `volume --vm <2 VM>` | p4feat |
+| 13 combo production `--host --project --keep-source-ports --verify none --az --volume-type` | guidex ex13: `Totals: OK 2`, volume đích type `mig-typeb`, nguồn SHUTOFF còn nguyên port, rollback sạch — 4/4 |
