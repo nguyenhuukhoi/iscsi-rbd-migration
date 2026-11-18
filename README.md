@@ -14,6 +14,8 @@ v3 adds a conf file, per-project runs, instance-based destination names, `--serv
 | [DESIGN-V3.md](DESIGN-V3.md) | Design v3 (batch by host/project/VM list, server group, volumes-only, naming) |
 | [POWERSTORE-VS-LAB.md](POWERSTORE-VS-LAB.md) | PowerStore 5000T vs lab; single-path checklist |
 | [TEST-REPORT-20261112.md](TEST-REPORT-20261112.md) | Test results v2/v2.1 (220 PASS / 0 FAIL) |
+| [CHANGELOG.md](CHANGELOG.md) | Version history v1 → v4: features, fixes, commits, design + test report per version |
+| [DEVELOPING.md](DEVELOPING.md) | For maintainers: architecture, state files, config layering, rules, workflow, tests, adding an option |
 
 Tool = 4 files installed to `/usr/local/bin`: `migrate-vm.sh`, `migrate-batch.sh`, `brick_attach.py`,
 `blocksync.py`. `migrate-batch.sh` (v3) is the batch driver: it runs `migrate-vm.sh` over the VMs
