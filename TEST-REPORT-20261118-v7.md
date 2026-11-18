@@ -68,7 +68,24 @@ Bỏ subcommand `batch`: selector hóa (`--vm/--host/--project/--vm-file`, posit
 `migrate plan` thay `--plan-only`; `migrate migrate` LUÔN hỏi xác nhận trừ `--yes` (đổi hành vi
 có chủ đích, an toàn hơn bash); volume theo đợt gộp vào `migrate volume`. Thực thi ở P4.
 
-## Phase 3 — ip/voltype/ephemeral/extras: (chưa)
+## Phase 3 — ephemeral + newip/extras (commit `f584bd5`) — ĐẠT 2026-11-18
+
+Port đường ephemeral: snapshot → Glance REST (urllib, đúng trình tự curl của bash: POST record,
+PUT stream, chờ active, so sha512, JSON-patch allowlist property) → server image-backed; dọn
+`mig-snap-*`. Parity giả lập 86/86 + unit 25/25, trong đó Glance GIẢ là HTTP server thật tính
+sha512 và ghi từng request — curl (bash) với urllib (Python) bị so TỪNG LỜI GỌI REST. 12 kịch bản
+ephemeral + 3 rollback chéo + 6 kịch bản hình dạng suite. Lệch có chủ đích (duyệt): message lỗi
+REST rõ hơn (POST fail: bash exit 22 của curl im lặng, Python ERROR + exit 1).
+
+### Lab thật
+
+| # | Case | Lệnh | Kết quả |
+|---|---|---|---|
+| 6 | newip-voltype NGUYÊN BẢN sed đổi lệnh (`newip-voltype-py.sh`) | `bash /root/mig-lab/tests/newip-voltype-py.sh` | **PASS=26 FAIL=0** |
+| 7 | extras NGUYÊN BẢN sed đổi lệnh (`extras-py.sh`) — multi-NIC, flavor/SG override, properties, **ephemeral qua Glance thật** | `bash /root/mig-lab/tests/extras-py.sh` | **PASS=30 FAIL=0** |
+
+**Cộng dồn P1–P3: app Python qua đủ 140/140 check của 5 suite cũ** (e2e 50 + blocksync 8 +
+live 26 + newip 26 + extras 30).
 
 ## Phase 4 — volume + batch + maps: (chưa)
 
