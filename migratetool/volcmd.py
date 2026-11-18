@@ -16,7 +16,7 @@ from .rollback import drop_volume
 from .state import StateDir
 from .util import UUID_RE, Die, Exit, jq_alt, jqs, lines, log, out, prog
 
-SERVER_ONLY = ("--ip", "--flavor", "--flavor-fallback", "--security-group", "--server-group", "--keep-server-group",
+SERVER_ONLY = ("--ip", "--flavor", "--flavor-fallback", "--security-group", "--server-group",
                "--start-source", "--keep-source-ports", "--volumes-only", "--no-server-group", "--no-copy-secgroup")
 
 _DESCRIBED = """import sys

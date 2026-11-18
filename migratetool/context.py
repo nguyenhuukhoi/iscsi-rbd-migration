@@ -16,7 +16,7 @@ class Run:
         self.pool = cfg.RBD_POOL
         self.ephemeral = False
         self.flavor_map = {}
-        # the source server group, recreated at the destination (default since P6; --keep-server-group before)
+        # the source server group, recreated at the destination (default since 7.1; 7.0: --keep-server-group)
         self.ksg_dst = ""
         self.ksg_policy = ""
         self.ksg_rules = {}

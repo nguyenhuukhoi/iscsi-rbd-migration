@@ -27,7 +27,11 @@ từ 7.0). Test: [TEST-REPORT-20261118-v7.md](TEST-REPORT-20261118-v7.md) mục 
   7.0 dùng chữ cứng `az-` và chỉ khi `--keep-server-group`. ⚠ Group `az-*` cũ ở đích không được dùng lại.
 - `<AZ đích>` = `--az` > `MIG_AZ` > AZ compute duy nhất của đích. Đích từ 2 AZ trở lên mà không có cả hai thì
   preflight FAIL.
-- `--keep-server-group` vẫn nhận nhưng không còn tác dụng (1 dòng INFO).
+- ⚠ **BREAKING — bỏ `--keep-server-group`** (user chốt 19/11). Gõ cờ này thì app dừng như mọi option lạ:
+  `ERROR: unknown option --keep-server-group`. Nằm trong `MIG_DEFAULT_OPTS` thì dừng ngay lúc đọc conf:
+  `ERROR: MIG_DEFAULT_OPTS: unknown option '--keep-server-group' (MIG_DEFAULT_OPTS="…")`. Script, cron, conf thời
+  7.0 phải xóa cờ trước khi lên 7.1; hành vi không cờ của 7.1 chính là việc cờ đó từng làm (tên `<AZ>-` thay `az-`).
+  `migrate volume <vol> --keep-server-group` cũng ra `unknown option` (7.0: "cannot apply").
 
 ### Thêm
 

@@ -324,7 +324,8 @@ suite lab thật của Fable. Thay đổi so với P5:
 | `p6unit.py` | Mới: unit P6 |
 
 **Luật máy móc cho mọi kịch bản viết trước P6** (`parity.legacy_optouts`): phía app/py, mỗi bước `plan`/`migrate`
-của VM chạy thêm `--no-copy-secgroup` và, nếu bước đó không có `--keep-server-group`, `--no-server-group`. Hai
+của VM chạy thêm `--no-copy-secgroup` và, nếu bước đó không có `--keep-server-group`, `--no-server-group`
+(bổ sung 19/11: bước có `--keep-server-group` thì app chạy **không** cờ đó, xem mục "Bổ sung 19/11"). Hai
 opt-out này trả đúng hành vi 7.0, nên so 6 chiều với bản bash như cũ. Hệ quả cơ học, áp cho phía bash: header
 `Destination preflight (…)` thêm 2 token (`header_tokens`), prompt `Type yes` của selector thêm 2 option
 (`prompt_tokens`). Bước `volume`, `plan volume`, `rollback` không bị đụng. Danh sách đầy đủ kịch bản nhận luật này
@@ -369,7 +370,7 @@ ra ngoài, state và world cuối.
 | | `--no-server-group` | Không một lời gọi `server group` nào, không `--hint` |
 | | `--az AZ1` / `MIG_AZ=AZ1` với 2 AZ | `AZ1-web-anti`, `AZ1-web` |
 | | `--server-group db-anti` | Thắng group nguồn, không liệt kê group nguồn |
-| | `--keep-server-group --no-server-group` gõ cả hai / keep trong `MIG_DEFAULT_OPTS` + gõ `--no-server-group` / keep một mình | die `choose one…` / gõ tay thắng kèm INFO / INFO "changes nothing now", kết quả như mặc định |
+| | ~~`--keep-server-group --no-server-group` gõ cả hai / keep trong `MIG_DEFAULT_OPTS` + gõ `--no-server-group` / keep một mình~~ (bỏ 19/11, thay bằng 6 kịch bản "unknown option" ở mục "Bổ sung 19/11") | ~~die `choose one…` / gõ tay thắng kèm INFO / INFO "changes nothing now"~~ |
 | AZ | 2 AZ, không `--az`/`MIG_AZ` (VM có SG + group) | Đúng **1** dòng FAIL nêu lối ra |
 | | `internal` + `nova` + zone `not available` | Chọn `nova`, có dòng INFO nguồn gốc |
 | | liệt kê AZ lỗi | FAIL `cannot list the destination compute availability zones…` |
@@ -416,8 +417,9 @@ Trước mỗi commit: `python -m py_compile migratetool/*.py` sạch, `grep -n 
    Phương án bỏ: đọc AZ của volume đích vừa tạo, vì plan không biết trước, và AZ volume có thể khác AZ server.
 2. **`--no-copy-secgroup` = hành vi 7.0 nguyên vẹn** (SG cùng tên phải có sẵn, thiếu là FAIL), không phải "không
    gắn SG". Lý do: đường lùi cho conf production và cho bộ test cũ.
-3. `--keep-server-group`: no-op + 1 dòng INFO. Vẫn xung đột với `--server-group` (die như cũ) và giờ với
-   `--no-server-group` (cái gõ tay thắng cái trong `MIG_DEFAULT_OPTS`, kèm INFO; cùng nguồn thì die).
+3. ~~`--keep-server-group`: no-op + 1 dòng INFO. Vẫn xung đột với `--server-group` (die như cũ) và giờ với
+   `--no-server-group` (cái gõ tay thắng cái trong `MIG_DEFAULT_OPTS`, kèm INFO; cùng nguồn thì die).~~
+   **Thay bởi quyết định user 19/11: bỏ hẳn cờ**, xem mục "Bổ sung 19/11" dưới.
 4. **SG copy tạo trước khi tắt VM nguồn** (`vmcmd.cmd_migrate`, ngay sau preflight), không nằm trong
    `create_destination`: không cộng downtime (mỗi lệnh OSC ~1-2 s, SG 10 rule ~15-25 s). Lỗi giữa chừng → xóa các SG
    vừa tạo trong lần chạy đó (để lần chạy lại không gặp SG chép dở rồi "dùng luôn"), chưa có `volume-map` nên chạy
@@ -456,6 +458,58 @@ Trước mỗi commit: `python -m py_compile migratetool/*.py` sạch, `grep -n 
     SG đích ngoài override `mig-sg-b` (extras), nên dự kiến xanh; (c) kiểm `openstack security group show -f json`
     thật trả `rules` dạng list dict thô (code cũng nhận `security_group_rules`); (d) policy Neutron với creds member
     cho pairs/PS; (e) `dns-integration` thật.
+
+### Bổ sung 19/11: bỏ hẳn `--keep-server-group` (user chốt, DESIGN-V7 `bf9ce48`) — giả lập
+
+**Code** (version vẫn `7.1.0.dev1`):
+
+- `options.py`: bỏ cờ khỏi `FLAG_OPTS`. Bỏ cả `keep_sg`/`keep_sg_from`, toàn bộ luật xung đột keep↔`--server-group`
+  và keep↔`--no-server-group`, cùng phần sổ sách chỉ phục vụ các luật đó (`server_group_from`,
+  `no_server_group_from`, `drop_shown`).
+- `preflight.py`: bỏ token header ` keep-server-group`, dòng `--keep-server-group ignored: --volumes-only …`, dòng
+  `changes nothing now`. Dòng `source VM is in no server group` **bỏ luôn**: VM không thuộc group nào thì không in gì.
+- `cli.py` (help), `volcmd.SERVER_ONLY`, comment `context.py`.
+- **Không thêm message riêng** kiểu "removed in 7.1": cờ đi qua đúng các điểm die sẵn có cho option lạ.
+
+| Gõ | App báo (rc 1, chưa gọi cloud nào) |
+|---|---|
+| `migrate migrate app01 --keep-server-group --yes`, `migrate plan --vm app01 --keep-server-group`, `migrate volume <vol> --keep-server-group` | `ERROR: unknown option --keep-server-group` (`selector.split_args`) |
+| Tiến trình con / engine 1 VM: `plan app01 --keep-server-group` | `ERROR: unknown option --keep-server-group` (`Options.parse_option_list`) |
+| `MIG_DEFAULT_OPTS="--keep-server-group --verify none"` (env hoặc conf), lệnh `plan`/`migrate` | `ERROR: MIG_DEFAULT_OPTS: unknown option '--keep-server-group' (MIG_DEFAULT_OPTS="--keep-server-group --verify none")` |
+
+Hệ quả phụ: `MIG_DEFAULT_OPTS` có cờ này thì con `migrate-volume` của `migrate volume --project p --available` cũng
+chết từng hàng (FAIL kèm đúng dòng ERROR trên). Lý do: `check_child_options` không soát `MIG_DEFAULT_OPTS` với scope
+`--available`. Lỗi gõ sai bất kỳ token nào trong `MIG_DEFAULT_OPTS` vốn đã như vậy từ P4, nên tôi không đổi.
+
+**Harness** (`/root/v7h-p6`, luật máy móc ghi lại):
+
+| Chỗ | Đổi |
+|---|---|
+| `parity.legacy_optouts` | Bước bash có `--keep-server-group`: phía app **bỏ cờ đó** và chỉ thêm `--no-copy-secgroup` (không `--no-server-group`), vì mặc định 7.1 chính là việc cờ đó yêu cầu bản bash làm. Nhờ vậy 8 kịch bản keep cũ (5 `plan-keep-server-group`, 2 `migrate keep-server-group`, 1 `cross: py keep-server-group`) vẫn so 6 chiều với bản bash cho phần server group (policy, rules, `--rule` bị từ chối, trùng tên, rollback chéo) |
+| `parity.header_tokens` | Header bash có ` keep-server-group`: bỏ token đó, thêm ` no-copy-secgroup` |
+| `KEEP_SUBS` | Bỏ phần chèn dòng INFO `changes nothing now`. Thêm: xóa dòng bash `  INFO  source VM is in no server group`. Giữ 2 lời khuyên đổi câu |
+| `plan-volumes-only clash` | Bỏ `--keep-server-group` khỏi lệnh của **cả hai** bản. Trước đó cả hai die `choose one…` nên kịch bản chưa bao giờ tới phần volumes-only như tên gọi; giờ tới thật (INFO ignored + FAIL tên volume trùng) |
+| `cli-die plan app01 --server-group a --keep-server-group` | **Bỏ kịch bản** (xung đột không còn). Thay bằng các kịch bản P6 "unknown option" dưới |
+| `P4 volumes available with VM-only MIG_DEFAULT_OPTS`, `P5 plan volume --available, MIG_DEFAULT_OPTS with VM-only options` | `MIG_DEFAULT_OPTS` của cả hai bản: `--keep-server-group` → `--keep-source-ports` (vẫn là cờ chỉ dành cho VM mà volume bỏ qua) |
+| `P4 volume: server-only options refused` | `--keep-server-group` → `--keep-source-ports` cho cả hai bản |
+| `scenarios_p6.py` | Bỏ 3 kịch bản keep no-op/xung đột. Thêm 6 kịch bản "unknown option": `migrate migrate … --yes`, `migrate plan --vm …`, engine 1 VM, `migrate volume <vol>`, `MIG_DEFAULT_OPTS` qua env (`migrate`), qua file conf (`plan`). Mỗi kịch bản kiểm rc 1, đúng câu ERROR, **không một lời gọi cloud nào** |
+| `p6unit.py` | Bỏ 5 check xung đột keep. Thêm 6 check: không còn trong `FLAG_OPTS`/`VALUE_OPTS`/`SERVER_ONLY`/thuộc tính `Options`; gõ → unknown; gõ cùng `--server-group` → unknown (không còn `choose one`); `MIG_DEFAULT_OPTS` → nêu `MIG_DEFAULT_OPTS`; `MIG_DEFAULT_OPTS` của 1 volume cũng die; selector die trước khi liệt kê. Check help thêm "không lệnh nào liệt kê `keep-server-group`" |
+| `unit.py` | Check `plan vm --help` (sed): `"--keep-server-group" in p.stdout` → `"--server-group NAME" in p.stdout` |
+
+**Kết quả** (mig-host `/root/v7h-p6`, `nice -n 19`; bản trước lưu ở `prev-19-11/`):
+
+| # | Bộ | Lệnh | Kết quả |
+|---|---|---|---|
+| 35 | Các nhóm bị đụng | `python3 scenarios.py plan-keep mig-keepsg cross plan-volumes-only cli-dies p4-voldefaults p4-vol-dies p6-servergroup` | **55/0** |
+| 36 | **Toàn bộ cũ + P6 (chính thức 19/11)** | `python3 scenarios.py` (17 ph 13 s) | **205/0** = 152 cũ (153 trừ 1 `cli-die` đã bỏ) + 53 P6 (50 − 3 + 6); `OPTOUTS total=106` |
+| 37 | Unit cũ P1–P4 | `python3 unit.py` | **65/0** |
+| 38 | Unit P5 | `P5_VENV_PY=/opt/mig-venv/bin/python3 python3 p5unit.py /root/v7h-p6` | **48/0** |
+| 39 | Unit P6, Linux | `P6_VENV_PY=/opt/mig-venv/bin/python3 python3 p6unit.py /root/v7h-p6` | **65/0** (64 − 5 + 6) |
+| 40 | Unit P6, Windows (Python 3.13) | `python -B p6unit.py <repo>` | **63/0**, 2 check `-I` SKIP (không có venv cài sẵn) |
+
+Cho lab (Fable): `p4feat.sh` C1 gõ `--keep-server-group`, B4 đặt `MIG_DEFAULT_OPTS="--keep-server-group --verify none"`
+và B4a grep `source VM is in no server group`. Trên 7.1 cả ba sẽ dừng (`unknown option`) hoặc không còn dòng để
+grep, nên phải sửa theo.
 
 ### Trạng thái lab sau P6 (giả lập)
 

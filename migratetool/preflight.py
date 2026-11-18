@@ -71,7 +71,8 @@ def need_prefix(r, c):
 
 def server_group_preflight(r, st, c):
     """The source VM's server group, recreated at the destination as '<AZ>-<name>' with its policy (the
-    default since P6; --keep-server-group, with the literal prefix 'az-', before)."""
+    default since 7.1; up to 7.0 only with --keep-server-group, named 'az-<name>'). A VM in no group adds
+    no line."""
     sid = st.json("server.json").get("id")
     try:
         sgj = r.src.json("server", "group", "list", "--long", "-f", "json")
@@ -79,8 +80,6 @@ def server_group_preflight(r, st, c):
         return c.failed("cannot list source server groups")
     gids = [g.get("ID") for g in sgj if any(m == sid for m in (g.get("Members") or []))]
     if not gids:
-        if r.opts.keep_sg:
-            out("  INFO  source VM is in no server group")
         return
     if len(gids) > 1:
         return c.failed("source VM is in %d server groups (%s): pass --server-group <id>, or --no-server-group"
@@ -270,7 +269,7 @@ def preflight(r, st):
     key = jq_alt(server.get("key_name"))
     key = "" if key is None else jqs(key)
     tail = (" volumes-only" if o.volumes_only else "")
-    extra = ((" keep-server-group" if o.keep_sg else "") + (" flavor-fallback" if o.flavor_fallback else "")
+    extra = ((" flavor-fallback" if o.flavor_fallback else "")
              + (" no-server-group" if o.no_server_group else "") + (" no-copy-secgroup" if o.no_copy_sg else ""))
     out("Destination preflight (mode=%s%s ip=%s%s type=%s pool=%s%s%s%s%s%s):" % (
         o.mode, tail, o.ipmode, (" " + o.ipaddr) if o.ipaddr else "", o.volume_type or "default", r.pool,
@@ -294,8 +293,6 @@ def preflight(r, st):
         # Volumes recorded in this VM's own state are not a clash (plan run after a migrate).
         if o.server_group:
             out("  INFO  --server-group %s ignored: --volumes-only creates no server" % o.server_group)
-        if o.keep_sg:
-            out("  INFO  --keep-server-group ignored: --volumes-only creates no server")
         if o.flavor_fallback:
             out("  INFO  --flavor-fallback ignored: --volumes-only creates no server")
         recorded = {d for _, d in st.volume_map()}
@@ -350,9 +347,6 @@ def preflight(r, st):
                 else:
                     c.failed("%d server groups are named %s in the destination project — pass the ID to --server-group"
                              % (len(hits), o.server_group))
-        if o.keep_sg:
-            out("  INFO  --keep-server-group changes nothing now: the source server group is followed by default "
-                "(opt out: --no-server-group)")
         # An explicit --server-group wins over the source group.
         if not o.server_group and not o.no_server_group:
             server_group_preflight(r, st, c)

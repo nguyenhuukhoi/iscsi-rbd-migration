@@ -94,9 +94,8 @@
 #   - Tách token theo khoảng trắng: giá trị chứa khoảng trắng không dùng được ở đây.
 #   - Option kiểu cờ (--keep-source-ports, --no-copy-secgroup…) không tắt được từ CLI. Muốn bỏ hết
 #     option mặc định cho một lần chạy: MIG_DEFAULT_OPTS="" migrate ...
-#   - Từ 7.1 --keep-server-group không còn tác dụng (theo server group nguồn là mặc định, tên <AZ>-<tên>);
-#     nó ở đây mà CLI gõ --server-group <x> hoặc --no-server-group: bỏ keep, báo INFO, không dừng
-#     (và ngược lại). Cả hai cùng nằm ở đây thì dừng.
+#   - 7.1 BỎ --keep-server-group (theo server group nguồn là mặc định, tên <AZ>-<tên>): còn nó ở đây
+#     thì tool dừng ngay (unknown option, nêu MIG_DEFAULT_OPTS). Conf thời 7.0 phải xóa cờ này.
 #   - --no-copy-secgroup ở đây = giữ cách 7.0 cho security group (SG cùng tên có sẵn ở đích) thay vì
 #     copy thành <AZ>-<tên> (GUIDE-PYTHON.md mục 4b).
 #   - `migrate volume` (volume rời) chỉ lấy --volume-type, --az, --verify. Option khác bị bỏ kèm

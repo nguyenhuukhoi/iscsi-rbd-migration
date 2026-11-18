@@ -137,6 +137,7 @@ Chép từ [DEVELOPING.md](DEVELOPING.md) mục 1.4 và 4, tên lệnh đã cậ
 | `  FAIL  port <mac> has allowed-address-pairs (not handled)` | Bỏ. Thay bằng `  INFO  port <mac>: allowed-address-pairs copied: …` (`--ip new`: `  WARN  … not copied with --ip new …`) |
 | Lời khuyên `drop --keep-server-group and pass --server-group <id>` (3 message server group) | `pass --server-group <id>, or --no-server-group` |
 | `will create az-<tên>`, `server group az-<tên> exists` | `<AZ>-<tên>` (`p4feat.sh` C1 trên lab bám `az-web-anti`: phải sửa khi gate 7.1) |
+| `--keep-server-group`: header token ` keep-server-group`, `  INFO  source VM is in no server group`, `  INFO  --keep-server-group ignored: --volumes-only …`, die `choose one: --server-group <name> or --keep-server-group` | Cờ bị bỏ (19/11): `ERROR: unknown option --keep-server-group` / `ERROR: MIG_DEFAULT_OPTS: unknown option '--keep-server-group' (…)`. VM không thuộc group nào thì không in dòng nào (`p4feat.sh` B4a trên lab grep `source VM is in no server group`: phải sửa) |
 
 Hai chỗ trước đây nằm rải ở batch bash, giờ gom về một nơi:
 
@@ -212,9 +213,10 @@ Bộ unit nhỏ của P5 (`plan volume`, hint, `-I`) chạy được trên mọi
 bash/openstack: clouds và tiến trình con đều giả. Lệnh và kết quả ghi ở TEST-REPORT V7 mục Phase 5.
 
 Từ P6 (7.1) app khác bản bash có chủ đích ở SG/server group, nên harness so bash vs app bằng một **luật máy móc**
-cho mọi kịch bản viết trước P6: phía app chạy thêm `--no-copy-secgroup` và (trừ khi kịch bản có
-`--keep-server-group`) `--no-server-group`, tức đúng hành vi 7.0, rồi so 6 chiều như cũ. Header preflight của
-bản bash được thêm 2 token đó cho khớp. Kịch bản P6 chạy app trên mặc định mới với check riêng. Bộ unit
+cho mọi kịch bản viết trước P6: phía app chạy thêm `--no-copy-secgroup` và `--no-server-group`, tức đúng hành vi
+7.0, rồi so 6 chiều như cũ. Kịch bản bash gõ `--keep-server-group` (cờ app đã bỏ): phía app bỏ cờ đó và **không**
+thêm `--no-server-group`, vì mặc định 7.1 chính là việc cờ đó từng làm. Header preflight của bản bash được chỉnh
+token cho khớp. Kịch bản P6 chạy app trên mặc định mới với check riêng. Bộ unit
 `p6unit.py` cũng chạy được ở mọi máy. Chi tiết: TEST-REPORT V7 mục Phase 6.
 
 ## 6. Quy trình phase → gate

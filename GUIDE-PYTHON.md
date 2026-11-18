@@ -164,7 +164,7 @@ option của VM cho mọi VM trong đợt. Mặc định giống hệt bản bas
 | `--keep-source-ports` | Với `--ip same`: không tháo port nguồn. Rủi ro split-brain nếu ai bật lại VM nguồn |
 | `--server-group <tên\|ID>` | VM đích vào group có sẵn ở đích, thay cho bản copy group nguồn |
 | `--no-server-group` | (7.1) Không theo server group nguồn: VM đích không vào group nào (trừ `--server-group`) |
-| `--keep-server-group` | 7.0: VM đích vào group `az-<tên group nguồn>`. **Từ 7.1 không còn tác dụng**: theo group nguồn đã là mặc định (tên `<AZ>-<tên>`, mục 4b.4). Vẫn nhận để script cũ chạy được, preflight in 1 dòng INFO. Không dùng chung với `--server-group` hay `--no-server-group` |
+| ~~`--keep-server-group`~~ | **Bỏ từ 7.1** (theo group nguồn đã là mặc định, mục 4b.4). Gõ là `ERROR: unknown option --keep-server-group`; nằm trong `MIG_DEFAULT_OPTS` cũng dừng. Script/conf cũ phải xóa cờ này (mục 4b.6) |
 | `--volumes-only` | Chỉ cold: copy volume, không tạo port và VM đích |
 | `--max-passes <n>` | Live: tối đa n lượt pre-sync (mặc định 5) |
 | `--delta-limit <MB>` | Live: cutover khi delta một lượt ≤ ngưỡng (mặc định 64) |
@@ -271,10 +271,15 @@ rollback.
 
 - `--server-group <tên|ID>` thắng: VM vào group đó, app không nhìn group nguồn.
 - Rollback giữ group (như 7.0).
-- `--keep-server-group` vẫn nhận nhưng không đổi gì, preflight in
-  `INFO  --keep-server-group changes nothing now: the source server group is followed by default (opt out: --no-server-group)`.
-  Gõ cùng `--no-server-group` thì app dừng (`choose one: …`). Nếu nó nằm trong `MIG_DEFAULT_OPTS` còn dòng lệnh gõ
-  `--no-server-group` thì cái gõ tay thắng, kèm 1 dòng INFO.
+- VM không thuộc group nào thì preflight không in dòng nào về server group.
+- **`--keep-server-group` đã bỏ ở 7.1** (theo group nguồn là mặc định nên cờ này thừa). App coi nó là option lạ:
+
+  | Cờ nằm ở | App báo (thoát mã 1, chưa đụng cloud) |
+  |---|---|
+  | Dòng lệnh: `migrate migrate web-01 --keep-server-group --yes` | `ERROR: unknown option --keep-server-group` |
+  | Conf: `MIG_DEFAULT_OPTS="--keep-server-group --verify none"` | `ERROR: MIG_DEFAULT_OPTS: unknown option '--keep-server-group' (MIG_DEFAULT_OPTS="--keep-server-group --verify none")` |
+
+  Xóa cờ là được: hành vi 7.1 không cờ chính là cái cờ này từng làm, chỉ khác tên (`<AZ>-<tên>` thay `az-<tên>`).
 
 ### 4b.5. Port đích mang gì từ port nguồn
 
@@ -315,7 +320,9 @@ Ví dụ VM keepalived: port `198.51.100.50`, pairs `198.51.100.99` (VIP) và `1
    `<AZ>-web-tier`. Muốn giữ kiểu cũ: `--no-copy-secgroup` (đặt được trong `MIG_DEFAULT_OPTS`), hoặc
    `--security-group web-tier`.
 3. Cloud đích nhiều AZ: phải có `--az` hoặc `MIG_AZ` (mục 4b.2).
-4. `MIG_DEFAULT_OPTS="--keep-server-group …"` vẫn chạy, chỉ thêm 1 dòng INFO. Nên bỏ khỏi conf.
+4. ⚠ **BREAKING: `--keep-server-group` không còn.** Script, cron, `MIG_DEFAULT_OPTS` nào còn cờ này thì 7.1
+   **dừng ngay** (`unknown option`, mục 4b.4). Xóa cờ trước khi lên 7.1, ví dụ
+   `MIG_DEFAULT_OPTS="--keep-server-group --verify none"` → `MIG_DEFAULT_OPTS="--verify none"`.
 5. State: `ports.json` thêm khóa `description`/`dns_name` khi port có giá trị; thêm file `dst-security-groups`.
    Bản bash (archive) bỏ qua các khóa/file này, rollback chéo vẫn được.
 6. Bản bash trong `archive/` giữ hành vi cũ (`az-`, SG cùng tên, từ chối pairs).
@@ -332,9 +339,8 @@ migrate volume 5d0e9f3a-0000-4000-8000-00000000b001 --in-use    # volume đang g
 
 - Giống `migrate-vm.sh migrate-volume` cũ: **không hỏi**, chạy preflight trước rồi mới copy.
 - Nhận `--volume-type`, `--az`, `--verify`, `--in-use`. Option dành cho server (`--ip`, `--flavor`,
-  `--security-group`, `--server-group`, `--keep-server-group`, `--start-source`, `--keep-source-ports`,
-  `--volumes-only`, `--flavor-fallback`, `--mode live`, và từ 7.1 `--no-server-group`, `--no-copy-secgroup`)
-  bị từ chối.
+  `--security-group`, `--server-group`, `--start-source`, `--keep-source-ports`, `--volumes-only`,
+  `--flavor-fallback`, `--mode live`, và từ 7.1 `--no-server-group`, `--no-copy-secgroup`) bị từ chối.
 - Volume `in-use` mà không có `--in-use` thì app từ chối và gợi ý 2 cách: copy nóng bằng `--in-use`, hoặc
   đi theo VM bằng `migrate migrate <vm> --volumes-only`.
 - Bản copy giữ tên nguồn và mang description `migrated from <id>`.
@@ -508,8 +514,8 @@ MIG_DEFAULT_OPTS="" migrate plan web-03   # lần này không dùng default nào
 - Option dạng cờ (`--no-copy-secgroup`, `--keep-source-ports`…) không tắt được từ dòng lệnh. Muốn bỏ thì
   đặt `MIG_DEFAULT_OPTS=""` cho lần chạy đó.
 - Chuỗi tách theo khoảng trắng, nên giá trị chứa khoảng trắng không dùng được ở đây.
-- `--keep-server-group` (không còn tác dụng từ 7.1, mục 4b.4) ở đây mà dòng lệnh gõ `--server-group db-anti`
-  hoặc `--no-server-group` thì cái gõ tay thắng: app bỏ keep kèm 1 dòng INFO, không dừng.
+- `--keep-server-group` ở đây làm app dừng từ 7.1 (`MIG_DEFAULT_OPTS: unknown option '--keep-server-group' …`,
+  mục 4b.4): xóa nó khỏi conf.
 - `migrate volume` chỉ lấy `--volume-type`, `--az`, `--verify`. Option khác bị bỏ kèm 1 dòng INFO.
 - `--in-use` không bao giờ được lấy từ đây. `rollback` không dùng biến này.
 - Gõ sai tên option hoặc thiếu giá trị thì app dừng, thông báo nêu `MIG_DEFAULT_OPTS`.
@@ -640,9 +646,9 @@ EOF
 migrate plan --vm-file /root/wave1.txt
 migrate migrate --vm-file /root/wave1.txt --yes --continue-on-error
 
-# 10. Hai VM cùng server group nguồn web-anti (7.1: mặc định, không cần flag): con đầu tạo
-#     dc10-epz-web-anti + các SG dc10-epz-*, con sau dùng lại
-migrate migrate --vm web-01,web-02 --az dc10-epz --verify none --yes
+# 10. Hai VM cùng server group nguồn web-anti: 7.1 theo group nguồn mặc định, không cờ nào.
+#     Conf có MIG_AZ=dc10-epz: con đầu tạo dc10-epz-web-anti + các SG dc10-epz-*, con sau dùng lại
+migrate migrate --vm web-01,web-02 --verify none --yes
 migrate rollback web-01; migrate rollback web-02     # group và SG dc10-epz-* vẫn giữ lại
 
 # 11. Đích thiếu flavor cùng tên: tra FLAVOR_MAP_FILE
@@ -739,6 +745,7 @@ Gõ kiểu cũ thì app dừng và chỉ cách gõ mới, chưa làm gì:
 | `migrate volume --project p --available --plan-only` | `--plan-only is now a command of its own: migrate plan volume --project <p> --available\|--attached\|--all, or migrate plan volume --vm <vms>` |
 | `migrate migrate --project p --volumes available` | `--volumes is now: migrate volume --project <p> --available\|--attached\|--all, or migrate volume --vm <vms>` |
 | `migrate plan --project p --volumes available` | `--volumes is now: migrate plan volume --project <p> …` |
+| `migrate migrate web-01 --keep-server-group --yes` (7.0) | `unknown option --keep-server-group`: từ 7.1 bỏ cờ, theo group nguồn là mặc định (mục 4b.4) |
 
 Một VM tên đúng là `volume` thì plan bằng `migrate plan --vm volume`, vì `migrate plan volume …` là lệnh
 dry-run cho volume.
@@ -755,6 +762,6 @@ Hành vi bên dưới giống hệt bản bash. Tài liệu của bản bash v�
 | Quy tắc đặt tên ở đích, guard chống trùng | [GUIDE.md](GUIDE.md) mục 2b.3 |
 | `--server-group`, `--volumes-only` | [GUIDE.md](GUIDE.md) mục 2b.5 |
 | Copy nóng `--in-use` (crash-consistent) | [GUIDE.md](GUIDE.md) mục 2b.9 |
-| `--keep-server-group` (bản bash và app 7.0; app từ 7.1: mục 4b.4) | [GUIDE.md](GUIDE.md) mục 2b.10 |
+| `--keep-server-group` (bản bash và app 7.0; app 7.1 đã bỏ cờ, xem mục 4b.4) | [GUIDE.md](GUIDE.md) mục 2b.10 |
 | `--flavor-fallback` | [GUIDE.md](GUIDE.md) mục 2b.12 |
 | Quy hoạch network 2 cloud, các bẫy | [GUIDE.md](GUIDE.md) mục 3, 4 |

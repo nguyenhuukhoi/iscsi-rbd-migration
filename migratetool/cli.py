@@ -51,8 +51,6 @@ VM_OPTIONS = (
                                "of the copy of the source group."),
     ("--no-server-group", None, "do not follow the source server group (by default the new VM joins <AZ>-<source "
                                 "group name>, same policy, created by migrate when missing)."),
-    ("--keep-server-group", None, "accepted for old scripts, changes nothing: following the source server group is "
-                                  "the default now. Not with --server-group or --no-server-group."),
     ("--volumes-only", None, "cold only: copy the volumes, create no destination port or server."),
     ("--max-passes", "N", "live: maximum pre-sync passes (default 5)."),
     ("--delta-limit", "MB", "live: cut over once a pass changed at most this much (default 64)."),
