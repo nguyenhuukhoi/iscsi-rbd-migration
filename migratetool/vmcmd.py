@@ -1,7 +1,7 @@
-"""plan and migrate of one VM (bash cmd_plan, cmd_migrate). Phase 1: cold path only."""
+"""plan and migrate of one VM (bash cmd_plan, cmd_migrate): cold and live."""
 import time
 
-from . import proc
+from . import livesync, proc
 from .copyvol import cleanup_attach, copy_volume_cold, create_dest_volume
 from .preflight import preflight
 from .server import create_destination, detach_source_ports
@@ -45,6 +45,9 @@ def cmd_migrate(r, st):
         st.write("volume-map", "")
         vids = [a.get("Volume ID") for a in st.json("attachments.json")]
 
+        if o.mode == "live":
+            livesync.presync(r, vids, st)
+
         # Cutover: from here the service is down until the destination VM boots.
         t_start = time.monotonic()
         st.write("t-stop", "%d\n" % int(time.time()))
@@ -79,8 +82,11 @@ def cmd_migrate(r, st):
             log("source stopped, its ports detached, now locked")
 
         for vid in vids:
-            create_dest_volume(r, vid, st)
-            copy_volume_cold(r, vid, r.dvid, r.src.value("volume", "show", vid, "-f", "value", "-c", "size"), st)
+            if o.mode == "live":
+                livesync.final_pass(r, vid, st)
+            else:
+                create_dest_volume(r, vid, st)
+                copy_volume_cold(r, vid, r.dvid, r.src.value("volume", "show", vid, "-f", "value", "-c", "size"), st)
 
         if o.volumes_only:
             log("volumes copied; source down for %ds so far" % int(time.monotonic() - t_start))

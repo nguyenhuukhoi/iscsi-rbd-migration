@@ -27,6 +27,10 @@ class Checker:
         out("  FAIL  " + line)
         self.fail = True
 
+    @staticmethod
+    def info(line):
+        out("  INFO  " + line)
+
 
 def _policy_text(policy, joiner=None):
     """(.Policy // .Policies // "unknown") | if type=="array" then ... end"""
@@ -309,6 +313,9 @@ def preflight(r, st):
             or systemctl_ok("start", "iscsid", r.env))
     if r.cfg.MIG_MULTIPATH == "1":
         c.check("multipathd on transfer host", lambda: systemctl_ok("is-active", "multipathd", r.env))
+    if o.mode == "live":
+        from .livesync import preflight_checks
+        preflight_checks(r, c)
     return not c.fail
 
 

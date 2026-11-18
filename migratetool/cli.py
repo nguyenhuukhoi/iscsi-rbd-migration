@@ -10,6 +10,7 @@ import sys
 
 from . import __version__, config
 from .context import Run
+from .livesync import check_numbers
 from .options import Options
 from .preflight import load_flavor_map
 from .rollback import rollback_vm
@@ -19,7 +20,8 @@ from .vmcmd import NOT_PORTED, cmd_migrate, cmd_plan
 
 VM_OPTIONS = (
     ("--mode", "cold|live", "cold (default): stop the VM, qemu-img copy + full compare (unless --verify none). "
-                            "live: not ported yet (phase 2)."),
+                            "live: hash-cached pre-sync passes while the VM runs; the cutover only syncs the "
+                            "final delta (blocksync, run by SYS_PY)."),
     ("--volume-type", "TYPE", "Cinder volume type for every destination volume (default: cloud default, or the "
                               "AZ's entry in AZ_TYPE_MAP). RBD_POOL_MAP maps types to RBD pools."),
     ("--az", "ZONE", "destination availability zone for BOTH the volumes and the server (default: MIG_AZ, else "
@@ -41,7 +43,8 @@ VM_OPTIONS = (
     ("--volumes-only", None, "cold only: copy the volumes, create no destination port or server."),
     ("--max-passes", "N", "live: maximum pre-sync passes (default 5)."),
     ("--delta-limit", "MB", "live: cut over once a pass changed at most this much (default 64)."),
-    ("--verify", "readback|full|none", "cold: full qemu-img compare unless none."),
+    ("--verify", "readback|full|none", "cold: full qemu-img compare unless none. live: readback (default) re-reads "
+                                       "every written chunk, full adds a cutover compare, none trusts the writes."),
 )
 EPILOG = """Configuration: /opt/mig/migrate.conf (or $MIG_CONF), bash KEY=VALUE, template migrate.conf.example.
 Precedence: option > environment > migrate.conf > default. MIG_DEFAULT_OPTS="--opt ..." is applied
@@ -55,7 +58,7 @@ def build_parser():
     p.add_argument("--version", action="version", version="migrate " + __version__)
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
     for name, text in (("plan", "read-only: export the source definition, run the destination preflight"),
-                       ("migrate", "migrate one VM (cold stops it first)")):
+                       ("migrate", "migrate one VM (cold stops it first, live only at the cutover)")):
         sp = sub.add_parser(name, help=text, description=text, epilog=EPILOG,
                             formatter_class=argparse.RawDescriptionHelpFormatter)
         sp.add_argument("vm", help="VM name or ID")
@@ -122,7 +125,7 @@ def run_vm(cmd, vm, args):
         raise Die("--in-use belongs to migrate-volume: plan and migrate move a VM with its volumes (--mode live keeps "
                   "it running until the cutover)")
     if o.mode == "live":
-        raise Die("--mode live: " + NOT_PORTED)
+        check_numbers(o)
     r = Run(cfg, o)
     if o.flavor_fallback and not o.volumes_only:
         load_flavor_map(r)
