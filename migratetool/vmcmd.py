@@ -36,9 +36,9 @@ def cmd_migrate(r, st):
     r.ephemeral = detect_boot(st)
     if not preflight(r, st):
         raise Exit(1)
-    st.write("options", "MODE=%s IPMODE=%s IPADDR=%s VOLUME_TYPE=%s POOL=%s VERIFY=%s FLAVOR=%s SG=%s EPHEMERAL=%s AZ=%s\n"
+    st.write("options", "MODE=%s IPMODE=%s IPADDR=%s VOLUME_TYPE=%s POOL=%s VERIFY=%s FLAVOR=%s SG=%s EPHEMERAL=%s AZ=%s VOLUME_AZ=%s\n"
              % (o.mode, o.ipmode, o.ipaddr, o.volume_type, r.pool, o.verify, o.ov_flavor, o.ov_sg,
-                1 if r.ephemeral else 0, o.dest_az))
+                1 if r.ephemeral else 0, o.dest_az, o.volume_az))
     # P6: the security group copies are made while the source still runs, not inside the downtime window.
     # A failure here leaves no volume-map: fix and re-run migrate (no rollback needed).
     if r.sgplan is not None:

@@ -11,7 +11,7 @@ from .util import Die, ifs_split
 # option now, on the command line and in MIG_DEFAULT_OPTS alike.
 FLAG_OPTS = ("--start-source", "--keep-source-ports", "--volumes-only",
              "--in-use", "--flavor-fallback", "--no-server-group", "--no-copy-secgroup")
-VALUE_OPTS = ("--mode", "--volume-type", "--az", "--ip", "--flavor", "--security-group",
+VALUE_OPTS = ("--mode", "--volume-type", "--az", "--volume-az", "--ip", "--flavor", "--security-group",
               "--server-group", "--max-passes", "--delta-limit", "--verify")
 
 
@@ -22,6 +22,10 @@ class Options:
         self.ipaddr = ""
         self.volume_type = ""
         self.dest_az = ""
+        # 7.2 (C6): the Cinder AZ of the destination volumes when it differs from the compute AZ (--volume-az,
+        # MIG_VOLUME_AZ); apply_az_defaults falls back to dest_az, the behaviour up to 7.1.
+        self.volume_az = ""
+        self.volume_az_cli = False
         self.start_source = False
         self.keep_ports = False
         self.max_passes = "5"
@@ -71,7 +75,7 @@ class Options:
                 # Copying an attached volume live is a decision per run, never a standing default.
                 self.def_notes.append("--in-use in MIG_DEFAULT_OPTS ignored: it is only taken from the command line")
                 continue
-            if cmd == "migrate-volume" and t not in ("--volume-type", "--az", "--verify"):
+            if cmd == "migrate-volume" and t not in ("--volume-type", "--az", "--volume-az", "--verify"):
                 skipped.append(t + (" " + v if v else ""))
                 continue
             self.def_opts.append(t)
@@ -119,6 +123,10 @@ class Options:
                 self.dest_az = val(); i += 2
                 if origin == "cli":
                     self.az_cli = True
+            elif a == "--volume-az":
+                self.volume_az = val(); i += 2
+                if origin == "cli":
+                    self.volume_az_cli = True
             elif a == "--ip":
                 v = val()
                 if v in ("same", "new"):
@@ -175,9 +183,14 @@ class Options:
             raise Die("--start-source needs --ip new or --ip <addr>: with the same MAC and IP both VMs cannot be up at once")
 
     # --- AZ -> type -> pool ----------------------------------------------------------------
-    def apply_az_defaults(self, mig_az, az_type_map):
+    def apply_az_defaults(self, mig_az, az_type_map, mig_volume_az=""):
         if not self.az_cli and mig_az:
             self.dest_az, self.az_from = mig_az, "MIG_AZ"
+        # --volume-az typed > MIG_VOLUME_AZ > --volume-az of MIG_DEFAULT_OPTS > the server's AZ (as --az above).
+        if not self.volume_az_cli and mig_volume_az:
+            self.volume_az = mig_volume_az
+        if not self.volume_az:
+            self.volume_az = self.dest_az
         if self.type_cli or not self.dest_az or not az_type_map:
             return
         for e in ifs_split(az_type_map, ","):

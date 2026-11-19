@@ -112,8 +112,8 @@ def create_dest_volume(r, vid, st):
     args = ["volume", "create", name, "--size", size]
     if r.opts.volume_type:
         args += ["--type", r.opts.volume_type]
-    if r.opts.dest_az:
-        args += ["--availability-zone", r.opts.dest_az]
+    if r.opts.volume_az:
+        args += ["--availability-zone", r.opts.volume_az]
     args += ["--description", "migrated from " + vid, "-f", "value", "-c", "id"]
     r.dvid = r.dst.value(*args)
     # Recorded before the wait and the pool check, so that rollback also removes a volume that dies there.

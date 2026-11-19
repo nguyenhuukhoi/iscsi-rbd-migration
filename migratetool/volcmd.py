@@ -39,7 +39,7 @@ def volume_options_only(args):
         prev = a
     if bad:
         raise Die("migrate volume copies one volume and creates no server or port:%s cannot apply (it takes "
-                  "--volume-type, --az and --verify)" % bad)
+                  "--volume-type, --az, --volume-az and --verify)" % bad)
 
 
 def resolve_volume(r, name):
@@ -66,8 +66,9 @@ def volume_preflight(r, st):
     c = Checker()
     vol = st.json("volume.json")
     vid = jqs(vol.get("id"))
-    out("Destination preflight (migrate-volume type=%s pool=%s%s):"
-        % (o.volume_type or "default", r.pool, (" az=" + o.dest_az) if o.dest_az else ""))
+    out("Destination preflight (migrate-volume type=%s pool=%s%s%s):"
+        % (o.volume_type or "default", r.pool, (" az=" + o.dest_az) if o.dest_az else "",
+           (" volume-az=" + o.volume_az) if o.volume_az != o.dest_az else ""))
     for line in o.conf_origin_info() + o.default_opts_info():
         out(line)
     if o.in_use:
@@ -77,8 +78,8 @@ def volume_preflight(r, st):
             out("  INFO  %s is in-use: copied from a clone taken while attached (crash-consistent); its VM keeps running"
                 % vid)
             c.check("volume not multiattach", lambda: vol.get("multiattach") is not True)
-    if o.dest_az:
-        c.check("volume AZ " + o.dest_az, lambda: o.dest_az in r.dst.run(
+    if o.volume_az:
+        c.check("volume AZ " + o.volume_az, lambda: o.volume_az in r.dst.run(
             "availability", "zone", "list", "--volume", "-f", "value", "-c", "Zone Name", stderr=proc.DEVNULL).stdout.split("\n"))
     if o.volume_type:
         c.check("volume type " + o.volume_type, lambda: r.dst.ok("volume", "type", "show", o.volume_type))
@@ -109,8 +110,8 @@ def create_volume_copy(r, st):
     args = ["--size", jqs(vj.get("size")), "--description", "migrated from " + vid, "-f", "value", "-c", "id"]
     if r.opts.volume_type:
         args += ["--type", r.opts.volume_type]
-    if r.opts.dest_az:
-        args += ["--availability-zone", r.opts.dest_az]
+    if r.opts.volume_az:
+        args += ["--availability-zone", r.opts.volume_az]
     # The source name verbatim, an empty one included (Cinder accepts it); the ID only as fallback.
     if name:
         r.dvid = r.dst.value("volume", "create", name, *args)
@@ -158,8 +159,8 @@ def cmd_migrate_volume(r, arg):
                                                     jqs(jq_alt(vj.get("type"), "-"))))
     if not volume_preflight(r, st):
         raise Exit(1)
-    st.write("options", "VOLUME_TYPE=%s POOL=%s VERIFY=%s AZ=%s SRC_PROJECT=%s DST_PROJECT=%s\n"
-             % (o.volume_type, r.pool, o.verify, o.dest_az, r.cfg.SRC_PROJECT, r.cfg.DST_PROJECT))
+    st.write("options", "VOLUME_TYPE=%s POOL=%s VERIFY=%s AZ=%s SRC_PROJECT=%s DST_PROJECT=%s VOLUME_AZ=%s\n"
+             % (o.volume_type, r.pool, o.verify, o.dest_az, r.cfg.SRC_PROJECT, r.cfg.DST_PROJECT, o.volume_az))
     st.write("volume-map", "")
     try:  # bash: trap cleanup_attach EXIT ... trap - EXIT
         create_volume_copy(r, st)

@@ -83,6 +83,9 @@
 # ---- AZ (v4) -----------------------------------------------------------------------------------
 # AZ đích khi không truyền --az; --az trên CLI thắng. Mặc định: rỗng (scheduler đích tự chọn)
 #MIG_AZ=AZ1
+# (7.2) AZ Cinder của volume đích, khi tên AZ volume ở đích KHÁC tên AZ compute (vd compute AZ1/AZ2 nhưng
+# Cinder chỉ có "nova"). --volume-az trên CLI thắng. Mặc định: rỗng (volume dùng cùng AZ với server: --az/MIG_AZ)
+#MIG_VOLUME_AZ=nova
 # Volume type theo AZ, áp khi có AZ hiệu lực mà không truyền --volume-type; --volume-type trên CLI
 # thắng. AZ không có trong map thì như không có map. Mặc định: rỗng
 #AZ_TYPE_MAP="AZ1:nvme-az1,AZ2:nvme-az2"

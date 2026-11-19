@@ -20,7 +20,7 @@ LOG_ROOT = "/var/log/mig-batch"     # one directory per selector run, as migrate
 CONF_VARS = (
     "SRC_RC", "DST_RC", "RBD_POOL", "RBD_POOL_MAP", "RBD_USER", "CEPH_CONF", "MIG_ISCSI_IP",
     "MIG_MULTIPATH", "COPY_STREAMS", "PROJECT_MAP_FILE", "SRC_PROJECT", "DST_PROJECT", "MIG_AZ",
-    "AZ_TYPE_MAP", "MIG_DEFAULT_OPTS", "FLAVOR_MAP_FILE",
+    "MIG_VOLUME_AZ", "AZ_TYPE_MAP", "MIG_DEFAULT_OPTS", "FLAVOR_MAP_FILE",
 )
 DEFAULTS = {
     "SRC_RC": "/opt/mig/src/admin-openrc.sh",
@@ -28,6 +28,7 @@ DEFAULTS = {
     "RBD_POOL": "mig-volumes",
     "RBD_POOL_MAP": "",
     "MIG_AZ": "",
+    "MIG_VOLUME_AZ": "",
     "AZ_TYPE_MAP": "",
     "MIG_DEFAULT_OPTS": "",
     "FLAVOR_MAP_FILE": "",

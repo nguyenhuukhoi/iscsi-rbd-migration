@@ -582,23 +582,23 @@ def preflight(r, st):
     tail = (" volumes-only" if o.volumes_only else "")
     extra = ((" flavor-fallback" if o.flavor_fallback else "")
              + (" no-server-group" if o.no_server_group else "") + (" no-copy-secgroup" if o.no_copy_sg else ""))
-    out("Destination preflight (mode=%s%s ip=%s%s type=%s pool=%s%s%s%s%s%s):" % (
+    out("Destination preflight (mode=%s%s ip=%s%s type=%s pool=%s%s%s%s%s%s%s):" % (
         o.mode, tail, o.ipmode, (" " + o.ipaddr) if o.ipaddr else "", o.volume_type or "default", r.pool,
-        (" az=" + o.dest_az) if o.dest_az else "", (" flavor=" + o.ov_flavor) if o.ov_flavor else "",
+        (" az=" + o.dest_az) if o.dest_az else "", (" volume-az=" + o.volume_az) if o.volume_az != o.dest_az else "", (" flavor=" + o.ov_flavor) if o.ov_flavor else "",
         (" sg=" + o.ov_sg) if o.ov_sg else "", (" server-group=" + o.server_group) if o.server_group else "",
         extra))
     flavor_json = None  # the destination flavor's fields, for the quota check
     for line in o.conf_origin_info() + o.default_opts_info():
         out(line)
 
-    def az_listed(kind):
+    def az_listed(kind, zone):
         res = r.dst.run("availability", "zone", "list", kind, "-f", "value", "-c", "Zone Name", stderr=proc.DEVNULL)
-        return o.dest_az in res.stdout.split("\n")
+        return zone in res.stdout.split("\n")
 
-    if o.dest_az:
-        if not o.volumes_only:
-            c.check("compute AZ " + o.dest_az, lambda: az_listed("--compute"))
-        c.check("volume AZ " + o.dest_az, lambda: az_listed("--volume"))
+    if o.dest_az and not o.volumes_only:
+        c.check("compute AZ " + o.dest_az, lambda: az_listed("--compute", o.dest_az))
+    if o.volume_az:
+        c.check("volume AZ " + o.volume_az, lambda: az_listed("--volume", o.volume_az))
 
     if o.volumes_only:
         # No server is created, so the guard against a second copy is on the destination volume names.

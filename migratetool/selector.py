@@ -25,7 +25,7 @@ from .util import RE_ESCAPE, UUID_RE, Die, jq_dump, log, out, prog, re_escape
 CHILD = [sys.executable, "-I", "-m", "migratetool.single"]
 SELECTORS = ("--vm", "--host", "--project", "--vm-file")
 SCOPES = ("--available", "--attached", "--all")
-VOLUME_PASS = ("--volume-type", "--az", "--verify", "--mode")  # what a lone volume accepts (batch VOLPASS)
+VOLUME_PASS = ("--volume-type", "--az", "--volume-az", "--verify", "--mode")  # what a lone volume accepts (batch VOLPASS)
 IN_USE_ONE = ("--in-use copies one attached volume: migrate volume <volume> --in-use (the attached volumes of a "
               "selected VM go with their VM)")
 

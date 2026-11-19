@@ -31,9 +31,11 @@ VM_OPTIONS = (
                             "final delta (blocksync, run by SYS_PY)."),
     ("--volume-type", "TYPE", "Cinder volume type for every destination volume (default: cloud default, or the "
                               "AZ's entry in AZ_TYPE_MAP). RBD_POOL_MAP maps types to RBD pools."),
-    ("--az", "ZONE", "destination availability zone for BOTH the volumes and the server (default: MIG_AZ, else "
-                     "the destination schedulers pick). Also the <AZ> of the copied group names (without --az and "
-                     "MIG_AZ: the destination's only compute AZ)."),
+    ("--az", "ZONE", "destination availability zone of the server, and of the volumes unless --volume-az (default: "
+                     "MIG_AZ, else the destination schedulers pick). Also the <AZ> of the copied group names (without "
+                     "--az and MIG_AZ: the destination's only compute AZ)."),
+    ("--volume-az", "ZONE", "Cinder availability zone of the destination volumes when it is not named like the compute "
+                            "one (default: MIG_VOLUME_AZ, else the --az zone)."),
     ("--flavor", "NAME", "flavor for the destination VM (default: same name as the source)."),
     ("--flavor-fallback", None, "destination lacks the source's flavor name: use the flavor FLAVOR_MAP_FILE maps it "
                                 "to. Never creates a flavor; --flavor still wins."),
@@ -110,7 +112,7 @@ def add_volume_args(vp, plan):
                        help="one volume only: copy an attached volume from a clone taken while attached "
                             "(crash-consistent).")
     for opt, metavar, h in VM_OPTIONS:
-        if opt in ("--volume-type", "--az", "--verify"):
+        if opt in ("--volume-type", "--az", "--volume-az", "--verify"):
             g.add_argument(opt, metavar=metavar, help=h)
 
 
@@ -259,7 +261,7 @@ def run_vm(cmd, vm, args):
     r = Run(cfg, o)
     if o.flavor_fallback and not o.volumes_only:
         load_flavor_map(r)
-    o.apply_az_defaults(cfg.MIG_AZ, cfg.AZ_TYPE_MAP)
+    o.apply_az_defaults(cfg.MIG_AZ, cfg.AZ_TYPE_MAP, cfg.MIG_VOLUME_AZ)
     r.pool = o.pool_for_type(cfg.RBD_POOL, cfg.RBD_POOL_MAP)
     r.check_project_scope()
     st = StateDir(vm)
@@ -278,7 +280,7 @@ def run_volume(target, args):
     o.load_default_opts("migrate-volume", cfg.MIG_DEFAULT_OPTS)
     o.parse_options(args)
     r = Run(cfg, o)
-    o.apply_az_defaults(cfg.MIG_AZ, cfg.AZ_TYPE_MAP)
+    o.apply_az_defaults(cfg.MIG_AZ, cfg.AZ_TYPE_MAP, cfg.MIG_VOLUME_AZ)
     r.pool = o.pool_for_type(cfg.RBD_POOL, cfg.RBD_POOL_MAP)
     r.check_project_scope()
     cmd_migrate_volume(r, target)
