@@ -11,7 +11,7 @@ import re
 
 from . import config, proc
 from .copyvol import brick, cleanup_attach, copy_volume_cold, copy_volume_props
-from .preflight import Checker, systemctl_ok
+from .preflight import Checker, quota_preflight, systemctl_ok
 from .rollback import drop_volume
 from .state import StateDir
 from .util import UUID_RE, Die, Exit, jq_alt, jqs, lines, log, out, prog
@@ -91,6 +91,7 @@ def volume_preflight(r, st):
                  "on the host holding its state) or delete it, then re-run" % (vid, " ".join(dids), prog(), vid))
     else:
         out("  OK    no earlier copy of %s at the destination" % vid)
+    quota_preflight(r, st, c, [], [vol], None, server=False)
     c.check("RBD access to pool " + r.pool, lambda: r.rbd("-p", r.pool, "ls"))
     c.check("iSCSI daemon on transfer host", lambda: systemctl_ok("is-active", "iscsid", r.env)
             or systemctl_ok("start", "iscsid", r.env))

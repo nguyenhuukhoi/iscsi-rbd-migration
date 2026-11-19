@@ -213,17 +213,36 @@ def load_flavor_map(r):
         r.flavor_map[fields[0]] = fields[1]
 
 
+def dst_flavor(r, name, into):
+    """'flavor show <name> -f json' at the destination: True when it exists, its fields copied into 'into'
+    (the quota check reads vcpus and ram there). One call, as the plain existence check before 7.2."""
+    res = r.dst.run("flavor", "show", name, "-f", "json", stderr=proc.DEVNULL)
+    if res.rc != 0:
+        return False
+    try:
+        got = json.loads(res.stdout or "{}")
+    except ValueError:
+        got = {}
+    if isinstance(got, dict):
+        into.update(got)
+    return True
+
+
 def flavor_fallback_preflight(r, st, c):
+    """The flavor checks of --flavor-fallback; returns the destination flavor's fields (None: no flavor)."""
     o = r.opts
     if o.ov_flavor:
         out("  INFO  --flavor-fallback has no effect: --flavor %s is given" % o.ov_flavor)
-        c.check("flavor " + o.ov_flavor, lambda: r.dst.ok("flavor", "show", o.ov_flavor))
-        return
+        fj = {}
+        c.check("flavor " + o.ov_flavor, lambda: dst_flavor(r, o.ov_flavor, fj))
+        return fj
     server = st.json("server.json")
     srcf = flavor_name(server)
     # A same-name flavor at the destination wins: the map is a fallback, not an override.
-    if r.dst.ok("flavor", "show", srcf):
-        return out("  OK    flavor " + srcf)
+    fj = {}
+    if dst_flavor(r, srcf, fj):
+        out("  OK    flavor " + srcf)
+        return fj
     mapped = r.flavor_map.get(srcf, "") if srcf else ""
     path = r.cfg.FLAVOR_MAP_FILE
     if not mapped:
@@ -254,6 +273,95 @@ def flavor_fallback_preflight(r, st, c):
     elif int(vals[2]) < int(vals[0]) or int(vals[3]) < int(vals[1]):
         out("  WARN  mapped flavor %s is smaller than %s (vcpus %s -> %s, ram %s -> %s MB)"
             % (mapped, srcf, vals[0], vals[2], vals[1], vals[3]))
+    return dj if isinstance(dj, dict) else {}
+
+
+# --- destination quota (7.2, A2) ------------------------------------------------------------------
+# What the VM takes at the destination, checked against the destination project's free quota before
+# anything is created. Resource names as 'openstack quota show --usage' prints them (openstackclient
+# renames some Neutron ones: secgroups, secgroup-rules); the left one is the name in our lines.
+QUOTA_NAMES = (
+    ("instances", ("instances",)),
+    ("cores", ("cores",)),
+    ("ram", ("ram",)),
+    ("volumes", ("volumes",)),
+    ("gigabytes", ("gigabytes",)),
+    ("ports", ("ports", "port")),
+    ("security_groups", ("secgroups", "security_groups", "security-groups", "security_group")),
+    ("security_group_rules", ("secgroup-rules", "security_group_rules", "security-group-rules",
+                              "security_group_rule")),
+)
+
+
+def _whole(v):
+    """A quota number as openstackclient prints it (int, or its text); None when it is not one."""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def quota_needs(r, ports, vols, flavor_json, server=True):
+    """[(resource, amount)] this run creates at the destination, in the order of the preflight line."""
+    need = []
+    if server:
+        need.append(("instances", 1))
+        fj = flavor_json if isinstance(flavor_json, dict) else {}
+        for res, key in (("cores", "vcpus"), ("ram", "ram")):
+            n = _whole(fj.get(key))
+            if n is not None:
+                need.append((res, n))
+    # The volumes copied (an ephemeral root disk is not one of them: it travels as an image).
+    need.append(("volumes", len(vols)))
+    need.append(("gigabytes", sum(_whole(v.get("size")) or 0 for v in vols)))
+    if server:
+        need.append(("ports", len(ports)))
+        made = [g for g in r.sgplan.groups.values() if g.create] if r.sgplan is not None else []
+        need.append(("security_groups", len(made)))
+        need.append(("security_group_rules", sum(len(g.rules) for g in made)))
+    return [(res, n) for res, n in need if n > 0]
+
+
+def quota_preflight(r, st, c, ports, vols, flavor_json, server=True):
+    """One OK line listing need/free per resource, a FAIL line per resource short of quota. A destination
+    that cannot answer 'quota show --usage' only gets a WARN: a cloud without that API must not block."""
+    res = r.dst.run("quota", "show", "--usage", "-f", "json", stderr=proc.CAPTURE)
+    rows = None
+    if res.rc == 0:
+        try:
+            rows = json.loads(res.stdout or "")
+        except ValueError:
+            rows = None
+    if not isinstance(rows, list):
+        why = (res.stderr.strip().splitlines() or [""])[-1] if res.rc != 0 else ""
+        out("  WARN  destination quota not checked: %s"
+            % (why or "'openstack quota show --usage -f json' printed no usage table"))
+        return
+    table = {}
+    for row in rows:
+        if isinstance(row, dict) and row.get("Resource") is not None:
+            table[str(row.get("Resource"))] = row
+    shown, short = [], False
+    for res_name, n in quota_needs(r, ports, vols, flavor_json, server):
+        row = next((table[a] for a in dict(QUOTA_NAMES)[res_name] if a in table), None)
+        if row is None:
+            continue
+        limit, used, reserved = _whole(row.get("Limit")), _whole(row.get("In Use")), _whole(row.get("Reserved"))
+        if limit is None or limit < 0:  # -1: unlimited
+            continue
+        used, reserved = used or 0, reserved or 0
+        free = limit - used - reserved
+        if free < n:
+            c.failed("destination quota: %s need %d, %d free (used %d of %d)" % (res_name, n, max(free, 0), used, limit))
+            short = True
+            continue
+        shown.append("%s %d/%d%s%s" % (res_name, n, free, " free" if not shown else "", " MB" if res_name == "ram" else ""))
+    if short:
+        return
+    if shown:
+        out("  OK    destination quota: " + ", ".join(shown))
+    else:
+        out("  OK    destination quota: no limit set on what this run creates")
 
 
 def preflight(r, st):
@@ -276,6 +384,7 @@ def preflight(r, st):
         (" az=" + o.dest_az) if o.dest_az else "", (" flavor=" + o.ov_flavor) if o.ov_flavor else "",
         (" sg=" + o.ov_sg) if o.ov_sg else "", (" server-group=" + o.server_group) if o.server_group else "",
         extra))
+    flavor_json = None  # the destination flavor's fields, for the quota check
     for line in o.conf_origin_info() + o.default_opts_info():
         out(line)
 
@@ -320,9 +429,10 @@ def preflight(r, st):
                      "the migration run: %s rollback %s (DELETES that destination server and its volumes)"
                      % (vmname, dsid, prog(), st.arg))
         if not o.flavor_fallback:
-            c.check("flavor " + flavor, lambda: r.dst.ok("flavor", "show", flavor))
+            flavor_json = {}
+            c.check("flavor " + flavor, lambda: dst_flavor(r, flavor, flavor_json))
         else:
-            flavor_fallback_preflight(r, st, c)
+            flavor_json = flavor_fallback_preflight(r, st, c)
         # Nova cannot assign another user's keypair; the key itself is inside the disk anyway.
         if key:
             if r.dst.ok("keypair", "show", key):
@@ -432,6 +542,7 @@ def preflight(r, st):
         out("  INFO  root disk is ephemeral (image-backed): migrated through a Glance snapshot")
         if o.mode != "cold":
             c.failed("--mode live needs boot-from-volume (an ephemeral disk has nothing to clone)")
+    quota_preflight(r, st, c, ports, vols, flavor_json, server=not o.volumes_only)
     c.check("RBD access to pool " + r.pool, lambda: r.rbd("-p", r.pool, "ls"))
     c.check("iSCSI daemon on transfer host", lambda: systemctl_ok("is-active", "iscsid", r.env)
             or systemctl_ok("start", "iscsid", r.env))
