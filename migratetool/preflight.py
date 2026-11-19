@@ -752,8 +752,7 @@ def preflight(r, st):
         ephemeral_space_preflight(r, server, c)
     quota_preflight(r, st, c, ports, vols, flavor_json, server=not o.volumes_only)
     c.check("RBD access to pool " + r.pool, lambda: r.rbd("-p", r.pool, "ls"))
-    c.check("iSCSI daemon on transfer host", lambda: systemctl_ok("is-active", "iscsid", r.env)
-            or systemctl_ok("start", "iscsid", r.env))
+    iscsid_preflight(r, c)
     if r.cfg.MIG_MULTIPATH == "1":
         c.check("multipathd on transfer host", lambda: systemctl_ok("is-active", "multipathd", r.env))
     if o.mode == "live":
@@ -768,6 +767,14 @@ def in_subnet(addr, cidr):
         return ipaddress.ip_address(addr) in ipaddress.ip_network(cidr, strict=False)
     except ValueError:
         return False
+
+
+def iscsid_preflight(r, c):
+    """7.2 (C7): read-only like every other check: no 'systemctl start' any more, the operator starts it."""
+    good = systemctl_ok("is-active", "iscsid", r.env)
+    c.check("iSCSI daemon on transfer host", lambda: good)
+    if not good:
+        c.info("start it: systemctl enable --now iscsid")
 
 
 def systemctl_ok(action, unit, env):
