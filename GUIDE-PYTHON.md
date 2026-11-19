@@ -18,6 +18,10 @@ Bằng chứng: app qua đủ 140/140 check của 5 bộ test cũ trên lab th�
 `<AZ đích>-<tên nguồn>`, port đích mang theo allowed-address-pairs, port security, description, dns_name.
 Đây là **mặc định mới**, khác 7.0. **Đọc mục 4b trước khi chạy 7.1**, nhất là phần chuyển từ 7.0.
 
+**7.2** sửa các phát hiện của [AUDIT-20261119.md](AUDIT-20261119.md): cold tạo volume đích trước khi tắt VM
+nguồn, preflight kiểm quota hai cloud và dung lượng pool Ceph, cảnh báo floating IP, `--volume-az`, lệnh
+`migrate doctor`. Tóm tắt và hạn chế còn lại: mục 4c.
+
 Cài đặt: [DEPLOY-PYTHON.md](DEPLOY-PYTHON.md). Từng bước một VM cold/live: [WORKFLOW-PYTHON.md](WORKFLOW-PYTHON.md).
 IP trong tài liệu thuộc dải TEST-NET (`192.0.2.x`, `198.51.100.x`); tên VM, project, host là tên ví dụ.
 
@@ -30,6 +34,7 @@ IP trong tài liệu thuộc dải TEST-NET (`192.0.2.x`, `198.51.100.x`); tên 
 | `migrate volume <volume> [--in-use] [--volume-type t] [--az z] [--verify v]` | Copy **một** volume, không tạo server | Không (như `migrate-volume` cũ) | Có |
 | `migrate volume <chọn volume> [--yes] [...]` | Copy volume **theo đợt** | Luôn hỏi, trừ khi có `--yes` | Có |
 | `migrate plan volume <chọn volume> [...]` | Dry-run của `migrate volume` theo đợt (mới ở P5) | Không | Không |
+| `migrate doctor` | (7.2) Kiểm host chuyển: chương trình, module, conf, openrc, token, quyền, pool RBD, iscsid (mục 4c.5) | Không | Không |
 | `migrate rollback <vm \| volume \| vol-<id>>` | Xóa phía đích, trả VM nguồn về như cũ; hoặc xóa bản copy của volume | Không | Có (chỉ phía đích + trả trạng thái nguồn) |
 
 - `migrate --help`, `migrate <lệnh> --help` và `migrate plan volume --help` in đủ option.
@@ -154,7 +159,8 @@ option của VM cho mọi VM trong đợt. Mặc định giống hệt bản bas
 |---|---|
 | `--mode cold\|live` | `cold` (mặc định): tắt VM rồi copy bằng `qemu-img`, sau đó so toàn bộ. `live`: VM chạy trong lúc pre-sync nhiều lượt (blocksync, hash từng chunk 4 MiB). Cutover chỉ tắt VM rồi sync phần delta |
 | `--volume-type <type>` | Volume type ở đích cho mọi volume. Không truyền thì dùng type mặc định của cloud, hoặc type theo AZ trong `AZ_TYPE_MAP` (mục 7.4) |
-| `--az <zone>` | AZ đích cho **cả volume lẫn server**. Không truyền thì dùng `MIG_AZ`, không có nữa thì để scheduler đích tự chọn. Từ 7.1 còn là `<AZ>` trong tên các bản copy group (mục 4b.2) |
+| `--az <zone>` | AZ đích của server, và của volume khi không có `--volume-az`. Không truyền thì dùng `MIG_AZ`, không có nữa thì để scheduler đích tự chọn. Từ 7.1 còn là `<AZ>` trong tên các bản copy group (mục 4b.2) |
+| `--volume-az <zone>` | (7.2) AZ Cinder của volume đích khi khác tên AZ compute. Không truyền thì `MIG_VOLUME_AZ`, không có nữa thì theo `--az` (mục 4c.4) |
 | `--ip same\|new\|<addr>` | `same` (mặc định): giữ IP + MAC, tháo port nguồn lúc cutover. `new`: IP + MAC mới, không đụng port nguồn. `<addr>`: IP chỉ định, MAC mới (VM 1 NIC) |
 | `--flavor <tên>` | Flavor cho VM đích. Mặc định: cùng tên với nguồn |
 | `--flavor-fallback` | Đích không có flavor cùng tên thì dùng flavor mà `FLAVOR_MAP_FILE` map tới. App không bao giờ tạo flavor |
@@ -334,6 +340,120 @@ Ví dụ VM keepalived: port `198.51.100.50`, pairs `198.51.100.99` (VIP) và `1
    Bản bash (archive) bỏ qua các khóa/file này, rollback chéo vẫn được.
 6. Bản bash trong `archive/` giữ hành vi cũ (`az-`, SG cùng tên, từ chối pairs).
 
+## 4c. Thay đổi của 7.2 (sửa theo AUDIT-20261119)
+
+Thiết kế: [DESIGN-V7-2.md](DESIGN-V7-2.md). Mã A1…D4 trong ngoặc là mã của [AUDIT-20261119.md](AUDIT-20261119.md).
+
+### 4c.1. Cold: volume đích tạo TRƯỚC khi tắt VM nguồn (A1)
+
+Thứ tự cold mới (live không đổi, presync vốn đã làm vậy):
+
+1. export, preflight, copy SG (như 7.1);
+2. **tạo mọi volume đích** (rỗng, chưa cần dữ liệu nguồn): `volume create`, chờ `available`, `rbd info`, set
+   bootable và image property. Log: `destination volumes created; stopping the source now`;
+3. tắt VM nguồn, tháo port, lock (bắt đầu downtime);
+4. clone → attach → `qemu-img convert` + compare vào volume đã tạo; tạo port + VM đích.
+
+Lợi ích: lỗi phía đích không phụ thuộc nguồn (quota, sai type, sai `RBD_POOL_MAP`, `mig-xfer` thiếu caps) lộ ra
+khi VM nguồn **còn chạy**. Ví dụ volume type mặc định không vào `volumes-nvme`: 7.1 báo lỗi sau khi VM đã
+SHUTOFF và port đã tháo; 7.2 dừng ở bước 2, VM vẫn ACTIVE, chỉ cần `migrate rollback <vm>` để xóa volume
+rỗng vừa tạo. Size volume lấy từ `volumes.json` đã export, bớt một lệnh `volume show` trong downtime.
+
+Cuối mỗi lần migrate có thêm dòng đo downtime (D3):
+`downtime breakdown: total 95s, copy 40s, verify 22s, control-plane 33s` (copy/verify = `qemu-img
+convert`/`compare` ở cold; ở live là pass blocksync cuối và lần compare của `--verify full`; control-plane = phần
+còn lại: lệnh `openstack`, chờ, attach/detach).
+
+### 4c.2. Preflight kiểm quota và dung lượng (A2)
+
+Preflight kiểm **mọi tài nguyên** một lần migrate tiêu thụ, ở **cả hai cloud**, trước khi tạo bất cứ gì:
+
+| Phía | Tài nguyên | Nhu cầu (ví dụ VM 2 vCPU/2 GB, volume 10 GB + 2 GB, 1 port) |
+|---|---|---|
+| nguồn | `volumes`, `gigabytes` | clone tạm: +1 volume, + size volume **lớn nhất** (10 GB; clone từng cái một) |
+| nguồn | `volumes_<type>`, `gigabytes_<type>` | như trên, theo type của từng volume nguồn (khi project có quota theo type) |
+| đích | `instances`, `cores`, `ram` | 1, vCPU và RAM của flavor đích (2, 2048 MB) |
+| đích | `volumes`, `gigabytes` | số volume, tổng GB (2, 12) |
+| đích | `volumes_<type>`, `gigabytes_<type>` | khi chọn type (`--volume-type`/`AZ_TYPE_MAP`) |
+| đích | `ports`, `secgroups`, `secgroup-rules` | số port; số SG sẽ tạo và tổng rule của chúng |
+| đích | `server_group_members` | 1, khi VM sẽ vào server group (giới hạn từ `limits show --absolute`) |
+| đích | IP trống trong `allocation_pools` | 1 mỗi port, chỉ với `--ip new` |
+| đích | dung lượng pool Ceph | tổng GB volume đích, đọc `ceph df detail` bằng `RBD_USER` |
+
+Dòng in ra (ví dụ):
+
+```
+  OK    source quota: volumes 1/10 free, gigabytes 10/1000
+  OK    destination quota: instances 1/10 free, cores 2/20, ram 2048/51200 MB, volumes 2/10, gigabytes 12/1000, ports 1/50
+  OK    Ceph pool volumes: 12 GB needed, 1024 GB left (MAX AVAIL)
+  FAIL  destination quota: gigabytes need 12, 5 free (used 95 of 100)
+  FAIL  subnet 198.51.100.0/24: no free address in its allocation pools for --ip new
+  INFO  Ceph pool capacity not checked: Error EACCES: access denied
+```
+
+- Số `a/b` là **cần/còn trống**. Còn trống = Limit − In Use − Reserved. Limit `-1` (không giới hạn) và tài nguyên
+  cloud không trả về thì bỏ qua.
+- Cloud không trả lời `openstack quota show --usage` (client cũ, thiếu quyền): `WARN … quota not checked`,
+  **không chặn**.
+- Pool Ceph: FAIL khi `MAX AVAIL` (hoặc quota của pool) nhỏ hơn nhu cầu; WARN khi sau copy còn dưới 10% pool.
+  User `mig-xfer` thường chỉ có `profile rbd` nên `ceph df` bị từ chối: chỉ ra INFO. Muốn kiểm thì thêm caps
+  `mon 'allow r'` cho user đó.
+- `--volumes-only` và `migrate volume` kiểm phần volume (cả clone phía nguồn).
+
+### 4c.3. Floating IP: cảnh báo, không chuyển (A3)
+
+Floating IP thuộc cloud nguồn, **không** sang được cloud khác. 7.2 ghi floating IP của từng port vào
+`ports.json` (khóa `floating_ips`, chỉ khi có), `plan` in thêm dòng `  fip   203.0.113.10 on <mac>` và preflight
+in `WARN port <mac>: floating IP 203.0.113.10 not migrated (…): allocate one at the destination and update DNS`.
+Sau cutover: cấp floating IP ở đích, gắn vào port đích, sửa DNS. Rollback gắn lại floating IP vào port giữ chỗ khi
+Nova đã xóa port gốc (Neutron bỏ liên kết theo port).
+
+### 4c.4. `--volume-az` khi AZ Cinder đích khác tên AZ compute (C6)
+
+Ví dụ đích có compute AZ `AZ1`, `AZ2` nhưng Cinder chỉ có AZ `nova`: `--az AZ1` một mình sẽ FAIL `volume AZ AZ1`.
+
+```bash
+migrate migrate web-01 --az AZ1 --volume-az nova --yes
+```
+
+Thứ tự ưu tiên của AZ volume: `--volume-az` gõ tay > `MIG_VOLUME_AZ` (conf/env) > `--volume-az` trong
+`MIG_DEFAULT_OPTS` > AZ của server (`--az`/`MIG_AZ`, như 7.1). Header preflight thêm ` volume-az=nova` khi khác
+`az=`; file state `options` thêm `VOLUME_AZ=` cuối dòng. `migrate volume` cũng nhận `--volume-az`.
+
+### 4c.5. `migrate doctor` (D2)
+
+Chạy **trước mọi thứ** trên host chuyển mới (hoặc sau khi nâng cấp): kiểm chương trình (`openstack`,
+`qemu-img`, `rbd`, `iscsiadm`, `multipath` khi `MIG_MULTIPATH=1`), module của brick (os-brick, cinderclient),
+`SYS_PY` import được `rados, rbd`, conf đọc được, 2 openrc + token, quyền admin (WARN nếu thiếu: `--ip same` cần
+`port create --mac-address`), `rbd ls` từng pool, `iscsid`, thư mục state/log. Chỉ đọc, không cần VM; thoát mã 1
+khi có FAIL. Hướng dẫn cài: [DEPLOY-PYTHON.md](DEPLOY-PYTHON.md) mục 0.
+
+### 4c.6. Các thay đổi nhỏ khác
+
+| Mã | Trước 7.2 | 7.2 |
+|---|---|---|
+| A4 | Tên VM trùng ở **2 project khác nhau**: chọn cả hai, `--yes` migrate cả hai | Mỗi VM một hàng `SKIP(ambiguous-name: use the ID)`; chọn bằng ID |
+| B1 | `port show` lỗi tạm (503) sau khi tháo port bị hiểu là Nova đã xóa port | Chỉ "not found" mới là đã xóa; lỗi khác thì hỏi lại (tối đa 60 lần), hết thì dừng `cannot read port …`. Rollback gắn lại cả port chưa kịp ghi vào `source-ports` |
+| B3 | Không có attachment `/dev/vda\|sda` là ephemeral | Đối chiếu trường `image` của server; mâu thuẫn thì dừng `cannot tell the root disk of …` |
+| B4 | `--ip 999.1.1.1` lọt, IP ngoài subnet báo "free" | `--ip` phải là IPv4 thật; preflight FAIL `IP … is not in subnet …` |
+| B5 | Rollback dừng giữa chừng khi `image list`/`volume list` nguồn lỗi | WARN rồi làm tiếp (unlock, gắn port, bật VM) |
+| B6 | Image property `os_hash_*`/`os_hidden` của volume bị chép sang | Chỉ chép allowlist khách (`hw_*`, `os_distro`, `os_type`, …) như đường ephemeral |
+| C1 | `--name ^<tên>$` không escape (tên có `.`) | Escape ở mọi chỗ |
+| C2 | `--max-passes 0` chạy như 1 | `--max-passes` ≥ 1, `--delta-limit` ≥ 0 |
+| C5 | Tên VM có `/` thành thư mục lồng | Dừng: chạy bằng ID |
+| C7 | Preflight tự `systemctl start iscsid` | Chỉ kiểm; FAIL kèm `INFO start it: systemctl enable --now iscsid` |
+| C8 | Nova tạo server nhưng client timeout: rollback bỏ sót server | Rollback tìm theo tên; đúng 1 server tạo sau `t-stop` thì xóa |
+
+### 4c.7. Hạn chế còn lại của đường ephemeral (B2)
+
+- VM đích của nguồn ephemeral vẫn boot **từ image**, **không có volume** (chờ user chốt
+  `--boot-from-volume`). Với quy tắc "instance phải có volume", VM loại này cần xử lý tay sau khi migrate.
+- Upload Glance dùng endpoint theo `OS_INTERFACE` của openrc đích (mặc định `public`, 7.1 ghim `internal`), lấy
+  token mới trước mỗi lời gọi, và **đọc `OS_CACERT`/`OS_INSECURE`**: Glance HTTPS dùng CA nội bộ thì openrc đích
+  (hoặc conf: `export OS_CACERT=…`) phải có `OS_CACERT`, nếu không upload báo `CERTIFICATE_VERIFY_FAILED`.
+- Preflight kiểm chỗ trống của `/var/lib/mig-migrate` so với disk của flavor nguồn (FAIL khi thiếu, WARN khi
+  flavor disk 0/không đọc được).
+
 ## 5. Volume
 
 ### 5.1. Một volume: `migrate volume <volume>`
@@ -494,6 +614,7 @@ Vì vậy, trước khi chuyển sang app, chạy `migrate plan <vm-test>` một
 | `MIG_MULTIPATH` | `0` | `1` = attach qua multipath |
 | `COPY_STREAMS` | `8` | Số luồng `qemu-img convert` (cold) |
 | `MIG_AZ` | (trống) | AZ khi không truyền `--az` |
+| `MIG_VOLUME_AZ` | (trống) | (7.2) AZ volume khi không truyền `--volume-az`; trống thì volume theo AZ của server (mục 4c.4) |
 | `AZ_TYPE_MAP` | (trống) | Map AZ → volume type (mục 7.4) |
 | `MIG_DEFAULT_OPTS` | (trống) | Option luôn áp (mục 7.3) |
 | `PROJECT_MAP_FILE` | (trống) | File map project nguồn → đích (mục 7.4) |

@@ -29,6 +29,7 @@ Tài liệu cho người sửa hoặc mở rộng app Python. Đọc kèm:
 | `azname.py` | P6: `<AZ>` của tên bản copy: `--az` > `MIG_AZ` > AZ compute duy nhất của đích (`zones_from_listing`, `pick`, `resolve`) | — |
 | `secgroups.py` | P6: copy SG thành `<AZ>-<tên>`: `rule_args` (builder rule), `rule_key`, `plan_copy` (chỉ đọc, đệ quy remote group, visited set), `describe` (dòng preflight), `ensure` (tạo trước cutover, lỗi thì xóa cái vừa tạo) | — |
 | `vmcmd.py` | `cmd_plan`, `cmd_migrate` | cùng tên |
+| `doctor.py` | 7.2: `migrate doctor`, kiểm host chuyển (chỉ đọc) | — |
 | `copyvol.py` | `create_dest_volume`, `attach_clone`/`drop_clone` (qua `brick`), `copy_volume_cold`, `Watcher` (tiến độ đọc `/sys/block`), `cleanup_attach` | cùng tên, `progress_watch`, trap EXIT |
 | `livesync.py` | `presync`, `sync_volume_pass`, `final_pass`, `check_numbers`, 2 dòng preflight live | vòng live trong `cmd_migrate`, `sync_volume_pass` |
 | `ephemeral.py` | Snapshot → Glance REST (urllib, đúng trình tự curl cũ) | `migrate_ephemeral_root` |
@@ -199,8 +200,26 @@ Phase 4. Bộ này chưa nằm trong `tests/` của repo.
 
 ### 5.3. Harness giả lập (không cần cloud)
 
-Harness parity của V7 gồm `parity.py`, `scenarios.py`, `unit.py` và các stub. Nó chưa nằm trong repo, đang
-giữ ở máy làm việc.
+Từ 7.2 harness nằm trong repo, thư mục [tests/unit/](tests/unit/): `parity.py`, `scenarios.py`,
+`scenarios_p6.py`, `unit.py`, `p5unit.py`, `p6unit.py`, `v72unit.py` và các stub `stub_*.py`. Chỉ dùng thư viện
+chuẩn; file sinh ra (link stub, bản copy package, thư mục `run-*`) nằm ở `$MIG_UNIT_WORK` (mặc định
+`/tmp/mig-unit-work`), không bao giờ trong repo.
+
+```bash
+bash tests/unit/run.sh              # 4 bộ unit (python3 bất kỳ ≥ 3.10, kể cả của venv): vài giây
+bash tests/unit/run.sh --parity     # + parity bash vs app trên Linux có bash, jq: khoảng 20 phút
+bash tests/unit/run.sh --parity p6  # parity chỉ các kịch bản có chữ "p6" trong tên
+```
+
+Dòng cuối `ALL pass=N fail=M`; mã thoát khác 0 khi có FAIL. Chạy trước mỗi commit đụng `migratetool/` (bộ unit),
+và bản `--parity` trước khi gửi review.
+
+`v72unit.py` chạy app **trong cùng tiến trình**: `proc.run` được thay bằng bộ chia lệnh chạy chính các stub
+(`stub_openstack.py`, `stub_tools.py`…) bằng `exec`, nên một lần migrate + rollback chỉ mất vài chục ms. Mỗi mã
+của DESIGN-V7-2 có ít nhất một case mang tên mã đó. Muốn thêm case: dựng world từ `parity.base_world()`, gọi
+`app(world, [("migrate", "app01", [...]), ("rollback", "app01")])`, kiểm `r.out`, `r.calls`, `r.world`.
+
+Phần parity:
 
 - Chạy bản bash tham chiếu và app trên cùng "world" giả: stub `openstack`, `rbd`, `qemu-img`, `systemctl`,
   brick, python3-SDK, cùng một Glance giả là HTTP server thật.
@@ -218,6 +237,13 @@ cho mọi kịch bản viết trước P6: phía app chạy thêm `--no-copy-sec
 thêm `--no-server-group`, vì mặc định 7.1 chính là việc cờ đó từng làm. Header preflight của bản bash được chỉnh
 token cho khớp. Kịch bản P6 chạy app trên mặc định mới với check riêng. Bộ unit
 `p6unit.py` cũng chạy được ở mọi máy. Chi tiết: TEST-REPORT V7 mục Phase 6.
+
+7.2 thêm luật máy móc thứ hai, `parity.v72_rule`, áp cho mọi kịch bản viết trước 7.2 (`compare(..., v72=True)`
+để tắt). Mỗi dòng của luật ghi chú `Intended: 7.2 <mã>`: bỏ khỏi phía app các dòng/lời gọi chỉ app có (quota,
+Ceph, floating IP, breakdown downtime, token mới mỗi lời gọi Glance…), sửa phía bản bash theo thứ tự mới (A1:
+khối tạo volume đích dời lên trước lúc tắt nguồn, bỏ `volume show -c size`), `flavor show` thành `-f json`,
+`--interface internal` thành `public`, file `options` thêm `VOLUME_AZ=`. Stub đánh số ID theo từng tiền tố
+(`vol-dst-0001`…) để thứ tự tạo khác nhau vẫn ra cùng ID.
 
 ## 6. Quy trình phase → gate
 

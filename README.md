@@ -12,6 +12,9 @@ destination VM also gets copies of the source's security groups, server group an
 (allowed-address pairs, port security, description, dns_name) by default. The final lab gate passes
 183 checks across 6 suites: see [DESIGN-V7.md](DESIGN-V7.md),
 [TEST-REPORT-20261118-v7.md](TEST-REPORT-20261118-v7.md) and [CHANGELOG.md](CHANGELOG.md).
+7.2 fixes the findings of [AUDIT-20261119.md](AUDIT-20261119.md) ([DESIGN-V7-2.md](DESIGN-V7-2.md)): cold
+mode creates the destination volumes before stopping the source, the preflight checks the quota of both
+clouds and the Ceph pool capacity, floating IPs are reported, `--volume-az`, and `migrate doctor`.
 
 | | Python app `migrate` (current, v7+) | Bash build (archived, v1–v6) |
 |---|---|---|
@@ -34,7 +37,8 @@ Shared by both builds:
 | [POWERSTORE-VS-LAB.md](POWERSTORE-VS-LAB.md) | PowerStore 5000T vs lab; single-path checklist |
 | `TEST-REPORT-*.md` | Test results per version (v1 → v7) |
 
-Everything in `0*-*.sh`, `kolla/`, `lab.sh`, `tests/` is lab scaffolding (see DEPLOY.md §0).
+Everything in `0*-*.sh`, `kolla/`, `lab.sh`, `tests/*.sh` is lab scaffolding (see DEPLOY.md §0).
+`tests/unit/` is the cloud-free unit + parity harness: `bash tests/unit/run.sh` (DEVELOPING-PYTHON.md §5.3).
 
 Install on the convert host (prerequisites: system packages and the `/opt/mig-venv` client venv, see
 [DEPLOY-PYTHON.md](DEPLOY-PYTHON.md)):
@@ -50,6 +54,7 @@ install -m 0600 -D migrate.conf.example /opt/mig/migrate.conf   # optional; edit
 Quick start:
 
 ```bash
+migrate doctor                                       # read-only check of this host, before anything else
 migrate plan web-01                                  # read-only dry-run
 migrate migrate web-01 --yes                         # always asks 'Type yes' unless --yes
 migrate migrate web-01 --mode live --ip new --volume-type ssd --yes

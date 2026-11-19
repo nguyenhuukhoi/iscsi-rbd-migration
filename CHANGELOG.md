@@ -11,6 +11,59 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 6 (bản bash:
 [DEVELOPING.md](DEVELOPING.md) mục 5).
 
+## [7.2.0] — 2026-11-19 · nhánh `feature/7.2-audit-fixes` (từ main `e4c419b`) · chờ review + gate lab
+
+Sửa toàn bộ phát hiện của [AUDIT-20261119.md](AUDIT-20261119.md) theo [DESIGN-V7-2.md](DESIGN-V7-2.md) (mã A1…D4
+giữ nguyên). Chỉ app Python; bản bash trong `archive/` không đổi. Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md)
+mục 4c. Test: `bash tests/unit/run.sh` (unit + parity, mục 5.3 của [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md));
+gate lab và TEST-REPORT 7.2 làm sau review.
+
+### Đổi hành vi
+
+- **A1** Cold: tạo mọi volume đích **trước** khi tắt VM nguồn (như live). Lỗi phía đích (quota, type, pool, caps)
+  dừng run khi VM nguồn còn chạy. Log mới `destination volumes created; stopping the source now`; các lệnh
+  `volume create`/`rbd info` nay đứng trước `stop source VM`. Size lấy từ `volumes.json`.
+- **A4** Tên VM khớp VM ở **nhiều project** (không chỉ trong một project): mỗi VM `SKIP(ambiguous-name: use the ID)`.
+- **B1** Sau khi tháo port, chỉ câu trả lời "not found" mới là Nova đã xóa port; lỗi khác hỏi lại (≤ 60 lần) rồi
+  dừng `cannot read port <id> after detach: …`. Rollback gắn lại `source-ports` ∪ `port-ids.json`.
+- **B2** Đường ephemeral: endpoint Glance theo `OS_INTERFACE` của openrc đích (mặc định `public`, trước ghim
+  `internal`); đọc `OS_CACERT`/`OS_INSECURE`; token mới trước POST, PUT, PATCH.
+- **B3** `detect_boot` đối chiếu trường `image` của server; mâu thuẫn thì dừng `cannot tell the root disk of …`.
+- **B6** Image property của volume chỉ chép allowlist khách (như ephemeral): không còn `os_hash_*`, `os_hidden`.
+- **C2** `--max-passes` ≥ 1, `--delta-limit` ≥ 0 (`… takes a whole number >= 1, not '0'`).
+- **C5** Tên VM có `/` (hoặc `.`/`..`): dừng, chạy bằng ID.
+- **C7** Preflight không còn `systemctl start iscsid`: chỉ kiểm, FAIL kèm `INFO start it: systemctl enable --now iscsid`.
+- `flavor show` của preflight đọc `-f json` (cùng một lệnh, cùng dòng OK/FAIL) để biết vCPU/RAM cho quota.
+
+### Thêm
+
+- **A2** Preflight quota **cả hai cloud** và dung lượng đích (bổ sung 19/11 tối): nguồn `volumes`/`gigabytes`
+  (+ per-type) cho clone tạm; đích `instances`, `cores`, `ram`, `volumes`, `gigabytes` (+ per-type của type đã
+  chọn), `ports`, `secgroups`, `secgroup-rules`, `server_group_members`; IP trống trong allocation pool khi
+  `--ip new`; pool Ceph qua `ceph df detail` (FAIL/WARN <10%/INFO khi thiếu caps). Dòng `  OK    source quota: …`,
+  `  OK    destination quota: …`, `  FAIL  destination quota: <res> need N, M free (used U of L)`. Cloud không trả
+  lời quota: WARN, không chặn. `migrate volume` kiểm phần volume.
+- **A3** Floating IP: `ports.json` có `floating_ips` (khi có), `plan` in `  fip   <addr> on <mac>`, preflight WARN
+  "not migrated", rollback gắn lại floating IP mất liên kết vào port giữ chỗ.
+- **B2** Preflight ephemeral kiểm chỗ trống `/var/lib/mig-migrate` so với disk của flavor.
+- **B4** `--ip <addr>` phải là IPv4 thật; preflight FAIL `IP <addr> is not in subnet <cidr> of <net>`.
+- **C6** `--volume-az ZONE` / `MIG_VOLUME_AZ`: AZ Cinder của volume đích khi khác tên AZ compute. Header preflight
+  ` volume-az=<x>`, file state `options` thêm `VOLUME_AZ=` cuối dòng.
+- **C8** Rollback tìm server đích theo tên khi `dst-server-id` rỗng (Nova tạo nhưng client timeout): đúng 1, tạo sau
+  `t-stop` thì xóa.
+- **D2** Lệnh `migrate doctor` (chỉ đọc) và `python -I -m migratetool.brick --check`.
+- **D3** Cuối mỗi migrate: `downtime breakdown: total Ns, copy Ns, verify Ns, control-plane Ns`.
+- **D1** Harness unit + parity vào repo: `tests/unit/` (`run.sh`, stdlib), thêm `v72unit.py` (mỗi mã ≥ 1 case).
+
+### Sửa
+
+- **B5** Rollback không dừng khi `image list`/`volume list` phía nguồn lỗi (WARN rồi làm tiếp: unlock, gắn port,
+  bật VM); clone sót đi qua `drop_volume`.
+- **C1** Escape tên VM trong mọi `server list --name ^<tên>$` (tên có `.`).
+- **C3** Dọn SG copy khi lỗi: xóa hết rule trước rồi mới xóa group (tránh `in use`).
+- **C4** File lỗi brick nằm trong thư mục state của run; `volume show` của rollback không còn file `.err` chung.
+- **D4** Phiên bản `7.2.0`.
+
 ## [7.1.0] (đang làm: `7.1.0.dev1`) — 2026-11-18 · merge main 19/11 · review + gate lab ĐẠT 183/0 (e2e 50, live 26, newip 26, extras 30, p4feat 24, p6feat 27 — TEST-REPORT-20261118-v7.md mục "Gate lab 7.1")
 
 Phase P6 của [DESIGN-V7.md](DESIGN-V7.md): port, security group và server group ở đích giống nguồn. Chỉ app

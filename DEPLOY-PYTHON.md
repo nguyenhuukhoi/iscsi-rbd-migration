@@ -8,7 +8,31 @@ Cách dùng lệnh: [GUIDE-PYTHON.md](GUIDE-PYTHON.md). Cài bản bash cũ: [DE
 Các mục 1, 2, 5, 6, 7 dưới đây giống hệt bản bash. Ở đó tài liệu chỉ nhắc lại điểm chính và trỏ sang
 [DEPLOY.md](DEPLOY.md). Phần mới là mục 3, 4, 8, 9.
 
-## 0. App gồm những gì
+## 0. Chạy `migrate doctor` trước (từ 7.2)
+
+Sau mỗi lần cài hoặc nâng cấp (mục 3–5), và trước VM đầu tiên của một host mới:
+
+```bash
+migrate doctor
+```
+
+Chỉ đọc, không cần VM, mỗi mục một dòng `OK`/`FAIL`/`WARN`/`INFO`, thoát mã 1 khi có `FAIL`. Kiểm:
+
+| Mục | Ví dụ dòng lỗi | Sửa ở |
+|---|---|---|
+| `openstack`, `qemu-img`, `rbd`, `iscsiadm` (`multipath` khi `MIG_MULTIPATH=1`) | `FAIL  qemu-img: not found on PATH` | mục 2 |
+| brick: `python -I -m migratetool.brick --check` import os-brick, cinderclient, keystoneauth1, oslo | `FAIL  brick cannot start (No module named 'os_brick') …` | mục 3 |
+| `SYS_PY` import `rados, rbd`; `blocksync.py` có trong package | `FAIL  SYS_PY=/usr/bin/python3 cannot import rados, rbd …` | mục 2 (`python3-rbd`) |
+| conf parse được; 2 openrc đọc được; `OS_AUTH_TYPE` là `password` hoặc `v3applicationcredential` | `FAIL  source openrc /opt/mig/src/admin-openrc.sh is not readable` | mục 5, 6 |
+| token 2 phía | `FAIL  destination token: …` (dòng lỗi cuối của `openstack token issue`) | mục 6 |
+| quyền admin (`role assignment list`, hoặc role của application credential) | `WARN  source: no admin role: --ip same needs port --mac-address (admin_or_network_owner)` | cấp role, hoặc dùng `--ip new` |
+| `rbd ls` của `RBD_POOL` và từng pool trong `RBD_POOL_MAP`; `iscsid` (và `multipathd`) đang chạy | `FAIL  iSCSI daemon on transfer host` + `INFO  start it: systemctl enable --now iscsid` | mục 2, 6 |
+| `/var/lib/mig-migrate`, `/var/log/mig-batch` tạo/ghi được | `FAIL  state directory … writable` | quyền root |
+
+Mọi mục đều chạy kể cả khi mục trước FAIL, nên một lần chạy liệt kê hết những gì phải sửa. Các triệu chứng ở
+mục 12 phần lớn đã được `doctor` bắt trước khi chạy migrate.
+
+## 0b. App gồm những gì
 
 | Thành phần | Nằm ở | Chạy bằng |
 |---|---|---|
@@ -267,7 +291,9 @@ Bổ sung P5:
 ## 12. Lỗi thường gặp khi dựng host mới (gặp thật 19/11)
 
 Cả loạt dưới đây chung một gốc: venv dựng tay mà bỏ qua mục 2–3. Dựng host mới cứ chạy trọn mục 2 rồi
-mục 3 một lượt trước khi cài app.
+mục 3 một lượt trước khi cài app. **Từ 7.2: chạy `migrate doctor` (mục 0)** — 3 dòng đầu của bảng hiện thành
+dòng `FAIL` của doctor (brick, openstack, token) trước khi đụng tới VM nào; dòng cuối (pool) thì 7.2 báo ngay khi
+tạo volume đích, lúc VM nguồn còn chạy (GUIDE-PYTHON mục 4c.1).
 
 | Triệu chứng | Nguyên nhân | Sửa |
 |---|---|---|
