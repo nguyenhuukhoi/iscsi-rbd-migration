@@ -4,8 +4,9 @@ copies, port fidelity). Never creates anything."""
 import json
 import os
 import re
+import shutil
 
-from . import azname, proc, secgroups
+from . import azname, config, proc, secgroups
 from .context import flavor_name
 from .util import Die, ifs_split, jq_alt, jqs, lines, out, prog
 from .vmdef import dest_volume_name
@@ -369,6 +370,31 @@ def quota_preflight(r, st, c, ports, vols, flavor_json, server=True):
         out("  OK    destination quota: no limit set on what this run creates")
 
 
+def ephemeral_space_preflight(r, server, c):
+    """7.2 (B2): the snapshot of an ephemeral root disk is downloaded into the state directory: room for up
+    to the flavor's disk size there (the server's embedded flavor, else 'flavor show' at the source)."""
+    f = server.get("flavor")
+    disk = jq_alt(f.get("disk")) if isinstance(f, dict) else None
+    if disk is None:
+        res = r.src.run("flavor", "show", flavor_name(server), "-f", "json", stderr=proc.DEVNULL)
+        if res.rc == 0:
+            try:
+                disk = json.loads(res.stdout).get("disk")
+            except (ValueError, AttributeError):
+                disk = None
+    need = _whole(disk)
+    try:
+        free = shutil.disk_usage(config.STATE_ROOT).free // 1073741824
+    except OSError as e:
+        return out("  WARN  free space not checked: %s" % e)
+    if not need:  # unknown, or 0 (the root disk is as large as the image)
+        return out("  WARN  free space not checked: the root disk size of flavor %s is unknown (%s GB free in %s)"
+                   % (flavor_name(server), free, config.STATE_ROOT))
+    if free < need:
+        return c.failed("free space in %s: %d GB, the root disk snapshot needs up to %d GB" % (config.STATE_ROOT, free, need))
+    out("  OK    free space in %s: %d GB for a %d GB root disk" % (config.STATE_ROOT, free, need))
+
+
 def preflight(r, st):
     """True when every check passed (bash: preflight returns 0)."""
     o, cfg = r.opts, r.cfg
@@ -547,6 +573,7 @@ def preflight(r, st):
         out("  INFO  root disk is ephemeral (image-backed): migrated through a Glance snapshot")
         if o.mode != "cold":
             c.failed("--mode live needs boot-from-volume (an ephemeral disk has nothing to clone)")
+        ephemeral_space_preflight(r, server, c)
     quota_preflight(r, st, c, ports, vols, flavor_json, server=not o.volumes_only)
     c.check("RBD access to pool " + r.pool, lambda: r.rbd("-p", r.pool, "ls"))
     c.check("iSCSI daemon on transfer host", lambda: systemctl_ok("is-active", "iscsid", r.env)

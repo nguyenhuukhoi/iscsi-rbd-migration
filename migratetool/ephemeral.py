@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -18,16 +19,38 @@ from .util import Die, jq_alt, jqs, log
 GUEST_PROP_RE = re.compile(r"^(hw_|os_distro$|os_type$|os_secure_boot$|os_require_quiesce$|hypervisor_type$|architecture$|vm_mode$)")
 
 
-def _rest(method, url, token, body=None, ctype=None, length=None):
+TRUE_WORDS = ("1", "true", "yes")
+
+
+def tls_context(env):
+    """7.2 (B2): the TLS settings openstackclient takes from the openrc, for the Glance calls made here:
+    OS_INSECURE=1|true|yes (no verification), else OS_CACERT (a private CA). None: Python's defaults."""
+    if (env.get("OS_INSECURE") or "").strip().lower() in TRUE_WORDS:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    if env.get("OS_CACERT"):
+        try:
+            return ssl.create_default_context(cafile=env["OS_CACERT"])
+        except (OSError, ssl.SSLError) as e:
+            raise Die("cannot load OS_CACERT %s for the Glance upload: %s" % (env["OS_CACERT"], e))
+    return None
+
+
+def _rest(method, url, token, body=None, ctype=None, length=None, ctx=None):
     """One Glance REST call; raises on a failed transfer or an HTTP status >= 400 (curl -sfS).
-    No proxy, as the bash build unset the proxy variables for curl."""
+    No proxy, as the bash build unset the proxy variables for curl. ctx: tls_context() of the destination."""
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header("X-Auth-Token", token)
     if ctype:
         req.add_header("Content-Type", ctype)
     if length is not None:
         req.add_header("Content-Length", str(length))
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    handlers = [urllib.request.ProxyHandler({})]
+    if ctx is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+    opener = urllib.request.build_opener(*handlers)
     with opener.open(req) as resp:
         return resp.read()
 
@@ -70,12 +93,24 @@ def migrate_ephemeral_root(r, vm, st, sid):
     # Create and upload with plain REST. openstackclient is unusable for this step: with --file it
     # PATCHes attributes again after a long upload (Glance: 400 once active), and without --file it
     # reads image data from stdin whenever stdin is not a tty (nohup: /dev/null -> 415).
-    tok = r.dst.value("token", "issue", "-f", "value", "-c", "id")
-    urls = r.dst.out("endpoint", "list", "--service", "image", "--interface", "internal", "-f", "value", "-c", "URL")
-    url = (urls.split("\n") or [""])[0]
+    # 7.2 (B2): the interface the destination openrc asks for (OS_INTERFACE, default public), its TLS settings
+    # (OS_CACERT / OS_INSECURE, as openstackclient reads them), and a fresh token right before each call: the
+    # upload of a large root disk can outlive the token taken before it.
+    denv = r.dst.env()
+    iface = denv.get("OS_INTERFACE") or "public"
+    urls = r.dst.out("endpoint", "list", "--service", "image", "--interface", iface, "-f", "value", "-c", "URL")
+    url = next((u.strip() for u in urls.split("\n") if u.strip()), "")
+    if not url:
+        raise Die("the destination catalog lists no %s image endpoint: set OS_INTERFACE in %s to an interface this "
+                  "host reaches (public, internal or admin)" % (iface, r.dst.rc))
+    ctx = tls_context(denv)
+
+    def fresh_token():
+        return r.dst.value("token", "issue", "-f", "value", "-c", "id")
+
     body = json.dumps({"name": snap, "disk_format": fmt, "container_format": "bare"}, separators=(",", ":")).encode()
     try:
-        created = json.loads(_rest("POST", url + "/v2/images", tok, body, "application/json"))
+        created = json.loads(_rest("POST", url + "/v2/images", fresh_token(), body, "application/json", ctx=ctx))
         dimg = created.get("id") if isinstance(created, dict) else None
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise Die("could not create image record on the destination (%s)" % _why(e))
@@ -84,8 +119,8 @@ def migrate_ephemeral_root(r, vm, st, sid):
     st.write("dst-image-id", dimg + "\n")
     try:
         with open(root, "rb") as f:
-            _rest("PUT", "%s/v2/images/%s/file" % (url, dimg), tok, f, "application/octet-stream",
-                  os.path.getsize(root))
+            _rest("PUT", "%s/v2/images/%s/file" % (url, dimg), fresh_token(), f, "application/octet-stream",
+                  os.path.getsize(root), ctx=ctx)
     except (urllib.error.URLError, OSError) as e:
         raise Die("image upload to %s failed for %s (%s)" % (url, dimg, _why(e)))
     wait_image(r, r.dst, dimg)
@@ -114,9 +149,9 @@ def migrate_ephemeral_root(r, vm, st, sid):
              for k, v in (sprops.items() if isinstance(sprops, dict) else []) if GUEST_PROP_RE.search(k)]
     if patch:
         try:
-            _rest("PATCH", "%s/v2/images/%s" % (url, dimg), tok,
+            _rest("PATCH", "%s/v2/images/%s" % (url, dimg), fresh_token(),
                   json.dumps(patch, separators=(",", ":"), ensure_ascii=False).encode(),
-                  "application/openstack-images-v2.1-json-patch")
+                  "application/openstack-images-v2.1-json-patch", ctx=ctx)
         except (urllib.error.URLError, OSError) as e:
             raise Die("setting image properties failed for %s (%s)" % (dimg, _why(e)))
         log("copied guest properties: " + " ".join(p["path"] for p in patch))
