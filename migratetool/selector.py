@@ -339,17 +339,17 @@ class Runner:
                     vms.append(row)
         self._write("vms.json", jq_dump(vms))
 
-        if s.vms:  # keep the listed VMs only; a name twice in one project needs the ID
+        if s.vms:  # keep the listed VMs only; a name that matches several VMs needs the ID
             picked = []
             for v in s.vms:
                 m = [x for x in vms if x["id"] == v or x["name"] == v]
                 if not m:
                     self.rows.append(Row("vm", "-", v, "-", "-", "-", "SKIP(not-found)"))
                     continue
-                groups = {}
-                for x in m:
-                    groups.setdefault(json.dumps(x["project_id"]), []).append(x)
-                if any(len(g) > 1 for g in groups.values()):
+                # 7.2 (A4): ambiguous in ANY project, not only within one: the listing is --all-projects, so a
+                # name shared by VMs of two projects would otherwise select (and with --yes migrate) both.
+                # An ID matches one VM only.
+                if len(m) > 1:
                     for x in m:
                         self.rows.append(Row("vm", _s(x["id"]), _s(x["name"]), _s(x["status"]), "-", "-",
                                              "SKIP(ambiguous-name: use the ID)"))
