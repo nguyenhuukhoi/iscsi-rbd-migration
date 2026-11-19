@@ -109,19 +109,26 @@ def rollback_vm(r, st):
     for img in imgs:
         if r.dst.run("image", "delete", img, stderr=proc.DEVNULL).rc == 0:
             log("deleted destination image " + img)
-    simg = words(r.src.out("image", "list", "--name", "mig-snap-" + vm, "-f", "value", "-c", "ID"))
+    # 7.2 (B5): a listing that fails is a WARN, as at the destination above: stopping here would leave the source
+    # VM locked, without its ports and stopped until the rollback is run again.
+    res = r.src.run("image", "list", "--name", "mig-snap-" + vm, "-f", "value", "-c", "ID")
+    if res.rc != 0:
+        log("WARN cannot list source images named mig-snap-%s: skipped" % vm)
+    simg = words(res.stdout) if res.rc == 0 else []
     if simg:
         r.src.out("image", "delete", *simg)
     st.remove("root.img")
     # A run that died mid-copy leaves its temporary clone behind. Only this VM's own clones match.
     for a in st.json("attachments.json"):
         vid = a.get("Volume ID")
-        for cid in lines(r.src.out("volume", "list", "--name", "mig-clone-%s" % vid, "-f", "value", "-c", "ID")):
+        res = r.src.run("volume", "list", "--name", "mig-clone-%s" % vid, "-f", "value", "-c", "ID")
+        if res.rc != 0:
+            log("WARN cannot list source clones named mig-clone-%s: skipped" % vid)
+            continue
+        for cid in lines(res.stdout):
             if os.path.exists(os.path.join(config.ATTACH_DIR, cid + ".json")):
                 brick(r, "detach", cid, proc.DEVNULL)  # || true
-            r.wait_volume(r.src, cid, "available", 300)
-            r.src.out("volume", "delete", cid)
-            log("deleted leftover clone " + cid)
+            drop_volume(r, r.src, cid, "leftover clone")
     r.src.run("server", "unlock", sid)  # || true
     # Reattach the ports this run detached (--ip same). 7.2 (B1): source-ports (the ports and reserve ports
     # recorded as they were detached) plus every port of port-ids.json, so that a port detached right before
