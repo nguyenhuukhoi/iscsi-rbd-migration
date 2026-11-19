@@ -48,6 +48,17 @@ def cmd_migrate(r, st):
 
         if o.mode == "live":
             livesync.presync(r, vids, st)
+        else:
+            # 7.2 (A1): every destination volume exists before the source stops, as in live mode. They are
+            # empty and need nothing from the source, so whatever the destination refuses (quota, type, pool,
+            # caps) fails here, with the source VM still running. volume-map is written per volume as it
+            # is created, so a rollback removes them.
+            for vid in vids:
+                create_dest_volume(r, vid, st)
+            if vids:
+                log("destination volumes created; stopping the source now")
+        # From volumes.json (exported above): no 'volume show' inside the downtime window.
+        sizes = {v.get("id"): jqs(v.get("size")) for v in st.json("volumes.json")}
 
         # Cutover: from here the service is down until the destination VM boots.
         t_start = time.monotonic()
@@ -88,8 +99,8 @@ def cmd_migrate(r, st):
             if o.mode == "live":
                 livesync.final_pass(r, vid, st)
             else:
-                create_dest_volume(r, vid, st)
-                copy_volume_cold(r, vid, r.dvid, r.src.value("volume", "show", vid, "-f", "value", "-c", "size"), st)
+                copy_volume_cold(r, vid, st.dst_volume_of(vid), sizes.get(vid)
+                                 or r.src.value("volume", "show", vid, "-f", "value", "-c", "size"), st)
 
         if o.volumes_only:
             log("volumes copied; source down for %ds so far" % int(time.monotonic() - t_start))
