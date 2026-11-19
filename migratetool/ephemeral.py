@@ -5,18 +5,14 @@ properties, and the new VM boots from it. Cold only; the source VM is already st
 import hashlib
 import json
 import os
-import re
 import ssl
 import time
 import urllib.error
 import urllib.request
 
 from . import proc
+from .copyvol import GUEST_PROP_RE
 from .util import Die, jq_alt, jqs, log
-
-# hw_* and a short allowlist of os_* guest keys only: .properties also carries Glance-managed
-# fields (os_hash_value, os_hash_algo, os_hidden, stores) that reject any PATCH with a 400.
-GUEST_PROP_RE = re.compile(r"^(hw_|os_distro$|os_type$|os_secure_boot$|os_require_quiesce$|hypervisor_type$|architecture$|vm_mode$)")
 
 
 TRUE_WORDS = ("1", "true", "yes")

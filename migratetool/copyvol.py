@@ -125,7 +125,10 @@ def create_dest_volume(r, vid, st):
     copy_volume_props(r, vj, r.dvid)
 
 
-IMAGE_PROP_RE = re.compile(r"^(hw_|os_|hypervisor_type$|architecture$|vm_mode$)")
+# The guest keys a destination Nova needs: hw_* and a short allowlist of os_* keys. Image metadata also carries
+# Glance-managed fields (os_hash_value, os_hash_algo, os_hidden, stores): never copied, a Glance PATCH refuses
+# them, and an image made from the copy later would carry the source image's hash (7.2, B6: volumes too).
+GUEST_PROP_RE = re.compile(r"^(hw_|os_distro$|os_type$|os_secure_boot$|os_require_quiesce$|hypervisor_type$|architecture$|vm_mode$)")
 
 
 def copy_volume_props(r, vj, dvid):
@@ -134,7 +137,7 @@ def copy_volume_props(r, vj, dvid):
         r.dst.out("volume", "set", dvid, "--bootable")
     meta = jq_alt(vj.get("volume_image_metadata"), {})
     for k, v in (meta.items() if isinstance(meta, dict) else []):
-        if IMAGE_PROP_RE.search(k):
+        if GUEST_PROP_RE.search(k):
             r.dst.out("volume", "set", dvid, "--image-property", "%s=%s" % (k, jqs(v)))
 
 
