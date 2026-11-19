@@ -542,6 +542,20 @@ def quota_preflight(r, st, c, ports, vols, flavor_json, server=True, clone_vols=
     ceph_capacity_preflight(r, vols, c)
 
 
+def ephemeral_glance_preflight(r, c):
+    """7.2 (B2): what the Glance upload needs, checked while the source still runs: OS_CACERT loads, the
+    destination catalog has an image endpoint for OS_INTERFACE (default public)."""
+    from . import ephemeral
+    env = r.dst.env()
+    err = ephemeral.cacert_error(env)
+    if err:
+        c.failed("OS_CACERT %s cannot be loaded: %s" % (env["OS_CACERT"], err))
+    iface, url = ephemeral.image_endpoint(r, must=False)
+    if not url:
+        return c.failed(ephemeral.no_endpoint_message(iface, r.dst.rc))
+    out("  OK    image endpoint %s (%s)" % (url, iface))
+
+
 def ephemeral_space_preflight(r, server, c):
     """7.2 (B2): the snapshot of an ephemeral root disk is downloaded into the state directory: room for up
     to the flavor's disk size there (the server's embedded flavor, else 'flavor show' at the source)."""
@@ -750,6 +764,7 @@ def preflight(r, st):
         if o.mode != "cold":
             c.failed("--mode live needs boot-from-volume (an ephemeral disk has nothing to clone)")
         ephemeral_space_preflight(r, server, c)
+        ephemeral_glance_preflight(r, c)
     quota_preflight(r, st, c, ports, vols, flavor_json, server=not o.volumes_only)
     c.check("RBD access to pool " + r.pool, lambda: r.rbd("-p", r.pool, "ls"))
     iscsid_preflight(r, c)

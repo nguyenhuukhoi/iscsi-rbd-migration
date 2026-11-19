@@ -34,6 +34,31 @@ def tls_context(env):
     return None
 
 
+def cacert_error(env):
+    """Why OS_CACERT cannot be loaded ('' when it can, or is not set, or OS_INSECURE wins): the preflight check."""
+    if (env.get("OS_INSECURE") or "").strip().lower() in TRUE_WORDS or not env.get("OS_CACERT"):
+        return ""
+    try:
+        ssl.create_default_context(cafile=env["OS_CACERT"])
+    except (OSError, ssl.SSLError) as e:
+        return str(e)
+    return ""
+
+
+def no_endpoint_message(iface, rc):
+    return ("the destination catalog lists no %s image endpoint: set OS_INTERFACE in %s to an interface this host "
+            "reaches (public, internal or admin)" % (iface, rc))
+
+
+def image_endpoint(r, must=True):
+    """(interface, URL) of the destination's image endpoint: OS_INTERFACE of the destination openrc, default
+    public. must: a failing listing raises (migrate); else it reads as no endpoint (preflight)."""
+    iface = r.dst.env().get("OS_INTERFACE") or "public"
+    args = ("endpoint", "list", "--service", "image", "--interface", iface, "-f", "value", "-c", "URL")
+    urls = r.dst.out(*args) if must else r.dst.run(*args, stderr=proc.DEVNULL).stdout
+    return iface, next((u.strip() for u in urls.split("\n") if u.strip()), "")
+
+
 def _rest(method, url, token, body=None, ctype=None, length=None, ctx=None):
     """One Glance REST call; raises on a failed transfer or an HTTP status >= 400 (curl -sfS).
     No proxy, as the bash build unset the proxy variables for curl. ctx: tls_context() of the destination."""
@@ -92,14 +117,11 @@ def migrate_ephemeral_root(r, vm, st, sid):
     # 7.2 (B2): the interface the destination openrc asks for (OS_INTERFACE, default public), its TLS settings
     # (OS_CACERT / OS_INSECURE, as openstackclient reads them), and a fresh token right before each call: the
     # upload of a large root disk can outlive the token taken before it.
-    denv = r.dst.env()
-    iface = denv.get("OS_INTERFACE") or "public"
-    urls = r.dst.out("endpoint", "list", "--service", "image", "--interface", iface, "-f", "value", "-c", "URL")
-    url = next((u.strip() for u in urls.split("\n") if u.strip()), "")
+    # Both are checked by the preflight already (ephemeral_glance_preflight); these stops are the last resort.
+    iface, url = image_endpoint(r)
     if not url:
-        raise Die("the destination catalog lists no %s image endpoint: set OS_INTERFACE in %s to an interface this "
-                  "host reaches (public, internal or admin)" % (iface, r.dst.rc))
-    ctx = tls_context(denv)
+        raise Die(no_endpoint_message(iface, r.dst.rc))
+    ctx = tls_context(r.dst.env())
 
     def fresh_token():
         return r.dst.value("token", "issue", "-f", "value", "-c", "id")

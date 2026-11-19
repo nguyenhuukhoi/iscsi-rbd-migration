@@ -144,7 +144,7 @@ def app(w, steps, env=None):
     d = tempfile.mkdtemp(dir=WORK)
     wf, calls = os.path.join(d, "world.json"), os.path.join(d, "calls")
     w = json.loads(json.dumps(w))
-    w["glance_url"] = parity.GLANCE_URL
+    w.setdefault("glance_url", parity.GLANCE_URL)  # a case may set its own ("": no image endpoint)
     with open(wf, "w") as f:
         json.dump(w, f)
     open(calls, "w").close()
@@ -445,6 +445,18 @@ ok("B2 free space short -> FAIL", "  FAIL  free space in %s: " % r.state in r.ou
 r = app(eph_world(disk=0), [("plan", "eph01", PLAIN)])
 ok("B2 free space unknown (disk 0) -> WARN", "  WARN  free space not checked: the root disk size of flavor m1.small" in r.out,
    r.out)
+r = app(eph_world(), [("plan", "eph01", PLAIN)])
+ok("B2 preflight: the image endpoint of OS_INTERFACE (public) is found while the source runs",
+   "  OK    image endpoint %s (public)" % parity.GLANCE_URL in r.out and r.rc == [0], r.out)
+r = app(eph_world(), [("plan", "eph01", PLAIN)], env={"dst_rc": {"OS_CACERT": "/nonexistent-ca.pem"}})
+ok("B2 preflight: an OS_CACERT that cannot be loaded -> FAIL before the source stops",
+   "  FAIL  OS_CACERT /nonexistent-ca.pem cannot be loaded: " in r.out and r.rc == [1], r.out)
+w = eph_world()
+w["glance_url"] = ""
+r = app(w, [("migrate", "eph01", PLAIN)])
+ok("B2 preflight: no image endpoint for that interface -> FAIL, the source is never stopped",
+   "  FAIL  the destination catalog lists no public image endpoint: set OS_INTERFACE in " in r.out and r.rc == [1]
+   and idx(r.calls, "src\tserver stop") is None, (r.rc, r.out))
 
 # --- B3: detect_boot cross-check ---------------------------------------------------------------------------
 w = world()

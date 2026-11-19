@@ -357,6 +357,7 @@ V72_APP_OUT_DROP = (
     r"^  (OK    free space in |WARN  free space not checked)",  # Intended: 7.2 B2 (snapshot download room)
     r"^\[T\] destination volumes created; stopping the source now$",  # Intended: 7.2 A1
     r"^\[T\] downtime breakdown: ",                    # Intended: 7.2 D3
+    r"^  OK    image endpoint ",                        # Intended: 7.2 B2 (checked in the preflight)
 )
 # Calls only the app makes (read-only, dropped from its call list):
 V72_APP_CALLS_DROP = (
@@ -448,15 +449,6 @@ def v72_rule(b, p, p_impls):
     for n, step in enumerate(psteps):
         if n == 0 or (n - 1 < len(p_impls) and p_impls[n - 1] in ("py", "app")):
             psteps[n] = [c for c in step if not any(re.search(x, c) for x in V72_APP_CALLS_DROP)]
-    p["calls"] = [c for step in psteps for c in step if not c.startswith("#step\t")]
-    # Intended: 7.2 B5: a leftover clone goes through drop_volume: one more status read before its delete.
-    i = 0
-    while i + 2 < len(p["calls"]):
-        x, y, z = p["calls"][i:i + 3]
-        m = re.match(r"^src\tvolume show (\S+) -f value -c status$", x)
-        if m and y == x and z == "src\tvolume delete " + m.group(1):
-            del p["calls"][i]
-        i += 1
     steps = _steps(b["rawcalls"])
     for n, step in enumerate(steps):
         app_ran = n == 0 or (n - 1 < len(p_impls) and p_impls[n - 1] in ("py", "app"))
@@ -466,7 +458,27 @@ def v72_rule(b, p, p_impls):
         ref = [re.sub(r"^dst\tflavor show (\S+)$", r"dst\tflavor show \1 -f json", c) for c in ref]  # Intended: 7.2 A2
         ref = [c.replace("--interface internal", "--interface public") for c in ref]  # Intended: 7.2 B2
         steps[n] = a1_reorder(ref)
+        # Intended: 7.2 B2: the preflight looks the image endpoint up too: the app's first extra ones go.
+        ep = re.compile(r"^dst\tendpoint list --service image ")
+        if n < len(psteps):
+            extra = sum(1 for c in psteps[n] if ep.match(c)) - sum(1 for c in steps[n] if ep.match(c))
+            keep = []
+            for c in psteps[n]:
+                if extra > 0 and ep.match(c):
+                    extra -= 1
+                    continue
+                keep.append(c)
+            psteps[n] = keep
     b["calls"] = [c for step in steps for c in step if not c.startswith("#step\t")]
+    p["calls"] = [c for step in psteps for c in step if not c.startswith("#step\t")]
+    # Intended: 7.2 B5: a leftover clone goes through drop_volume: one more status read before its delete.
+    i = 0
+    while i + 2 < len(p["calls"]):
+        x, y, z = p["calls"][i:i + 3]
+        m = re.match(r"^src\tvolume show (\S+) -f value -c status$", x)
+        if m and y == x and z == "src\tvolume delete " + m.group(1):
+            del p["calls"][i]
+        i += 1
 
     def volume_az(text):  # Intended: 7.2 C6: the state 'options' line ends with VOLUME_AZ=
         m = re.search(r"(?:^| )AZ=(\S*)", text)

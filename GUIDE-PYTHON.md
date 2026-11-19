@@ -396,8 +396,8 @@ Dòng in ra (ví dụ):
 - Cloud không trả lời `openstack quota show --usage` (client cũ, thiếu quyền): `WARN … quota not checked`,
   **không chặn**.
 - Pool Ceph: FAIL khi `MAX AVAIL` (hoặc quota của pool) nhỏ hơn nhu cầu; WARN khi sau copy còn dưới 10% pool.
-  User `mig-xfer` thường chỉ có `profile rbd` nên `ceph df` bị từ chối: chỉ ra INFO. Muốn kiểm thì thêm caps
-  `mon 'allow r'` cho user đó.
+  `ceph df` cần quyền đọc mon: caps `mon 'profile rbd'` của `mig-xfer` đã có sẵn quyền đó, không phải cấp thêm.
+  Ceph từ chối (caps khác, không có lệnh `ceph`) thì chỉ ra INFO `Ceph pool capacity not checked: …`, không chặn.
 - `--volumes-only` và `migrate volume` kiểm phần volume (cả clone phía nguồn).
 
 ### 4c.3. Floating IP: cảnh báo, không chuyển (A3)
@@ -453,6 +453,9 @@ khi có FAIL. Hướng dẫn cài: [DEPLOY-PYTHON.md](DEPLOY-PYTHON.md) mục 0.
   (hoặc conf: `export OS_CACERT=…`) phải có `OS_CACERT`, nếu không upload báo `CERTIFICATE_VERIFY_FAILED`.
 - Preflight kiểm chỗ trống của `/var/lib/mig-migrate` so với disk của flavor nguồn (FAIL khi thiếu, WARN khi
   flavor disk 0/không đọc được).
+- Preflight kiểm luôn, khi VM nguồn còn chạy: `OS_CACERT` nạp được (`FAIL  OS_CACERT <path> cannot be loaded: …`)
+  và catalog đích có image endpoint của `OS_INTERFACE` (`  OK    image endpoint <url> (public)`, thiếu thì
+  `FAIL  the destination catalog lists no <iface> image endpoint …`).
 
 ## 5. Volume
 
