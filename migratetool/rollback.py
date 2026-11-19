@@ -1,13 +1,15 @@
 """Rollback of a VM state directory (bash cmd_rollback + drop_volume): delete the destination side,
 give the source back. Re-runnable: every step skips what is already gone. Works on state written
 by the bash build as well (same files)."""
+import json
 import os
 import re
 import time
+from datetime import datetime
 
 from . import config, proc
 from .copyvol import brick
-from .util import Die, lines, log, words
+from .util import Die, jqs, lines, log, re_escape, words
 
 GONE_RE = re.compile(r"no volume with a name or id|not found|could not be found", re.I)
 
@@ -61,6 +63,45 @@ def reassociate_floating_ips(r, st):
             log("re-associated floating IP %s with port %s" % (addr, pid))
 
 
+def _epoch(stamp):
+    """Nova's 'created' (2026-11-19T10:00:00Z) as an epoch; None when it does not parse."""
+    try:
+        return int(datetime.fromisoformat(str(stamp).strip().replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def delete_unrecorded_server(r, st):
+    """7.2 (C8): Nova created the destination server but 'server create' never returned its ID (a client
+    timeout): dst-server-id is empty. The one destination server of that name created after this run stopped
+    the source (t-stop) is that server; anything else (none, several, an older one) is left alone."""
+    try:
+        t_stop = int(st.read("t-stop").strip())
+    except ValueError:
+        return  # the run never reached the cutover: no server can have been created
+    name = jqs(st.json("server.json").get("name"))
+    res = r.dst.run("server", "list", "--name", "^%s$" % re_escape(name), "-f", "json", stderr=proc.DEVNULL)
+    try:
+        rows = json.loads(res.stdout or "[]") if res.rc == 0 else []
+    except ValueError:
+        rows = []
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        return
+    sid = rows[0].get("ID") or rows[0].get("id")
+    created = next((rows[0][k] for k in ("Created", "Created At", "created", "created_at") if rows[0].get(k)), None)
+    if created is None:  # 'server list' prints no creation time: ask the server itself
+        res = r.dst.run("server", "show", sid, "-f", "json", stderr=proc.DEVNULL)
+        try:
+            created = json.loads(res.stdout).get("created") if res.rc == 0 else None
+        except (ValueError, AttributeError):
+            created = None
+    when = _epoch(created) if created is not None else None
+    if not sid or when is None or when < t_stop:
+        return
+    r.dst.run("server", "delete", sid, "--wait")  # || true, as the recorded case above
+    log("deleted destination server %s found by name (its ID was never recorded)" % sid)
+
+
 def rollback_vm(r, st):
     if not st.exists("server.json"):
         raise Die("no state for %s in %s" % (st.arg, st.path))
@@ -70,6 +111,8 @@ def rollback_vm(r, st):
     if st.nonempty("dst-server-id"):
         log("delete destination server")
         r.dst.run("server", "delete", st.read("dst-server-id").rstrip("\n"), "--wait")  # || true
+    elif st.exists("volume-map"):
+        delete_unrecorded_server(r, st)
     # Other migrated VMs may be members; an empty group is harmless and a later migrate reuses it.
     if st.nonempty("dst-server-group"):
         log("INFO destination server group kept (%s): rollback never deletes a server group"
