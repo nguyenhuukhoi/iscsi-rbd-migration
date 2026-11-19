@@ -5,10 +5,15 @@ import os
 import time
 
 from . import config
+from .util import Die
 
 
 class StateDir:
     def __init__(self, arg, root=None):
+        # 7.2 (C5): the name typed becomes a directory name (and mig-snap-<name>): a '/' would nest it or leave
+        # STATE_ROOT. The server ID always works.
+        if "/" in arg or arg in (".", ".."):
+            raise Die("VM name %r cannot name a state directory: run with the server ID" % arg)
         self.arg = arg
         self.root = root or config.STATE_ROOT
         self.path = os.path.join(self.root, arg)
