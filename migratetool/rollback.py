@@ -123,14 +123,20 @@ def rollback_vm(r, st):
             r.src.out("volume", "delete", cid)
             log("deleted leftover clone " + cid)
     r.src.run("server", "unlock", sid)  # || true
-    # Reattach only the ports this run detached (--ip same). A run that failed before the detach
-    # step has no list; its ports are still attached and the device_id check skips them.
-    if st.exists("source-ports"):
-        pids = words(st.read("source-ports"))
-    else:
-        pids = [p["ID"] for p in st.json("port-ids.json")]
+    # Reattach the ports this run detached (--ip same). 7.2 (B1): source-ports (the ports and reserve ports
+    # recorded as they were detached) plus every port of port-ids.json, so that a port detached right before
+    # a failure, and not recorded yet, comes back too. Still attached somewhere (a run that failed before the
+    # detach step, --ip new): skipped by the device_id check.
+    pids = words(st.read("source-ports")) if st.exists("source-ports") else []
+    for p in st.json("port-ids.json"):
+        if p["ID"] not in pids:
+            pids.append(p["ID"])
     for pid in pids:
-        if r.src.try_value_inherit("port", "show", pid, "-f", "value", "-c", "device_id"):
+        res = r.src.run("port", "show", pid, "-f", "value", "-c", "device_id", stderr=proc.DEVNULL)
+        if res.rc != 0:
+            log("port %s no longer exists (Nova deleted it; its reserve port is reattached instead)" % pid)
+            continue
+        if res.stdout.rstrip("\n"):
             continue
         r.src.out("server", "add", "port", sid, pid)
         for _ in range(60):

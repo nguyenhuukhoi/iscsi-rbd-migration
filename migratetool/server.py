@@ -1,4 +1,5 @@
 """Ports and servers on both sides (bash detach_source_ports, keep_sg_ensure, create_destination)."""
+import re
 import shlex
 import time
 
@@ -6,6 +7,10 @@ from . import proc
 from .preflight import dst_server_groups_named
 from .context import flavor_name
 from .util import Die, ifs_split, jq_alt, jqs, log
+
+# 7.2 (B1): what Neutron/openstackclient say when the port really is gone ("No Port found for <id>"). Any other
+# failure of 'port show' (Neutron 5xx, an unreachable endpoint, an expired token) proves nothing.
+PORT_GONE_RE = re.compile(r"no port found|not found|could not be found|404", re.I)
 
 USER_DATA = """#cloud-config
 ssh_deletekeys: false
@@ -56,16 +61,24 @@ def detach_source_ports(r, vm, st, sid):
     for i, p in enumerate(st.json("port-ids.json")):
         pid = p["ID"]
         r.src.out("server", "remove", "port", sid, pid)
-        gone, dev = False, ""
+        gone, dev, last_err = False, "", ""
         for _ in range(60):
-            res = r.src.run("port", "show", pid, "-f", "value", "-c", "device_id", stderr=proc.DEVNULL)
+            res = r.src.run("port", "show", pid, "-f", "value", "-c", "device_id", stderr=proc.CAPTURE)
             if res.rc != 0:
-                dev, gone = "", True
-                break
+                if PORT_GONE_RE.search(res.stderr):
+                    dev, gone, last_err = "", True, ""
+                    break
+                # Not proof that Nova deleted it (re-creating its MAC+IP would fail anyway): ask again.
+                last_err = (res.stderr.strip().splitlines() or ["exit %d" % res.rc])[-1]
+                time.sleep(2)
+                continue
+            last_err = ""
             dev = res.stdout.rstrip("\n")
             if not dev:
                 break
             time.sleep(2)
+        if last_err:
+            raise Die("cannot read port %s after detach: %s" % (pid, last_err))
         if dev:
             raise Die("port %s still attached to %s" % (pid, dev))
         if gone:
