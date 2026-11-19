@@ -10,6 +10,7 @@ ends of the JSON statistics contract, so they cannot drift apart.
 import json
 import math
 import os
+import time
 
 from . import proc
 from .copyvol import attach_clone, drop_clone
@@ -29,7 +30,10 @@ def sync_volume_pass(r, vid, dvid, st, pass_no, first, final):
     if first:
         cmd.append("--first")
     # stdout: one JSON line of statistics; stderr: the "[blocksync] NN%" progress, passed through.
+    t0 = time.monotonic()
     res = proc.run(cmd + vflag, env=r.env, capture=True, stderr=proc.INHERIT)
+    if final:  # 7.2 (D3): only the cutover pass is inside the downtime window
+        r.t_copy += time.monotonic() - t0
     if res.rc != 0:
         raise Die("blocksync failed for %s (pass %s)" % (vid, pass_no))
     out = res.stdout.rstrip("\n")
@@ -46,7 +50,10 @@ def sync_volume_pass(r, vid, dvid, st, pass_no, first, final):
     if final and r.opts.verify == "full":
         log("full compare (cutover, --verify full)")
         img = "rbd:%s/volume-%s:id=%s:conf=%s" % (r.pool, dvid, r.cfg.RBD_USER, r.cfg.CEPH_CONF)
-        if proc.run(["qemu-img", "compare", "-f", "raw", "-F", "raw", r.device, img], env=r.env, capture=False).rc != 0:
+        t0 = time.monotonic()
+        rc = proc.run(["qemu-img", "compare", "-f", "raw", "-F", "raw", r.device, img], env=r.env, capture=False).rc
+        r.t_verify += time.monotonic() - t0
+        if rc != 0:
             raise Die("full verification failed for " + vid)
     drop_clone(r)
     return changed_mb

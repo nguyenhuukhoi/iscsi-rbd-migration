@@ -105,10 +105,15 @@ def cmd_migrate(r, st):
                                  or r.src.value("volume", "show", vid, "-f", "value", "-c", "size"), st)
 
         if o.volumes_only:
-            log("volumes copied; source down for %ds so far" % int(time.monotonic() - t_start))
+            total = time.monotonic() - t_start
+            log("volumes copied; source down for %ds so far" % int(total))
         else:
             create_destination(r, vm, st)
-            log("destination VM ACTIVE; control-plane downtime so far %ds" % int(time.monotonic() - t_start))
+            total = time.monotonic() - t_start
+            log("destination VM ACTIVE; control-plane downtime so far %ds" % int(total))
+        # 7.2 (D3): what the window was spent on; control-plane = the rest (openstack calls, waits, attach).
+        log("downtime breakdown: total %ds, copy %ds, verify %ds, control-plane %ds"
+            % (int(total), int(r.t_copy), int(r.t_verify), max(int(total - r.t_copy - r.t_verify), 0)))
     except BaseException:
         cleanup_attach(r)
         raise

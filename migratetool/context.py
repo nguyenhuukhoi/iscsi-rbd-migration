@@ -35,6 +35,10 @@ class Run:
         self.clone_time = ""
         self.device = ""
         self.dvid = ""
+        # 7.2 (D3): seconds spent inside the downtime window copying and verifying data (the rest is the
+        # control plane: openstack calls, waits, attach/detach)
+        self.t_copy = 0.0
+        self.t_verify = 0.0
 
     def check_project_scope(self):
         """An application credential cannot be rescoped: fail before touching anything."""

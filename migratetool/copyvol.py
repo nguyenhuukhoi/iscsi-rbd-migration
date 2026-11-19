@@ -198,6 +198,7 @@ def copy_volume_cold(r, vid, dvid, size, st):
     rc = _qemu(r, "convert", "-f", "raw", "-O", "raw", "-n", "--target-is-zero", "-m", r.cfg.COPY_STREAMS,
                "-W", r.device, img)
     stop_watch(r)
+    r.t_copy += time.monotonic() - t0
     if rc != 0:
         raise CommandFailed("qemu-img convert failed for %s (exit %d)" % (vid, rc))
     took = int(time.monotonic() - t0)
@@ -209,6 +210,7 @@ def copy_volume_cold(r, vid, dvid, size, st):
         r.watcher = Watcher(r.device, size, "verify").start()
         rc = _qemu(r, "compare", "-f", "raw", "-F", "raw", r.device, img)
         stop_watch(r)
+        r.t_verify += time.monotonic() - t0
         if rc != 0:
             raise Die("verification failed for " + vid)
         log("verify OK in %ds" % int(time.monotonic() - t0))
