@@ -7,6 +7,7 @@ environment, exactly as the bash build ran brick_attach.py.
 
   python -m migratetool.brick attach <volume-id>   -> prints the local device path on stdout
   python -m migratetool.brick detach <volume-id>   -> logs out and deletes this host's attachment
+  python -m migratetool.brick --check              -> prints "ok" when every module above imports ('migrate doctor')
 
 MIG_MULTIPATH=1 attaches through every portal the backend returns and insists on a dm-multipath
 device (PowerStore-style SANs); the default (0) keeps the single-path behaviour. Either way the
@@ -166,6 +167,9 @@ def detach(volume_id):
 
 
 def main():
+    if sys.argv[1:] == ["--check"]:  # 7.2 (D2): the imports at the top of this file succeeded
+        print("ok")
+        return
     if len(sys.argv) != 3 or sys.argv[1] not in ("attach", "detach"):
         sys.exit(__doc__)
     # Already root: run os-brick privileged calls in-process instead of spawning privsep.

@@ -157,6 +157,8 @@ def build_parser():
     vp = sub.add_parser("volume", help=text, description=text, formatter_class=fmt, epilog=VOLUME_EPILOG)
     vp.add_argument("volume", nargs="?", help="volume name or ID (alone: no selector options)")
     add_volume_args(vp, plan=False)
+    text = "read-only check of this host: programs, python modules, conf, openrcs and tokens, roles, RBD pools, iscsid"
+    sub.add_parser("doctor", help=text, description=text + "; exit 1 when a check fails. Run it before anything else.")
     rb = sub.add_parser("rollback", help="delete the destination objects, restore and start the source VM; or delete "
                                          "a volume copy",
                         description="delete the destination objects, restore and start the source VM; or delete a "
@@ -219,6 +221,13 @@ def _main(argv):
             raise Die("a volume goes alone: %s volume <volume> [--in-use] [--volume-type t] [--az z] [--verify v]; "
                       "a selection takes --project or --vm/--vm-file, not a volume" % prog())
         return selector.run("volume", rest)
+    if cmd == "doctor":
+        if "-h" in rest or "--help" in rest:
+            return _help([cmd, "--help"])
+        if rest:
+            raise Die("doctor takes no options")
+        from .doctor import run_doctor
+        return run_doctor()
     if cmd == "rollback":
         if len(rest) > 1:
             raise Die("rollback takes no options")
