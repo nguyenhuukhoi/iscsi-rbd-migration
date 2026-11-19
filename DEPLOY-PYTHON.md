@@ -263,3 +263,15 @@ Bổ sung P5:
   (12 kịch bản).
 - Trên lab thật mới chạy chỉ đọc 2 lệnh: `--project admin --available` và `--vm demo-vm`. Chưa chạy
   `--all`, và chưa chạy với project khác `admin`.
+
+## 12. Lỗi thường gặp khi dựng host mới (gặp thật 19/11)
+
+Cả loạt dưới đây chung một gốc: venv dựng tay mà bỏ qua mục 2–3. Dựng host mới cứ chạy trọn mục 2 rồi
+mục 3 một lượt trước khi cài app.
+
+| Triệu chứng | Nguyên nhân | Sửa |
+|---|---|---|
+| `pip install --no-build-isolation .` chết: metadata ra `UNKNOWN.egg-info`, `error: invalid command 'bdist_wheel'` | venv thiếu `setuptools>=61` / `wheel` (Ubuntu 22.04: setuptools 59 đi kèm Python 3.10) | `pip install -U pip setuptools wheel` (mục 3) rồi cài lại. Nâng mỗi pip là chưa đủ |
+| `ERROR: cannot list the source servers (--name ^<vm>$)` ngay sau dòng `logs in /var/log/mig-batch/…` | venv thiếu `python-openstackclient`, hoặc openrc nguồn sai (auth-url/mật khẩu/cert), hoặc API chỉ tới được qua proxy (app unset `http(s)_proxy` khi gọi — cần proxy thì khai `export https_proxy=…` trong migrate.conf) | Tra bằng tay: `source <SRC_RC>; openstack server list --long --name '^<vm>$'` — lỗi thật hiện ở đây. Thiếu client thì cài bộ 4 gói mục 3 |
+| `ModuleNotFoundError: No module named 'os_brick'` khi tới bước gắn volume | venv thiếu `os-brick` (tiến trình con `python -I -m migratetool.brick` import từ venv) | Bộ 4 gói mục 3 (nhớ `-c` upper-constraints); kèm gói hệ thống `open-iscsi` + `qemu-utils` (mục 2). Cài xong chạy lại đúng lệnh cũ — app tự tiếp tục từ state |
+| `volume-<id> not visible in pool <pool>: wrong RBD_POOL_MAP for type 'default', or <user> lacks caps on that pool` | Không gõ `--volume-type` nên Cinder dùng type mặc định của đích, mà backend của type đó ghi vào pool khác `RBD_POOL`/map đang khai | Khai `RBD_POOL_MAP="<type>:<pool>"` khớp backend và gõ `--volume-type` (GUIDE-PYTHON mục 2b.1b). `RBD_POOL` chỉ dành cho type ngoài map — đặt = pool của type mặc định. Volume lỗi đã nằm trong state: `migrate rollback <vm>` tự xóa. Map đúng rồi mà vẫn lỗi thì kiểm caps: `ceph auth get client.<RBD_USER>` |
