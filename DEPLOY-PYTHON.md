@@ -50,11 +50,17 @@ Venv này giống bản bash, đã có thì dùng lại:
 
 ```bash
 python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -U pip
+/opt/mig-venv/bin/pip install -U pip setuptools wheel
 /opt/mig-venv/bin/pip install \
   -c https://releases.openstack.org/constraints/upper/2026.1 \
   python-openstackclient python-cinderclient python-brick-cinderclient-ext os-brick
 ```
+
+`setuptools` (≥ 61) và `wheel` là bắt buộc vì bước cài app dùng `--no-build-isolation`: pip build bằng đúng
+setuptools/wheel của venv, không tự tải bản mới. Venv tạo trên Ubuntu mà bỏ qua dòng đó thì
+`pip install --no-build-isolation .` chết với đúng hai dấu hiệu này: metadata ra `UNKNOWN.egg-info`
+(setuptools cũ không đọc được `[project]` trong pyproject.toml) và `error: invalid command 'bdist_wheel'`
+(thiếu wheel) — chạy lại dòng `pip install -U pip setuptools wheel` là hết.
 
 App gọi lệnh `openstack` của venv qua subprocess, như bản bash: V7 chưa chuyển sang openstacksdk. Module
 `brick` import os-brick từ venv. Một bộ client 2026.1 dùng được cho cả 2 cloud. Với cloud nguồn chỉ cần
