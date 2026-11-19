@@ -3,7 +3,7 @@
 A line-by-line port of load_default_opts / parse_option_list / parse_options / apply_az_defaults /
 pool_for_type of migrate-vm.sh, including every message and the origin tracking.
 """
-import re
+import ipaddress
 
 from .util import Die, ifs_split
 
@@ -13,7 +13,6 @@ FLAG_OPTS = ("--start-source", "--keep-source-ports", "--volumes-only",
              "--in-use", "--flavor-fallback", "--no-server-group", "--no-copy-secgroup")
 VALUE_OPTS = ("--mode", "--volume-type", "--az", "--ip", "--flavor", "--security-group",
               "--server-group", "--max-passes", "--delta-limit", "--verify")
-IPV4_RE = re.compile(r"[0-9]{1,3}(\.[0-9]{1,3}){3}")
 
 
 class Options:
@@ -124,10 +123,13 @@ class Options:
                 v = val()
                 if v in ("same", "new"):
                     self.ipmode = v
-                elif IPV4_RE.fullmatch(v):
-                    self.ipmode, self.ipaddr = "addr", v
                 else:
-                    raise Die("--ip takes same, new or an IPv4 address" + suffix)
+                    # 7.2 (B4): a real address (999.1.1.1 matched the old regex and failed after the cutover).
+                    try:
+                        ipaddress.IPv4Address(v)
+                    except ValueError:
+                        raise Die("--ip takes same, new or an IPv4 address" + suffix)
+                    self.ipmode, self.ipaddr = "addr", v
                 i += 2
             elif a == "--start-source":
                 self.start_source = True; i += 1

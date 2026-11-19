@@ -1,6 +1,7 @@
 """Destination preflight: read-only checks, one '  OK    ' / '  FAIL  ' / '  INFO  ' / '  WARN  ' line
 each (bash preflight, keep_sg_preflight, flavor_fallback_preflight; P6: server group and security group
 copies, port fidelity). Never creates anything."""
+import ipaddress
 import json
 import os
 import re
@@ -542,6 +543,10 @@ def preflight(r, st):
             c.check("IP %s free" % ip, lambda: r.dst.try_value("port", "list", "--network", net, "--fixed-ip",
                                                               "ip-address=" + ip, "-f", "value", "-c", "ID") == "")
         elif o.ipmode == "addr":
+            # 7.2 (B4): Neutron answers a lookup of an address outside the network with an error, which the
+            # check below reads as "free".
+            if not in_subnet(o.ipaddr, cidr):
+                c.failed("IP %s is not in subnet %s of %s" % (o.ipaddr, cidr, net))
             c.check("IP %s free" % o.ipaddr, lambda: r.dst.try_value("port", "list", "--network", net, "--fixed-ip",
                                                                     "ip-address=" + o.ipaddr, "-f", "value", "-c", "ID") == "")
         if jqs(p.get("extra_ips")) != "0":
@@ -584,6 +589,14 @@ def preflight(r, st):
         from .livesync import preflight_checks
         preflight_checks(r, c)
     return not c.fail
+
+
+def in_subnet(addr, cidr):
+    """addr inside cidr; False when either one does not parse."""
+    try:
+        return ipaddress.ip_address(addr) in ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
 
 
 def systemctl_ok(action, unit, env):
