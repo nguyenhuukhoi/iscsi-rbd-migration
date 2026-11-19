@@ -11,12 +11,12 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 6 (bản bash:
 [DEVELOPING.md](DEVELOPING.md) mục 5).
 
-## [7.2.0] — 2026-11-19 · nhánh `feature/7.2-audit-fixes` (từ main `e4c419b`) · chờ review + gate lab
+## [7.2.0] — 2026-11-19 · nhánh `feature/7.2-audit-fixes` (từ main `e4c419b`) · review Fable + gate lab ĐẠT 200/0 (e2e 50, live 26, newip 26, extras 30, p4feat 24, p6feat 27, failure-injection 17 — TEST-REPORT-20261119-v72.md) · unit + parity 460/0
 
 Sửa toàn bộ phát hiện của [AUDIT-20261119.md](AUDIT-20261119.md) theo [DESIGN-V7-2.md](DESIGN-V7-2.md) (mã A1…D4
 giữ nguyên). Chỉ app Python; bản bash trong `archive/` không đổi. Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md)
 mục 4c. Test: `bash tests/unit/run.sh` (unit + parity, mục 5.3 của [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md));
-gate lab và TEST-REPORT 7.2 làm sau review.
+gate lab: [TEST-REPORT-20261119-v72.md](TEST-REPORT-20261119-v72.md).
 
 ### Đổi hành vi
 
@@ -45,7 +45,8 @@ gate lab và TEST-REPORT 7.2 làm sau review.
   lời quota: WARN, không chặn. `migrate volume` kiểm phần volume.
 - **A3** Floating IP: `ports.json` có `floating_ips` (khi có), `plan` in `  fip   <addr> on <mac>`, preflight WARN
   "not migrated", rollback gắn lại floating IP mất liên kết vào port giữ chỗ.
-- **B2** Preflight ephemeral kiểm chỗ trống `/var/lib/mig-migrate` so với disk của flavor.
+- **B2** Preflight ephemeral kiểm chỗ trống `/var/lib/mig-migrate` so với disk của flavor, `OS_CACERT` nạp được
+  và image endpoint của `OS_INTERFACE` (review 19/11: trước đó hai việc sau chạy sau khi đã tắt nguồn).
 - **B4** `--ip <addr>` phải là IPv4 thật; preflight FAIL `IP <addr> is not in subnet <cidr> of <net>`.
 - **C6** `--volume-az ZONE` / `MIG_VOLUME_AZ`: AZ Cinder của volume đích khi khác tên AZ compute. Header preflight
   ` volume-az=<x>`, file state `options` thêm `VOLUME_AZ=` cuối dòng.
