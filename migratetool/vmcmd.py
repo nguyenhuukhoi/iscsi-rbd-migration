@@ -17,6 +17,8 @@ def cmd_plan(r, st):
     for p in st.json("ports.json"):
         out("  port  %s %s %s sg=%s" % (jqs(p.get("network")), jqs(p.get("ip")), jqs(p.get("mac")),
                                         ",".join(jqs(s) for s in (p.get("security_groups") or []))))
+        for a in p.get("floating_ips") or []:
+            out("  fip   %s on %s" % (jqs(a), jqs(p.get("mac"))))
     for v in st.json("volumes.json"):
         out("  disk  %s %s %sGB bootable=%s" % (jqs(v.get("name")), jqs(v.get("id")), jqs(v.get("size")),
                                                jqs(v.get("bootable"))))

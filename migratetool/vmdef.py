@@ -1,6 +1,7 @@
 """Reading the source VM into the state directory (bash export_definition, detect_boot)."""
 import os
 
+from . import proc
 from .util import Die, jq_dump, jqs, lines
 
 
@@ -36,6 +37,12 @@ def export_definition(r, vm, st):
         for key in ("description", "dns_name"):
             if isinstance(pj.get(key), str) and pj.get(key):
                 entry[key] = pj[key]
+        # 7.2 (A3): a floating IP does not cross clouds. Recorded (only when there is one, as above) so that
+        # the preflight warns and rollback can re-associate it. A listing that fails reads as none.
+        fips = lines(r.src.run("floating", "ip", "list", "--port", p["ID"], "-f", "value", "-c", "Floating IP Address",
+                               stderr=proc.DEVNULL).stdout)
+        if fips:
+            entry["floating_ips"] = fips
         ports.append(entry)
     st.write("ports.json", jq_dump(ports))
 

@@ -32,6 +32,36 @@ def drop_volume(r, cloud, vid, label):
     log("deleted %s %s" % (label, vid))
 
 
+def _last_line(text):
+    return (text.strip().splitlines() or [""])[-1]
+
+
+def reassociate_floating_ips(r, st):
+    """7.2 (A3): a floating IP of a source port that lost it (Nova deleted the port it had created itself,
+    and Neutron dropped the association with it) goes onto the port now holding that slot: source-ports
+    line i (the reserve port, or the port itself) for ports.json entry i, else port-ids.json entry i.
+    One that is still associated is left alone; a failure is a WARN, never the end of the rollback."""
+    ports = st.json("ports.json")
+    if not any(p.get("floating_ips") for p in ports):
+        return
+    held = words(st.read("source-ports")) if st.exists("source-ports") else []
+    ids = [p["ID"] for p in st.json("port-ids.json")]
+    for i, p in enumerate(ports):
+        for addr in p.get("floating_ips") or []:
+            pid = held[i] if i < len(held) else (ids[i] if i < len(ids) else "")
+            res = r.src.run("floating", "ip", "show", addr, "-f", "value", "-c", "port_id", stderr=proc.CAPTURE)
+            if res.rc != 0:
+                log("WARN floating IP %s not re-associated: %s" % (addr, _last_line(res.stderr) or "floating ip show failed"))
+                continue
+            if res.stdout.strip() not in ("", "None"):
+                continue
+            res = r.src.run("floating", "ip", "set", "--port", pid, addr, stderr=proc.CAPTURE)
+            if res.rc != 0:
+                log("WARN floating IP %s not re-associated: %s" % (addr, _last_line(res.stderr) or "floating ip set failed"))
+                continue
+            log("re-associated floating IP %s with port %s" % (addr, pid))
+
+
 def rollback_vm(r, st):
     if not st.exists("server.json"):
         raise Die("no state for %s in %s" % (st.arg, st.path))
@@ -110,6 +140,7 @@ def rollback_vm(r, st):
         if r.src.try_value_inherit("port", "show", pid, "-f", "value", "-c", "device_id") != sid:
             raise Die("port %s did not reattach" % pid)
         log("reattached source port " + pid)
+    reassociate_floating_ips(r, st)
     if r.src.try_value_inherit("server", "show", sid, "-f", "value", "-c", "status") == "SHUTOFF":
         r.src.out("server", "start", sid)
     r.wait_server(r.src, sid, "ACTIVE")

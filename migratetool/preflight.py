@@ -192,6 +192,11 @@ def port_fidelity_preflight(r, p, i, vmname, c):
         else:
             r.dns_copy.add(i)
             out("  INFO  port %s: dns_name %s copied" % (mac, dns))
+    # 7.2 (A3): the floating IP stays with the source cloud; only the fixed address travels.
+    fips = [jqs(a) for a in (p.get("floating_ips") or [])]
+    if fips:
+        out("  WARN  port %s: floating IP %s not migrated (a floating IP does not cross clouds): allocate one at the "
+            "destination and update DNS" % (mac, ", ".join(fips)))
 
 
 def load_flavor_map(r):
