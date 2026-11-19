@@ -515,3 +515,83 @@ grep, nên phải sửa theo.
 
 Không gọi cloud thật, không cài gì vào `/opt/mig-venv` (vẫn build P5 `7.0.0.dev1`). Để lại trên mig-host:
 thư mục `/root/v7h-p6` (harness + output `p6-*.txt`).
+
+## Gate lab 7.1 — cloud thật (19/11, Fable chạy + chấm)
+
+Build kiểm: nhánh `feature/p6-port-fidelity`, HEAD `54390de` (`7.1.0.dev1`, **đã bỏ hẳn `--keep-server-group`**),
+cài vào `/opt/mig-venv` trên mig-host. *Ghi chú quy trình: 2 lần cài build trong ngày do Fable tự làm — lỡ so với
+quy tắc "triển khai giao Opus" user siết cùng ngày; kết quả không ảnh hưởng (pip install từ cùng source), từ giờ
+cài/deploy giao Opus.*
+
+### Harness mới `p6feat.sh` (Fable viết từ DESIGN, không nhìn code) — 27 check
+
+Fixtures: `p6vip` (SG `p6web` 7 rule gồm rule tự trỏ proto 112 + 5432→`p6db`; `p6db` 3 rule có 5432→`p6web` tạo
+**vòng tham chiếu**; server group `p6grp` soft-anti-affinity; pairs `192.0.2.99` (VIP theo MAC port) +
+`192.0.2.98,mac=00:00:5e:00:01:05` (VRRP); description "vip holder") và `p6nosec` (port
+`--disable-port-security --no-security-group`). Phủ: AZ tự tìm, SG copy đệ quy + vòng, `--no-copy-secgroup` =
+hành vi 7.0, migrate/rollback/reuse, PS-off, die PS-off+`--security-group`, WARN `--ip new` bỏ pairs, reserve port
+fidelity, SG tạo trước khi tắt nguồn, policy probe bằng member thật.
+
+### p6feat: 3 lượt, mọi FAIL đều do harness/môi trường — tool 0 lỗi
+
+| Lượt | Lệnh | Kết quả | Chẩn đoán FAIL (bằng chứng) |
+|---|---|---|---|
+| r1 (`p6feat-r1.log`) | `bash p6feat.sh` | 22/4 (P3k, P6a, P6b, cleanup) | (1) **Lab không lưu `dns_name`**: `openstack port create --dns-name testhost` echo về giá trị nhưng `port show` ra `None` — Neutron quảng cáo `dns-integration` nhưng ML2 thiếu extension driver → bỏ fixture dns, nhánh chép dns chỉ phủ bằng giả lập (mục P6 ở trên). (2) Bug harness: `jq -r '.dns_name'` trên null in chuỗi `"null"` → đổi `// empty`. (3) cleanup: 5 volume BFV vô danh rò (Cinder giữ attachment sau khi xóa server → delete trượt im lặng) + xóa SG trượt vì 2 group trỏ vòng nhau → thêm quét volume vô danh retry 12×5s + xóa hết rule trước rồi mới xóa group |
+| r2 (`p6feat-r2.log`) | `bash p6feat.sh` | 24/3 (P1b, P3b, P3c) | Nguồn `p6web` còn **0 rule** khi test chạy: reset đầu lượt xóa group trượt (`409 in use`) vì 2 port `mig-reserve-p6vip-0` DOWN **mồ côi** (từ r1+r2) vẫn gắn `p6web` — xóa VM đã-rollback thì Nova chỉ detach, reserve port là user-created nên ở lại giữ SG (hành vi chuẩn từ thời bash). Fix harness: quét `mig-reserve-p6*` trong reset + cleanup |
+| r3 (`p6feat.log`) | `bash p6feat.sh` | **27/0** | — |
+
+**Ghi chú vận hành** (từ r2): sau `rollback`, nếu xóa VM nguồn bằng tay thì port `mig-reserve-*` không mất theo —
+phải xóa port đó riêng, nếu không nó giữ SG/IP mãi.
+
+**Policy probe (P9, ghi nhận không chấm)**: user member thật ở src tạo port với `allowed-address-pairs` rc=0 và
+`--disable-port-security` rc=0 — lab không chặn member. Production upstream mặc định
+`admin_or_network_owner` cho 2 thao tác này → trước khi migrate bằng tài khoản member nên probe lại.
+
+### Sửa suite cũ theo luật máy móc (backup giữ trên mig-host)
+
+| Đợt | Backup | Sed |
+|---|---|---|
+| 1 — AZ prefix mới `nova-` | `p4feat.sh.p5` | 5 dòng `az-web-anti` → `nova-web-anti` (C1 group test; tên group đích giờ mang prefix AZ) |
+| 2 — bỏ keep | `p4feat.sh.keep71` | (a) `s/ --keep-server-group//g`; (b) B4: `MIG_DEFAULT_OPTS="--keep-server-group --verify none"` → `"--no-copy-secgroup --verify none"`; (c) B4a: grep `source VM is in no server group` (dòng đã bỏ) → grep header ` no-copy-secgroup` |
+
+4 suite regression còn lại (e2e/live/newip/extras) chạy **nguyên văn không sửa**.
+
+### Kết quả 2 lần gate
+
+Gate lần 1 (build cùng code P6, **trước** khi bỏ keep; log `gate71-*.log`) và gate chốt (build `54390de`; log
+`gate71f-*.log`). Gate chốt chạy nối đuôi dưới nohup:
+
+```
+ssh root@172.28.83.109 'source /opt/mig-venv/bin/activate && pip install -q --no-build-isolation /root/migrate-py \
+  && migrate --version && migrate plan x --keep-server-group 2>&1 | head -1; \
+  cd /root/mig-lab/tests && rm -f gate71f.done gate71f-*.log && nohup bash -c \
+  "bash e2e-migrate-py.sh > gate71f-e2e.log 2>&1; bash live-migrate-py.sh > gate71f-live.log 2>&1; \
+   bash newip-voltype-py.sh > gate71f-newip.log 2>&1; bash extras-py.sh > gate71f-extras.log 2>&1; \
+   bash p4feat.sh > gate71f-p4feat.log 2>&1; bash p6feat.sh > gate71f-p6feat.log 2>&1; \
+   touch gate71f.done" >/dev/null 2>&1 </dev/null & disown'
+```
+
+Smoke ngay sau cài: `migrate --version` → `migrate 7.1.0.dev1`; `migrate plan x --keep-server-group` →
+`ERROR: unknown option --keep-server-group` (đúng hành vi bỏ hẳn).
+
+| Suite | Gate lần 1 | Gate chốt (`54390de`) |
+|---|---|---|
+| e2e-migrate-py.sh | 50/0 (WARN 0) | **50/0** (WARN 0) |
+| live-migrate-py.sh | 26/0 | **26/0** |
+| newip-voltype-py.sh | 26/0 | **26/0** |
+| extras-py.sh | 30/0 | **30/0** |
+| p4feat.sh | 24/0 (bản sed đợt 1, còn keep) | **24/0** (bản sed đợt 2, không keep) |
+| p6feat.sh | 27/0 (= r3, chạy riêng) | **27/0** |
+
+Tổng gate chốt: **183 PASS / 0 FAIL**. Mặc định mới (tự copy SG + server group theo nguồn, prefix AZ `nova-`)
+không phá regression nào; suite cũ chỉ để lại thêm `nova-mig-vm-sg`/`nova-default` ở đích (by design — SG copy
+mặc định, các check cũ không bám vào).
+
+### Baseline sau gate
+
+- src: đúng 2 volume `demo-root`/`demo-data` (in-use, demo-vm), không volume vô danh.
+- dst: 0 volume; SG còn `default`×6, `mig-sg-b`, `mig-vm-sg` (có sẵn) + `nova-default`×2, `nova-mig-vm-sg`
+  (suite để lại by design). Fixtures p6 (`nova-p6web`/`nova-p6db`/`nova-p6grp`) đã dọn sạch.
+- leak-grep toàn bộ commit nhánh: rỗng.
+
+**Kết luận: Gate lab 7.1 ĐẠT.** Nhánh `feature/p6-port-fidelity` sẵn sàng cho user quyết merge.
