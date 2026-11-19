@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 
-from . import config, proc
+from . import proc
 from .util import CommandFailed, Die, jq_alt, jqs, log
 from .vmdef import dest_volume_name
 
@@ -142,14 +142,15 @@ def copy_volume_props(r, vj, dvid):
 
 
 # --- clone ------------------------------------------------------------------------------------
-def attach_clone(r, vid):
+def attach_clone(r, vid, st):
     """Sets r.clone, r.clone_time (UTC, clone request) and r.device."""
     r.clone_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     r.clone = r.src.value("volume", "create", "mig-clone-" + vid, "--source", vid, "-f", "value", "-c", "id")
     r.wait_volume(r.src, r.clone, "available")
     # stderr goes to a file, not /dev/null: brick's own guard messages (multipath, size/LUN
-    # mismatch) are the whole point of having it.
-    err = os.path.join(config.STATE_ROOT, "brick-attach.err")
+    # mismatch) are the whole point of having it. 7.2 (C4): the run's own state directory, so that two
+    # runs on one host do not overwrite each other's message.
+    err = st.p("brick-attach.err")
     res = brick(r, "attach", r.clone, err)
     r.device = res.stdout.rstrip("\n")
     if res.rc == 0:
@@ -186,7 +187,7 @@ def _qemu(r, *args):
 
 
 def copy_volume_cold(r, vid, dvid, size, st):
-    attach_clone(r, vid)
+    attach_clone(r, vid, st)
     log("clone attached at " + r.device)
     img = "rbd:%s/volume-%s:id=%s:conf=%s" % (r.pool, dvid, r.cfg.RBD_USER, r.cfg.CEPH_CONF)
 

@@ -22,7 +22,7 @@ CHUNK = 4194304
 def sync_volume_pass(r, vid, dvid, st, pass_no, first, final):
     """One blocksync pass from a fresh clone; returns the pass delta in MB (bash CHANGED_MB)."""
     vflag = ["--verify", "none"] if r.opts.verify == "none" else ["--verify", "readback"]
-    attach_clone(r, vid)
+    attach_clone(r, vid, st)
     # -I: the script's own directory (this package) must not shadow the modules blocksync and librbd import.
     cmd = [r.cfg.SYS_PY, "-I", BLOCKSYNC, "--device", r.device, "--pool", r.pool, "--image", "volume-" + dvid,
            "--id", r.cfg.RBD_USER, "--conf", r.cfg.CEPH_CONF, "--state", st.p("hash-%s.bin" % vid)]

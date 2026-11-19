@@ -14,11 +14,10 @@ GONE_RE = re.compile(r"no volume with a name or id|not found|could not be found"
 
 def drop_volume(r, cloud, vid, label):
     """Deletes it once settled; gone is fine, in-use is refused."""
-    err = os.path.join(config.STATE_ROOT, "volume-show.err")
-    res = cloud.run("volume", "show", vid, "-f", "value", "-c", "status", stderr=err)
+    # 7.2 (C4): captured, no shared volume-show.err file under STATE_ROOT.
+    res = cloud.run("volume", "show", vid, "-f", "value", "-c", "status", stderr=proc.CAPTURE)
     if res.rc != 0:
-        with open(err, errors="replace") as f:
-            text = f.read()
+        text = res.stderr
         if not GONE_RE.search(text):
             raise Die("cannot read %s %s: %s" % (label, vid, (text.splitlines() or [""])[-1]))
         log("%s %s already gone" % (label, vid))
