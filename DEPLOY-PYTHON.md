@@ -232,13 +232,21 @@ Vị trí state và log:
 Mọi mục "chưa test" của bản bash vẫn còn nguyên: [DEPLOY.md](DEPLOY.md) mục 10 (SAN thật, multipath Dell,
 `--keep-server-group` với rules, microversion < 2.64…).
 
-7.1 (P6) mới qua giả lập, chưa qua lab: copy SG/server group `<AZ>-<tên>`, port pairs/port security/dns_name
-(policy Neutron với creds member, extension `dns-integration`). Trước khi dùng thật đọc
-[GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 4b.6 (chuyển từ 7.0: group `az-*` cũ không được dùng lại, SG cùng tên
-không còn là mặc định, cloud nhiều AZ cần `--az`/`MIG_AZ`).
+7.1 (P6) đã qua lab 19/11 (gate chốt 183/0, gồm 27 check P6 trên cloud thật — TEST-REPORT-20261118-v7.md
+mục "Gate lab 7.1"). Còn CHƯA test trên hệ thật:
 
-Riêng app, đã chạy trên lab: 5 bộ test cũ (140 check) và 24 check feature V3–V6. Chưa chạy trên hệ production
-thật. Lần đầu nên:
+- **Policy Neutron production với creds member**: tạo port mang pairs / tắt port security mặc định upstream cần
+  admin hoặc chủ network; lab không chặn nên chưa chứng minh được nhánh bị-chặn. Probe trước bằng chính creds
+  sẽ dùng (tạo thử 1 port với `--allowed-address`, rồi xóa).
+- **`dns-integration` thật**: lab quảng cáo extension nhưng KHÔNG lưu `dns_name` (ML2 thiếu driver — create
+  echo giá trị, `port show` ra `None`), nên nhánh chép dns_name dương tính mới phủ bằng giả lập. Trên cloud
+  đích thật, kiểm bằng `openstack port create --dns-name test … && openstack port show … -c dns_name` trước.
+
+Trước khi dùng thật đọc [GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 4b.6 (chuyển từ 7.0: group `az-*` cũ không
+được dùng lại, SG cùng tên không còn là mặc định, cloud nhiều AZ cần `--az`/`MIG_AZ`).
+
+Riêng app, đã chạy trên lab: 5 bộ test cũ (140 check), 24 check feature V3–V6 và 27 check P6. Chưa chạy trên
+hệ production thật. Lần đầu nên:
 
 - dùng một VM test, đi đúng thứ tự mục 10;
 - so state dir và log với một lần chạy bản bash nếu còn giữ.

@@ -306,9 +306,16 @@ Ví dụ VM keepalived: port `198.51.100.50`, pairs `198.51.100.99` (VIP) và `1
   (`PortNotUsableDNS`, VM đích lên ERROR) và tự đặt `dns_name` = hostname khi có extension. Không đủ điều kiện thì
   preflight in WARN, port không mang `dns_name`, migrate vẫn chạy. Ví dụ VM `app01`, `dns_name app01`: chép;
   `dns_name web-vip`: WARN.
+  ⚠ Có cloud **quảng cáo `dns-integration` nhưng không lưu** (ML2 thiếu extension driver): `port create
+  --dns-name` echo về giá trị nhưng `port show` ra `None` — tool chép xong mà đích vẫn trống, không có lỗi nào.
+  Nghi ngờ thì kiểm đích trước: `openstack port create --dns-name test … && openstack port show … -c dns_name`.
 - Port giữ chỗ phía nguồn (`mig-reserve-<vm>-<i>`, khi Nova tự xóa port của nó lúc tháo) mang đủ pairs, port
   security, description như port gốc, nên rollback gắn lại vẫn đúng hành vi mạng.
-- Tạo port với pairs hoặc tắt port security cần quyền admin hoặc chủ network (policy Neutron mặc định).
+  ⚠ Port này là port user-created: sau rollback, nếu xóa VM nguồn bằng tay thì Nova chỉ **detach** nó chứ không
+  xóa — port DOWN ở lại giữ IP và security group (chặn cả việc xóa SG đó). Xóa VM xong phải xóa port
+  `mig-reserve-*` của nó riêng: `openstack port list --device-owner "" | grep mig-reserve`.
+- Tạo port với pairs hoặc tắt port security cần quyền admin hoặc chủ network (policy Neutron mặc định —
+  lab có thể không chặn member, production nên probe trước bằng chính creds sẽ dùng).
 
 ### 4b.6. Chuyển từ 7.0 lên 7.1
 

@@ -7,8 +7,10 @@ choose volume type / flavor / security group, ephemeral VMs via Glance, full rol
 **From v7 the tool is one Python app, `migrate`** (package `migratetool/`, installed with pip into
 `/opt/mig-venv`). It replaces `migrate-vm.sh` and `migrate-batch.sh`, which now live in
 [archive/](archive/README.md). The app keeps the bash build's behaviour, conf file and state
-format (state is shared both ways, so either build can roll back the other's runs). It passes the
-same 140 lab checks plus 24 feature checks: see [DESIGN-V7.md](DESIGN-V7.md),
+format (state is shared both ways, so either build can roll back the other's runs). Since 7.1 the
+destination VM also gets copies of the source's security groups, server group and port details
+(allowed-address pairs, port security, description, dns_name) by default. The final lab gate passes
+183 checks across 6 suites: see [DESIGN-V7.md](DESIGN-V7.md),
 [TEST-REPORT-20261118-v7.md](TEST-REPORT-20261118-v7.md) and [CHANGELOG.md](CHANGELOG.md).
 
 | | Python app `migrate` (current, v7+) | Bash build (archived, v1–v6) |

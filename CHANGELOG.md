@@ -11,7 +11,7 @@ commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migra
 Cách thêm một mục mới cho bản sau: xem [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 6 (bản bash:
 [DEVELOPING.md](DEVELOPING.md) mục 5).
 
-## [7.1.0] (đang làm: `7.1.0.dev1`) — 2026-11-18 · nhánh `feature/p6-port-fidelity` (từ 7.0.0 `a4ecb38`) · P6 code + giả lập xong, chờ Fable review và lab
+## [7.1.0] (đang làm: `7.1.0.dev1`) — 2026-11-18 · merge main 19/11 · review + gate lab ĐẠT 183/0 (e2e 50, live 26, newip 26, extras 30, p4feat 24, p6feat 27 — TEST-REPORT-20261118-v7.md mục "Gate lab 7.1")
 
 Phase P6 của [DESIGN-V7.md](DESIGN-V7.md): port, security group và server group ở đích giống nguồn. Chỉ app
 Python; bản bash trong `archive/` không đổi. Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 4b (có phần chuyển
