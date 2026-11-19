@@ -247,6 +247,32 @@ cmp migratetool/blocksync.py archive/blocksync.py                  # bundled blo
 grep -rnE '<pattern thông tin nội bộ: IP lab, proxy, mật khẩu, user thật>' <các file sắp commit>   # phải rỗng
 ```
 
+## 7. Chống leak trước khi push
+
+Repo này public. Người push chịu trách nhiệm soát secret trên **đúng các commit sắp được đẩy lên**
+(không chỉ HEAD — một commit trung gian mang secret rồi commit sau xóa đi vẫn là leak):
+
+```bash
+# range = những gì origin chưa có
+git rev-list origin/main..HEAD | while read c; do
+  LC_ALL=C git grep -naE -f <pattern-file> "$c" && echo "DIRTY: $c"
+done    # phải rỗng; ghi vào TEST-REPORT: "leak-grep: rỗng"
+```
+
+Pattern 2 tầng:
+
+- **Tầng chung** (an toàn, nêu được ở đây): `-----BEGIN [A-Z ]*PRIVATE KEY`,
+  key Ceph/appcred `(^|[^A-Za-z0-9+/])AQ[A-Za-z0-9+/=]{30,}`, `OS_PASSWORD=` mang giá trị thật
+  (không phải placeholder `<...>`/`$VAR`/`CHANGE_ME`).
+- **Tầng secret thật** (mật khẩu lab/production nguyên văn): nằm **ngoài repo**, file
+  `../leak-patterns.txt` cạnh thư mục repo trên máy vận hành — mỗi dòng một ERE, dòng `#` là chú thích.
+  Không bao giờ chép secret nguyên văn vào file trong repo, commit message hay report — kể cả làm
+  "chuỗi lệnh mẫu" trong báo cáo (đã từng dính: commit nháp mang mật khẩu thật phải gc).
+
+Máy vận hành chính có thêm lưới đỡ: hook local `.git/hooks/pre-push` tự chạy đúng phép quét trên
+cho mọi ref sắp push và chặn push khi có match. Hook **không versioned** — clone mới không có,
+trách nhiệm soát tay vẫn là chính.
+
 Thêm một option mới: theo checklist [DEVELOPING.md](DEVELOPING.md) mục 7, với các chỗ tương ứng trong app:
 
 | Việc | Chỗ trong app |
