@@ -75,10 +75,11 @@ def presync(r, vids, st):
 
 def check_numbers(opts):
     """bash compared these with [ -ge ]/[ -le ]: a non-number never matched, so the pre-sync loop
-    of a bad --max-passes never ended. Refuse them before anything starts."""
-    for opt, value in (("--max-passes", opts.max_passes), ("--delta-limit", opts.delta_limit_mb)):
-        if not value.isdigit():
-            raise Die("%s takes a whole number, not '%s'" % (opt, value))
+    of a bad --max-passes never ended. Refuse them before anything starts. 7.2 (C2): --max-passes 0 ran
+    as 1: at least one pass is asked for explicitly."""
+    for opt, value, least in (("--max-passes", opts.max_passes, 1), ("--delta-limit", opts.delta_limit_mb, 0)):
+        if not (value.isdigit() and int(value) >= least):
+            raise Die("%s takes a whole number >= %d, not '%s'" % (opt, least, value))
 
 
 def final_pass(r, vid, st):
