@@ -1,10 +1,18 @@
 """Output and failure helpers: the exact line shapes of the bash build (log, die, preflight)."""
 import json
 import os
+import re
 import sys
 import time
 
 UUID_RE = r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
+RE_ESCAPE = re.compile(r"([][\\.*^$(){}?+|])")  # the batch's sed 's/[][\.*^$(){}?+|]/\\&/g'
+
+
+def re_escape(s):
+    """A name as a literal inside Nova's --name regex ('server list --name ^<name>$'). 7.2 (C1): one helper
+    for the selector, the export's duplicate check and the preflight's destination name check."""
+    return RE_ESCAPE.sub(r"\\\1", s)
 
 
 class Die(Exception):

@@ -2,14 +2,14 @@
 import os
 
 from . import proc
-from .util import Die, jq_dump, jqs, lines
+from .util import Die, jq_dump, jqs, lines, re_escape
 
 
 def export_definition(r, vm, st):
     st.create()
     # Nova allows duplicate names in a project; "server show <name>" then fails with an
     # unhelpful OSC error. Zero matches is fine: the argument may itself be a server ID.
-    ids = lines(r.src.out("server", "list", "--name", "^%s$" % vm, "-f", "value", "-c", "ID"))
+    ids = lines(r.src.out("server", "list", "--name", "^%s$" % re_escape(vm), "-f", "value", "-c", "ID"))
     if len(ids) > 1:
         raise Die("%d servers are named '%s' in the source project: %s — re-run with the server ID "
                   "(migrate/plan/rollback all take it)" % (len(ids), vm, " ".join(ids)))

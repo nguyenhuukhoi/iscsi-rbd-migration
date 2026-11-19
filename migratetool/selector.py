@@ -15,7 +15,7 @@ from . import config, proc
 from .clouds import Cloud, base_env
 from .livesync import check_numbers
 from .options import FLAG_OPTS, VALUE_OPTS, Options
-from .util import UUID_RE, Die, jq_dump, log, out, prog
+from .util import RE_ESCAPE, UUID_RE, Die, jq_dump, log, out, prog, re_escape
 
 # The child entry: one VM or one volume, never a selection (no recursion, no prompt).
 # -I (isolated): the child imports the installed package even when the current directory holds a
@@ -28,7 +28,6 @@ SCOPES = ("--available", "--attached", "--all")
 VOLUME_PASS = ("--volume-type", "--az", "--verify", "--mode")  # what a lone volume accepts (batch VOLPASS)
 IN_USE_ONE = ("--in-use copies one attached volume: migrate volume <volume> --in-use (the attached volumes of a "
               "selected VM go with their VM)")
-RE_ESCAPE = re.compile(r"([][\\.*^$(){}?+|])")  # the batch's sed 's/[][\.*^$(){}?+|]/\\&/g'
 
 
 def _add_list(dest, text):
@@ -320,7 +319,7 @@ class Runner:
         else:
             for v in s.vms:
                 n += 1
-                got = self.listing(n, "--name", "^" + RE_ESCAPE.sub(r"\\\1", v) + "$")
+                got = self.listing(n, "--name", "^" + re_escape(v) + "$")
                 if not got and re.fullmatch(UUID_RE, v):
                     res = self.src.run("server", "show", v, "-f", "json", stderr=proc.DEVNULL)
                     got = []

@@ -9,7 +9,7 @@ import shutil
 
 from . import azname, config, proc, secgroups
 from .context import flavor_name
-from .util import Die, ifs_split, jq_alt, jqs, lines, out, prog
+from .util import Die, ifs_split, jq_alt, jqs, lines, out, prog, re_escape
 from .vmdef import dest_volume_name
 
 # A dns_name Nova accepts on a port it is given: Nova refuses one that is not the new instance's hostname
@@ -625,7 +625,7 @@ def preflight(r, st):
         # A same-named server already on the destination means an earlier migration of
         # this VM (finished, or interrupted after create). Proceeding would duplicate it.
         vmname = jqs(server.get("name"))
-        dsid = lines(r.dst.out("server", "list", "--name", "^%s$" % vmname, "-f", "value", "-c", "ID"))
+        dsid = lines(r.dst.out("server", "list", "--name", "^%s$" % re_escape(vmname), "-f", "value", "-c", "ID"))
         dsid = dsid[0] if dsid else ""
         if dsid and dsid != st.read("dst-server-id").rstrip("\n"):
             c.failed("destination already has a server named %s (%s) from an earlier migration — inspect it; to redo "
