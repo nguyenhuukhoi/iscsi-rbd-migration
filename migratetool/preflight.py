@@ -283,21 +283,19 @@ def flavor_fallback_preflight(r, st, c):
     return dj if isinstance(dj, dict) else {}
 
 
-# --- destination quota (7.2, A2) ------------------------------------------------------------------
-# What the VM takes at the destination, checked against the destination project's free quota before
-# anything is created. Resource names as 'openstack quota show --usage' prints them (openstackclient
-# renames some Neutron ones: secgroups, secgroup-rules); the left one is the name in our lines.
-QUOTA_NAMES = (
-    ("instances", ("instances",)),
-    ("cores", ("cores",)),
-    ("ram", ("ram",)),
-    ("volumes", ("volumes",)),
-    ("gigabytes", ("gigabytes",)),
-    ("ports", ("ports", "port")),
-    ("security_groups", ("secgroups", "security_groups", "security-groups", "security_group")),
-    ("security_group_rules", ("secgroup-rules", "security_group_rules", "security-group-rules",
-                              "security_group_rule")),
-)
+# --- quota and capacity (7.2, A2) ------------------------------------------------------------------
+# Everything one run consumes, checked on both clouds before anything is created. Resource names as
+# 'openstack quota show --usage' prints them (openstackclient renames some Neutron ones: secgroups,
+# secgroup-rules; Cinder's per-type ones are volumes_<type>, gigabytes_<type>); the first name of each entry
+# is the one in our lines.
+QUOTA_ALIASES = {
+    "ports": ("ports", "port"),
+    "security_groups": ("secgroups", "security_groups", "security-groups", "security_group"),
+    "security_group_rules": ("secgroup-rules", "security_group_rules", "security-group-rules", "security_group_rule"),
+}
+# 'limits show --absolute' names of the per-group member limit (Nova API / openstacksdk spellings).
+GROUP_MEMBER_LIMITS = ("maxServerGroupMembers", "max_server_group_members", "server_group_members")
+GiB = 1073741824
 
 
 def _whole(v):
@@ -306,6 +304,75 @@ def _whole(v):
         return int(str(v).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _quota_table(cloud, side):
+    """{resource: row} of 'quota show --usage -f json' (the token's project); None after a WARN line."""
+    res = cloud.run("quota", "show", "--usage", "-f", "json", stderr=proc.CAPTURE)
+    rows = None
+    if res.rc == 0:
+        try:
+            rows = json.loads(res.stdout or "")
+        except ValueError:
+            rows = None
+    if not isinstance(rows, list):
+        why = (res.stderr.strip().splitlines() or [""])[-1] if res.rc != 0 else ""
+        out("  WARN  %s quota not checked: %s"
+            % (side, why or "'openstack quota show --usage -f json' printed no usage table"))
+        return None
+    return {str(row["Resource"]): row for row in rows if isinstance(row, dict) and row.get("Resource") is not None}
+
+
+def _check_quota(c, side, table, needs, extra=()):
+    """needs: [(resource, amount)]; extra: [(resource, need, free, used, limit)] read elsewhere. One FAIL line
+    per resource short, else one OK line listing need/free. Missing resources and Limit -1 are skipped."""
+    rows = []
+    for res_name, n in needs:
+        if n <= 0:
+            continue
+        row = next((table[a] for a in QUOTA_ALIASES.get(res_name, (res_name,)) if a in table), None)
+        if row is None:
+            continue
+        limit, used, reserved = _whole(row.get("Limit")), _whole(row.get("In Use")), _whole(row.get("Reserved"))
+        if limit is None or limit < 0:  # -1: unlimited
+            continue
+        used = used or 0
+        rows.append((res_name, n, limit - used - (reserved or 0), used, limit))
+    shown, short = [], False
+    for res_name, n, free, used, limit in rows + list(extra):
+        if free < n:
+            c.failed("%s quota: %s need %d, %d free (used %d of %d)" % (side, res_name, n, max(free, 0), used, limit))
+            short = True
+            continue
+        shown.append("%s %d/%d%s%s" % (res_name, n, free, " free" if not shown else "", " MB" if res_name == "ram" else ""))
+    if short:
+        return
+    if shown:
+        out("  OK    %s quota: %s" % (side, ", ".join(shown)))
+    else:
+        out("  OK    %s quota: no limit set on what this run uses" % side)
+
+
+def _vol_type(v):
+    t = jq_alt(v.get("type"), v.get("volume_type"))
+    return "" if t is None else jqs(t)
+
+
+def source_needs(vols):
+    """The temporary clone at the source: one at a time (dropped before the next volume is cloned; one at a
+    time in live mode too), so +1 volume and the largest size; per type too, the clone keeps its source's type."""
+    if not vols:
+        return []
+    sizes = [_whole(v.get("size")) or 0 for v in vols]
+    need = [("volumes", 1), ("gigabytes", max(sizes))]
+    by_type = {}
+    for v, size in zip(vols, sizes):
+        t = _vol_type(v)
+        if t:
+            by_type[t] = max(by_type.get(t, 0), size)
+    for t, size in by_type.items():
+        need += [("volumes_" + t, 1), ("gigabytes_" + t, size)]
+    return need
 
 
 def quota_needs(r, ports, vols, flavor_json, server=True):
@@ -319,8 +386,10 @@ def quota_needs(r, ports, vols, flavor_json, server=True):
             if n is not None:
                 need.append((res, n))
     # The volumes copied (an ephemeral root disk is not one of them: it travels as an image).
-    need.append(("volumes", len(vols)))
-    need.append(("gigabytes", sum(_whole(v.get("size")) or 0 for v in vols)))
+    gb = sum(_whole(v.get("size")) or 0 for v in vols)
+    need += [("volumes", len(vols)), ("gigabytes", gb)]
+    if r.opts.volume_type:  # per-type quota of the type chosen (--volume-type, AZ_TYPE_MAP)
+        need += [("volumes_" + r.opts.volume_type, len(vols)), ("gigabytes_" + r.opts.volume_type, gb)]
     if server:
         need.append(("ports", len(ports)))
         made = [g for g in r.sgplan.groups.values() if g.create] if r.sgplan is not None else []
@@ -329,46 +398,148 @@ def quota_needs(r, ports, vols, flavor_json, server=True):
     return [(res, n) for res, n in need if n > 0]
 
 
-def quota_preflight(r, st, c, ports, vols, flavor_json, server=True):
-    """One OK line listing need/free per resource, a FAIL line per resource short of quota. A destination
-    that cannot answer 'quota show --usage' only gets a WARN: a cloud without that API must not block."""
-    res = r.dst.run("quota", "show", "--usage", "-f", "json", stderr=proc.CAPTURE)
-    rows = None
+def group_member_need(r, table):
+    """(resource, need, free, used, limit) of the server group the VM joins; None: no group, or no limit."""
+    group = r.opts.server_group or r.ksg_dst
+    if not group:
+        return None
+    limit = None
+    res = r.dst.run("limits", "show", "--absolute", "-f", "json", stderr=proc.DEVNULL)
     if res.rc == 0:
         try:
-            rows = json.loads(res.stdout or "")
+            rows = json.loads(res.stdout or "[]")
         except ValueError:
-            rows = None
-    if not isinstance(rows, list):
-        why = (res.stderr.strip().splitlines() or [""])[-1] if res.rc != 0 else ""
-        out("  WARN  destination quota not checked: %s"
-            % (why or "'openstack quota show --usage -f json' printed no usage table"))
-        return
-    table = {}
-    for row in rows:
-        if isinstance(row, dict) and row.get("Resource") is not None:
-            table[str(row.get("Resource"))] = row
-    shown, short = [], False
-    for res_name, n in quota_needs(r, ports, vols, flavor_json, server):
-        row = next((table[a] for a in dict(QUOTA_NAMES)[res_name] if a in table), None)
-        if row is None:
+            rows = []
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and row.get("Name") in GROUP_MEMBER_LIMITS:
+                limit = _whole(row.get("Value"))
+                break
+    if limit is None:  # the quota table carries the same per-group limit
+        row = next((table[a] for a in ("server-group-members", "server_group_members") if a in table), None)
+        limit = _whole(row.get("Limit")) if row else None
+    if limit is None or limit < 0:
+        return None
+    used = 0  # a group this run creates starts empty
+    res = r.dst.run("server", "group", "show", group, "-f", "json", "-c", "members", stderr=proc.DEVNULL)
+    if res.rc == 0:
+        try:
+            members = json.loads(res.stdout or "{}").get("members")
+        except (ValueError, AttributeError):
+            members = None
+        if isinstance(members, str):
+            members = [m for m in re.split(r"[,\s]+", members) if m]
+        used = len(members) if isinstance(members, list) else 0
+    return ("server_group_members", 1, limit - used, used, limit)
+
+
+def _pool_size(pools):
+    """Addresses in a subnet's allocation_pools ([{start, end}], or openstackclient's 'start-end' text)."""
+    if isinstance(pools, str):
+        pools = [{"start": a.split("-", 1)[0], "end": a.split("-", 1)[1]}
+                 for a in re.split(r"[,\s]+", pools) if "-" in a]
+    total = 0
+    for p in pools if isinstance(pools, list) else []:
+        if not isinstance(p, dict):
             continue
-        limit, used, reserved = _whole(row.get("Limit")), _whole(row.get("In Use")), _whole(row.get("Reserved"))
-        if limit is None or limit < 0:  # -1: unlimited
+        try:
+            total += int(ipaddress.ip_address(p["end"])) - int(ipaddress.ip_address(p["start"])) + 1
+        except (KeyError, ValueError):
             continue
-        used, reserved = used or 0, reserved or 0
-        free = limit - used - reserved
+    return total
+
+
+def free_address_preflight(r, ports, c):
+    """--ip new: Neutron picks each new port's address from the subnet's allocation pools, so one free address
+    per port. Ports holding a fixed IP on the subnet count as used. A lookup that fails checks nothing."""
+    want = {}
+    for p in ports:
+        key = (jqs(p.get("network")), jqs(p.get("cidr")))
+        want[key] = want.get(key, 0) + 1
+    shown = []
+    for (net, cidr), n in want.items():
+        res = r.dst.run("subnet", "list", "--network", net, "-f", "json", "-c", "ID", "-c", "Subnet",
+                        stderr=proc.DEVNULL)
+        try:
+            sid = next(s.get("ID") for s in json.loads(res.stdout or "[]") if s.get("Subnet") == cidr)
+        except (ValueError, StopIteration, AttributeError):
+            continue
+        res = r.dst.run("subnet", "show", sid, "-f", "json", stderr=proc.DEVNULL)
+        if res.rc != 0:
+            continue
+        try:
+            size = _pool_size(json.loads(res.stdout).get("allocation_pools"))
+        except (ValueError, AttributeError):
+            continue
+        res = r.dst.run("port", "list", "--fixed-ip", "subnet=" + sid, "-f", "value", "-c", "ID", stderr=proc.DEVNULL)
+        if res.rc != 0:
+            continue
+        free = size - len(lines(res.stdout))
         if free < n:
-            c.failed("destination quota: %s need %d, %d free (used %d of %d)" % (res_name, n, max(free, 0), used, limit))
-            short = True
-            continue
-        shown.append("%s %d/%d%s%s" % (res_name, n, free, " free" if not shown else "", " MB" if res_name == "ram" else ""))
-    if short:
-        return
+            c.failed("subnet %s: no free address in its allocation pools for --ip new" % cidr)
+        else:
+            shown.append("%s %d/%d" % (cidr, n, free))
     if shown:
-        out("  OK    destination quota: " + ", ".join(shown))
+        out("  OK    free addresses for --ip new: " + ", ".join(shown))
+
+
+def ceph_capacity_preflight(r, vols, c):
+    """The destination RBD pool must hold what is copied into it: 'ceph df detail' (MAX AVAIL, and the pool
+    quota when one is set). FAIL when it does not fit, WARN when under 10% of the pool is left after the copy.
+    The transfer user may lack the caps to ask: then an INFO line only."""
+    need = sum(_whole(v.get("size")) or 0 for v in vols)
+    if need <= 0:
+        return
+    res = proc.run(["ceph", "-c", r.cfg.CEPH_CONF, "--id", r.cfg.RBD_USER, "df", "detail", "-f", "json"],
+                   env=r.env, capture=True, stderr=proc.CAPTURE)
+    why, stats = "", None
+    if res.rc != 0:
+        why = (res.stderr.strip().splitlines() or ["ceph df exited %d" % res.rc])[-1]
     else:
-        out("  OK    destination quota: no limit set on what this run creates")
+        try:
+            stats = next(p.get("stats") or {} for p in json.loads(res.stdout).get("pools") or []
+                         if p.get("name") == r.pool)
+        except (ValueError, AttributeError, StopIteration):
+            why = "pool %s is not in the 'ceph df' output" % r.pool
+    if stats is None:
+        return out("  INFO  Ceph pool capacity not checked: %s" % why)
+    avail = _whole(stats.get("max_avail"))
+    if avail is None:
+        return out("  INFO  Ceph pool capacity not checked: no max_avail for pool %s" % r.pool)
+    stored = _whole(stats.get("stored"))
+    stored = _whole(stats.get("bytes_used")) or 0 if stored is None else stored
+    room, what = avail, "MAX AVAIL"
+    quota = _whole(stats.get("quota_bytes")) or 0
+    if quota > 0 and quota - stored < room:
+        room, what = max(quota - stored, 0), "pool quota"
+    need_b = need * GiB
+    if room < need_b:
+        return c.failed("Ceph pool %s: %d GB needed, %d GB left (%s)" % (r.pool, need, room // GiB, what))
+    if (room - need_b) * 10 < stored + room:
+        return out("  WARN  Ceph pool %s: %d GB needed, %d GB left (%s): under 10%% of the pool free after the copy"
+                   % (r.pool, need, room // GiB, what))
+    out("  OK    Ceph pool %s: %d GB needed, %d GB left (%s)" % (r.pool, need, room // GiB, what))
+
+
+def quota_preflight(r, st, c, ports, vols, flavor_json, server=True, clone_vols=None):
+    """Quota of both projects and the destination pool's capacity, for everything this run uses. vols: the
+    volumes copied (one destination volume each); clone_vols: the source volumes cloned (default vols). A cloud
+    that cannot answer 'quota show --usage' only gets a WARN: a cloud without that API must not block."""
+    src_need = source_needs(vols if clone_vols is None else clone_vols)
+    if src_need:
+        table = _quota_table(r.src, "source")
+        if table is not None:
+            _check_quota(c, "source", table, src_need)
+    table = _quota_table(r.dst, "destination")
+    if table is not None:
+        extra = []
+        if server:
+            g = group_member_need(r, table)
+            if g:
+                extra.append(g)
+        _check_quota(c, "destination", table, quota_needs(r, ports, vols, flavor_json, server), extra)
+    if server and r.opts.ipmode == "new" and ports:
+        free_address_preflight(r, ports, c)
+    ceph_capacity_preflight(r, vols, c)
 
 
 def ephemeral_space_preflight(r, server, c):

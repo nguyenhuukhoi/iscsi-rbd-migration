@@ -176,3 +176,25 @@ final pass, verify = compare full nếu có. Test report ghi số thật của l
 4. TEST-REPORT-20261119-v72.md: từng case lệnh nguyên văn + kết quả, số downtime breakdown cold/live.
 
 Không push; Fable leak-check + review rồi user chốt merge.
+
+---
+
+## Bổ sung 19/11 tối (user hỏi "safeguard tất cả resource chưa") — mở rộng §2 A2
+
+A2 phải phủ MỌI tài nguyên một lần migrate tiêu thụ, cả hai phía. Cùng hàm `quota_preflight`, cùng định dạng dòng:
+
+| Phía | Tài nguyên | Nhu cầu | Nguồn số liệu |
+|---|---|---|---|
+| nguồn | `volumes` | +1 (clone tạm; live mode cũng chỉ 1 clone sống tại một thời điểm) | `r.src quota show --usage -f json` (token scope project nguồn) |
+| nguồn | `gigabytes` | + size của volume LỚN NHẤT (clone từng volume một, drop trước khi clone volume sau) | như trên |
+| nguồn | `volumes_<type>`, `gigabytes_<type>` của type volume nguồn (clone kế thừa type) | như hai dòng trên, theo type của từng volume | như trên; thiếu entry → bỏ qua |
+| đích | `volumes_<type>`, `gigabytes_<type>` | khi `--volume-type`/AZ_TYPE_MAP chọn type: số volume, tổng GB | `r.dst quota show --usage`; thiếu entry → bỏ qua |
+| đích | `server_group_members` | 1, chỉ khi VM sẽ vào server group (`r.ksg_dst` hoặc `--server-group`) | `limits show --absolute`: `max_server_group_members` so với số member hiện tại của group đích (`server group show -c members`); group chưa tồn tại → 0 |
+| đích | IP trống trong subnet khi `--ip new` | 1 mỗi port | `subnet show <id> -f json` → tổng địa chỉ trong `allocation_pools` trừ số port có fixed IP trên subnet (`port list --fixed-ip subnet=<id> -f value -c ID`); ≤ 0 → `  FAIL  subnet <cidr>: no free address in its allocation pools for --ip new` |
+| đích | dung lượng pool Ceph | tổng GB volume đích | `ceph df -f json --id RBD_USER -c CEPH_CONF` (hoặc `rbd pool stats`); lỗi caps → `  INFO  Ceph pool capacity not checked: <lý do>`; pool có `quota_max_bytes` hoặc cluster `MAX AVAIL` < nhu cầu → FAIL; dưới 10% dự phòng sau copy → WARN |
+
+Dòng tổng kết OK tách hai phía: `  OK    source quota: volumes 1/10 free 1, gigabytes 200/1000 free 150` và
+`  OK    destination quota: …`. `--volumes-only`/`migrate volume --in-use`: nguồn vẫn tính clone; volume rời
+available cũng clone → tính như nhau. Unit case bắt buộc thêm: nguồn thiếu volumes (FAIL), nguồn thiếu
+gigabytes theo volume lớn nhất, per-type thiếu ở đích, server group đầy, subnet hết IP với `--ip new`, ceph df
+không có caps → INFO.
