@@ -225,6 +225,14 @@ def ensure(r, plan, st):
                 % (g.dst_name, g.dst_id, g.name, len(g.rules), "" if len(g.rules) == 1 else "s"))
     except BaseException:
         # No port uses them yet. Left behind half-copied, a re-run would find them and use them as they are.
+        # 7.2 (C3): their rules first, all of them, then the groups: a rule of one copy pointing at another
+        # copy makes Neutron refuse to delete that other group ("in use").
+        for g in created:
+            res = r.dst.run("security", "group", "rule", "list", g.dst_id, "-f", "value", "-c", "ID",
+                            stderr=proc.DEVNULL)
+            rids = lines(res.stdout) if res.rc == 0 else []
+            if rids:
+                r.dst.run("security", "group", "rule", "delete", *rids, stderr=proc.DEVNULL)
         gone = [g.dst_name for g in created
                 if r.dst.run("security", "group", "delete", g.dst_id, stderr=proc.DEVNULL).rc == 0]
         if gone:
