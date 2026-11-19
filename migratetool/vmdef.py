@@ -50,9 +50,31 @@ def export_definition(r, vm, st):
     st.write("volumes.json", jq_dump(vols))
 
 
+def image_says_bfv(img):
+    """server show's image field of a boot-from-volume server: empty, openstackclient's 'N/A (booted from
+    volume)', or an image object without an ID. Anything else names the image an ephemeral disk came from."""
+    if img is None or img == "":
+        return True
+    if isinstance(img, str):
+        return "booted from volume" in img
+    if isinstance(img, dict):
+        return not img.get("id")
+    return False
+
+
 def detect_boot(st):
-    """True when the root disk is not a volume (ephemeral, image-backed)."""
-    return not any(a.get("Device") in ("/dev/vda", "/dev/sda") for a in st.json("attachments.json"))
+    """True when the root disk is not a volume (ephemeral, image-backed). 7.2 (B3): the attachment devices
+    and the server's image field must agree; a cloud whose Nova reports no (or another) root device name
+    would otherwise turn a boot-from-volume VM into an ephemeral one and snapshot it."""
+    atts = st.json("attachments.json")
+    ephemeral = not any(a.get("Device") in ("/dev/vda", "/dev/sda") for a in atts)
+    server = st.json("server.json")
+    img = server.get("image")
+    if ephemeral == image_says_bfv(img):
+        raise Die("cannot tell the root disk of %s: attachments %s, image %s — expected /dev/vda or /dev/sda for a "
+                  "boot-from-volume server" % (jqs(server.get("name")),
+                                               ",".join(jqs(a.get("Device")) for a in atts) or "none", jqs(img)))
+    return ephemeral
 
 
 def dest_volume_name(svid, st):
