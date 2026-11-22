@@ -1,0 +1,24 @@
+# Never commit credentials
+key.txt
+*.pem
+*.key
+*openrc*
+*.keyring
+passwords.yml
+clouds.yaml
+secrets*
+# Python build output (migratetool package)
+__pycache__/
+*.egg-info/
+build/
+dist/
+# Lab scaffolding and test reports stay local, never pushed (21/11/2026)
+/0[1-6]-*.sh
+/lab.sh
+/kolla/
+/user-data.tmpl
+/TEST-REPORT-*.md
+/LAB-*.md
+/tests/*.sh
+!/tests/blocksync-unit.sh
+/tests/results-*/

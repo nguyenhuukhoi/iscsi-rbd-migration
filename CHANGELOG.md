@@ -1,0 +1,679 @@
+# Changelog
+
+Lịch sử thay đổi của tool. Từ v7: app Python `migrate` (`migratetool/`). Từ v1 tới v6: `migrate-vm.sh`,
+`migrate-batch.sh`, `brick_attach.py`, `blocksync.py`, nay nằm trong [archive/](archive/README.md).
+Bản mới nhất ở trên. Viết theo tinh thần [Keep a Changelog](https://keepachangelog.com/): mỗi bản ghi
+ngày, nhánh, trạng thái, phần **Thêm** / **Đổi hành vi** / **Sửa**, commit chính, thiết kế và báo cáo test.
+
+Repo git bắt đầu từ bản v2.1 (commit đầu `e973d00`, 17/11). Bản v1 và v2 có trước repo nên không có
+commit riêng. Mã v1 lưu ở [archive/migrate-vm-v1-20261105.sh](archive/migrate-vm-v1-20261105.sh).
+
+Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit chứa bản 1.0.0. Mã commit nhắc trong file này và trong RELEASE-1.0.0.md thuộc lịch sử phát triển trước đó, không có trong repo công khai.
+
+Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
+[archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
+
+## [1.0.0] — 2026-11-21 · branch `v1` · engine + runner/web (Opus), UI + tài liệu (Codex), review/click-through (Fable), click matrix (Codex) · gate lab 22/11 (RELEASE-1.0.0.md mục 5)
+
+**Đổi cách đánh số: 1.0.0 = 7.3.0 + review 21/11; lịch sử 7.x bên dưới.** Baseline `269ed24`;
+engine và UI đã gộp ở `959370f`. Hợp đồng thực thi: [DESIGN.md](DESIGN.md); hồ sơ review:
+[REVIEW-20261121.md](REVIEW-20261121.md). Test: `bash tests/unit/run.sh --parity` (bộ mới `v1unit.py`,
+`tests/ui/v1ui.py`); kết quả trên mig-host 22/11 (`a573fc9`): `ALL pass=871 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63,
+v72unit 84, v73unit 106, v1unit 128, ui 172, parity 205). UI guards 115/0; click matrix 221/0/0 (Edge headless, UI của `c3b7621`).
+Bằng chứng, môi trường và gate còn thiếu: [RELEASE-1.0.0.md](RELEASE-1.0.0.md).
+
+### An toàn dữ liệu (engine)
+
+- **A1** `blocksync.py` đọc mỗi chunk đủ byte (`read_exact`): `pread` thiếu byte thì đọc tiếp; EOF/lỗi đọc giữa chừng →
+  exit 4, không ghi hash state, pass FAIL (`blocksync failed … a short read from the source clone (exit 4)`). Test với
+  blocksync thật, file device giả, librbd giả (short read, device co lại).
+- **A2** Dấu chủ sở hữu: server đích `--property mig.source_id=<src id> --property mig.state=<state>`, port đích không
+  có description nguồn mang `mig:<state>`, `options.json` ghi `owner_mark`. Rollback chỉ xóa server không ghi ID khi có
+  dấu khớp; server cùng tên không dấu: bỏ qua (state 1.0.0) hoặc dừng kèm lệnh tay (state cũ). Quét port `mig-<arg>-<i>`
+  cũng theo dấu.
+- **A3** Rollback: `port show` lỗi khác "not found" → hỏi lại ≤ 60 lần rồi dừng; port gắn vào VM khác → dừng, in lệnh tay.
+- **A4** `server delete --wait` kiểm exit code; poll `server show -f json -c id -c status` tới "not found" (≤ 600 s)
+  trước khi đụng nguồn; không xác nhận được → dừng, nguồn không bật.
+- **A5** `migrate rollback <t>`: không `--yes` thì in tóm tắt (t-stop, tuổi, server đích + trạng thái, port/volume/image
+  sẽ xóa, WARN khi đích ACTIVE > 1 h) rồi hỏi `Type <tên>` (hoặc ident); stdin không phải terminal → exit 2. Thêm
+  `--dry-run [--json]` (chỉ đọc). Runner gọi rollback với `--yes`.
+- **A6** `migrate migrate` gặp state có `volume-map` nhưng chưa có `t-stop` → tự xóa volume đích + clone đã ghi, retire
+  state, chạy tiếp; selector không SKIP các state đó. State qua cutover: selector ghi `SKIP(state-exists)` kèm lệnh
+  rollback và trả 1; chỉ khi tiến trình con tự gặp state đó mới báo `state exists … run rollback first (that run stopped
+  the source at <UTC>)`, exit 4 (đính chính 22/11, xem mục sửa sau gate).
+- **A7** Khóa host `MIG_LOCK` (mặc định `/run/mig/migrate.lock`) cho migrate/volume/rollback (plan không khóa), truyền cho
+  tiến trình con qua `MIG_LOCK_FD`; runner giữ cùng file cho cả đợt (đọc `MIG_LOCK` qua probe). Thêm flock trên thư mục
+  state.
+- **A8** Preflight WARN khi cold copy > `MIG_COLD_WARN_GB` (mặc định 500), khuyên `--mode live`.
+- **A9** VM ephemeral: root disk thành volume đích tạo từ image đã upload (`volume create <vm>-vda --image --size <disk
+  flavor, ít nhất virtual size>`), boot `--volume`, image đích xóa sau khi volume available, volume-map
+  `ephemeral-root <id>`. `--ephemeral-as-image` giữ cách 7.x.
+- **A10** `--ip <addr> --start-source`: FAIL khi addr là IP hoặc allowed-address-pair của nguồn; WARN AAP khi
+  `--start-source`.
+- **A11** Preflight FAIL khi flavor nguồn có ephemeral hoặc swap disk.
+- **A12** Ngay trước `server stop`: so lại volume, port, flavor của nguồn với lúc export; lệch → dừng trước cutover (exit 3).
+- **A13** SG đích cùng tên được so rule với nguồn: WARN thiếu/thừa; bản copy do tool tạo mang description
+  `mig-copy of <src id>[: <mô tả nguồn>]`; copy dở (thiếu rule) → WARN `HALF-MADE COPY`.
+- **A14** Nguồn bị lock có `locked_reason` của người (không phải `mig:`) → FAIL preflight. Rollback trả nguồn về đúng
+  trạng thái nguồn điện lúc export (SHUTOFF giữ SHUTOFF).
+- **A15** Rollback poll từng volume đã xóa tới "not found"; `error_deleting` hoặc quá hạn → dừng, không retire state.
+- **A17** brick giữ bản ghi sau detach thành `<id>.detached.json` (có WWN); log WWN khi attach.
+- **A18** State ghi qua `fsync` (file + thư mục); đọc lỗi khác ENOENT → dừng.
+- **A19** brick: lỗi `complete()` → disconnect trước khi xóa attachment; detach gặp attachment 404 vẫn coi là xong.
+
+### Bảo mật
+
+- **B1** Runner thay mọi giá trị `OS_PASSWORD`/`OS_APPLICATION_CREDENTIAL_SECRET`/`OS_TOKEN` của 2 openrc (lấy qua probe)
+  bằng `[scrubbed]`; thêm mẫu JSON/nháy và URL `scheme://u:p@`; khóa giống credential trong object bị thay cả giá trị.
+- **B2** Tra SDK của `migrate volume` chạy `sys.executable -I`.
+- **B3** Source openrc trong môi trường sạch (bỏ mọi `OS_*`), `set -e`, bắt buộc `OS_AUTH_URL`; doctor WARN openrc không
+  phải root 0600, FAIL khi 2 openrc cùng Keystone (lúc chạy: WARN stderr).
+- **B4** Phiên web hết hiệu lực khi user bị xóa hoặc đổi mật khẩu (so `changed`+hash ở request không background;
+  stream đang mở không revalidate credential mỗi event).
+- **B5** Không ghi được audit → POST thay đổi trả 503; `install.sh` cảnh báo rõ khi fs không có `+a`.
+- **B6** `os.umask(0o077)` đầu CLI.
+- **B7** Khóa đăng nhập theo user (5/10 phút) + toàn cục (20/10 phút).
+- **B8** Tối đa 8 request API cùng lúc, 2 SSE mỗi phiên, timeout đọc header 30 s.
+- **B9** Doctor kiểm euid 0 hoặc `sudo -n true`.
+
+### Vận hành
+
+- **C1** Web touch phiên ở mỗi sự kiện plan và mỗi 60 s khi batch của phiên chạy; runner plan tối đa 4 VM cùng lúc
+  (`--plan-jobs` của runner); CLI `migrate plan … --plan-jobs N` (1–8, dòng tee có tiền tố `[<ident>]`).
+- **C3** `proc.run` deadline `MIG_CMD_TIMEOUT` (600 s) cho openstack/rbd/ceph/systemctl (trừ `image save`), exit 124;
+  Glance REST timeout 60 s, upload 600 s không tiến triển.
+- **C4** `PROJECT_MAP_FILE` không đọc được → dừng.
+- **C5** Batch ghi `conf_digest` (sha256 conf + 2 file map); lúc chạy lệch → 409 "plan again".
+- **C6** `migrate doctor --write-check` (4 MiB mỗi pool: import, export so sánh, discard qua librbd, rm);
+  `POST /api/doctor {"write_check": true}`.
+- **C7** brick: session keystoneauth theo `OS_CACERT`/`OS_INSECURE`, `OS_INTERFACE`, `OS_REGION_NAME`; doctor gọi
+  `brick --check-auth`.
+- **C8** Exit code VM: 3 lỗi chuẩn bị trong vùng được phân loại, 4 sau t-stop; 5 khi nhiều hàng đã attempted và có
+  FAIL. Preflight/lỗi chung vẫn 1; volume đơn chưa có phân lớp 3/4.
+- **C9** `migrate prune --older-than Nd [--dry-run] [--json]`: chỉ `.rolled-back.*` và thư mục batch log cũ.
+- **C10** Quota thiếu `In Use` → WARN, không coi là 0.
+- **C11** Server group cùng tên/policy nhưng khác rules → FAIL kèm `--server-group <id>`; `--rule` bị từ chối → WARN rõ.
+- **C12** Thư mục batch log `<time>-<6 hex>`.
+- **C13** `LIST_MAX` 128.
+- **C14** `MIGUI_NOTIFY_CMD` (argv JSON, không shell) cuối mỗi job/batch, env `MIG_EVENT`, `MIG_JOB`, `MIG_STATE`…;
+  `notify_rc` trong job record.
+- **C15** `[project.optional-dependencies] host`, `requirements-host.txt` (pip freeze venv lab), `release.sh`/`make
+  release` (wheel + sha256).
+
+### UI back end (hợp đồng mục 3)
+
+- **D2** Luật gõ tên tính từ option hiệu lực của plan row (keep_ports, ip addr, start_source, in_use).
+- **D3** Gate Doctor chỉ cho inventory, list, plan, run batch vm/vol.
+- **D5** Xác nhận theo dòng (tên giữ nguyên, có khoảng trắng/dấu phẩy), chấp nhận ident đầy đủ.
+- **D9** `GET /api/jobs?offset&limit&q&state&kind&from&to` → `{jobs,total,active}`; `GET /api/jobs.csv`.
+- **D12** `migrate status --json`/`list --json`: `phase` (preparing/cutover/migrated), `source_power`.
+- **D16** Plan row: `volumes_total`, `gb_total`, `nics`, `source_power`, `impact`. Batch: `fingerprint`, `impact`,
+  `conf_digest`, `session`. Job: `volumes_total`, `phase_detail`, `exit_class`, `notify_rc`. `/api/session`:
+  `ui_version`, `features`. Rollback `original`: `t_stop`, `dst_server_status`, `age_seconds`, `delete`.
+
+### Test, chất lượng
+
+- **E1** Test blocksync thật (A1), VM lạ cùng tên sau t-stop (A2). Crash tại từng marker: chưa làm.
+- **E2** `run.sh` tính cả exit code của suite.
+- **E3** `migratetool/contract.py`: tiền tố preflight, chuỗi grep, exit code, dấu chủ sở hữu.
+- **E6** SEC-7 grep thêm `"bash", "-c"` (whitelist `clouds.rc_env`).
+- Parity: luật máy móc `parity.v1_rule` (mỗi dòng `Intended: v1 <ID>`), app chạy rollback với `--yes` và plan/migrate
+  thêm `--ephemeral-as-image` ở kịch bản cũ.
+
+### UI do Codex viết và sửa sau click-through
+
+- **D1/D4/D6–D8/D10–D17** (`a15f6db`): stepper Doctor → Chọn → Tùy chọn → Xác nhận → Chạy; Tổng quan có số liệu và
+  job gần đây; options theo nhóm với preview; fingerprint vô hiệu plan khi selection/options đổi; khối tác động,
+  checkbox WARN và dialog RPO rollback; countdown SIGKILL gắn job và dựng lại từ server; reconnect SSE; progress
+  dùng tổng volume từ plan; Lịch sử lọc/phân trang 50/CSV/rerun/diff; theme sáng/tối và accessibility.
+- **Câu chữ UI** (`cf01857`, `12b94e1`, `45f41c1`): nhãn tiếng Việt tự nhiên; một nút Chạy Doctor ở Tổng quan,
+  link kết quả; sửa heading login, hint options, chữ Doctor và placeholder phase.
+- **Click-through của Fable** (`04d5506`): dấu ngăn title; stepper disabled không điều hướng; theme button nêu hành
+  động; mỗi WARN khác nhau một acknowledge; banner nguồn down phản ánh rollback CLI; đóng dialog rollback trở về
+  màn gốc; dán danh sách phân biệt không tìm thấy/mơ hồ/không đủ điều kiện.
+- Merge UI vào v1: `959370f`.
+- **UI round 2** (`efc46cf`, Codex): ô IP "theo dòng" nằm trong nhóm Mạng của Tùy chọn (IPv4 validate); dialog Rollback
+  riêng (phạm vi xóa, cutover/tuổi, trạng thái đích, nguồn, RPO, tên/ident, nút đỏ "Rollback <tên>"); stepper chỉ trong
+  luồng đợt; Tổng quan tải `/api/jobs` ngay với skeleton; Chạy giữ job cuối (`phase_detail`, volume k/N, exit_class);
+  SIGKILL khóa = disabled + tooltip; `window.miguiTest` chỉ với `?test=1`; bỏ fallback runner cũ; `rule.ids` ở form;
+  HOSTS_MAX 128. Guards 101/0; browser.mjs 52/0 (Codex) / 38/0 (Fable, stack 1.0.0).
+- **Click-through round 2 của Fable** (`d6b3a7f`, `aaad988`): cột Giai đoạn Lịch sử in `[object Object]`; tên volume bị
+  cắt "vol-src-…"; hàng đợi ngược thứ tự sau khi đợt xong; nút SIGKILL giữ "— khóa"; câu chữ dialog Rollback; caption
+  bảng IP lặp ba lần; pill state bị cắt; thẻ hoạt động gần đây cao 130 px; bảng Instance tràn 47 px ở 1440 px.
+- Giới hạn còn lại: root ephemeral chưa nằm trong mọi tổng GB/volume của UI.
+
+### Sửa sau gate lab và click matrix 22/11
+
+Gate lab trên hai cloud 2026.1 (LVM/LIO iSCSI → Ceph) tìm ra lỗi tool sau. Chi tiết từng lượt và các lỗi phía test: [RELEASE-1.0.0.md](RELEASE-1.0.0.md) mục 5.
+
+- **Rollback nhận câu "đã xóa" của OSC 10.x** (`d06a9a7`): OSC 10.5 báo `No Server found for <id>`. `GONE_RE` cũ không khớp, nên rollback chờ hết 600 s rồi mới dừng.
+- **SIGINT khi chạy nền từ script** (`8cc5eae`): job nền của bash bỏ qua SIGINT và Python giữ nguyên. `migrate` và tiến trình con nay nhận lại SIGINT.
+- **`kill -INT` vào PID của `migrate` hủy được cả tiến trình con** (Astra review cuối): trước đây chỉ Ctrl-C (gửi cả nhóm tiến trình) mới tới con; tín hiệu gửi riêng vào PID cha thì con chạy tiếp tới hết. Selector nay chuyển SIGINT cho con. SIGINT đầu tiên hủy run; các SIGINT sau bị bỏ qua để không cắt ngang việc dọn dẹp (tháo clone, giữ state). SIGKILL vẫn là cách dừng cứng.
+- **Volume đơn nhả khóa state khi xong run** (Astra review cuối), như VM.
+- **blocksync bị dừng khi run bị ngắt** (`5785f47`, `c3b7621`, `ed739b4`, `a573fc9`): SIGINT gửi riêng vào `migrate` không tới blocksync, nên blocksync có thể ghi tiếp vào đích trong lúc tool tháo clone. `proc.run_stream` nay dừng blocksync trên mọi đường thoát bất thường (SIGINT, lỗi callback): gửi SIGINT, quá 30 s thì SIGKILL, chờ thu hồi xong mới cho dọn dẹp tiếp. Một SIGINT đến giữa lúc đang dừng được giữ lại và chỉ ném ra sau khi blocksync đã chết. Kiểm trên lab: SIGINT vào PID `migrate` lúc presync live thì trả 130, không còn blocksync hay tiến trình con, nguồn chưa bị dừng.
+- **Handler SIGINT chỉ sống trong một lần chạy** (`c3b7621`, `ed739b4`): `cli.sigint_scope()` cài handler hủy cho `cli.main`/`single.main` rồi trả lại handler cũ cho caller cùng process; ngoài main thread thì không đụng tới signal.
+- **Rollback lấy khóa host trước khi tra state** (`c685914`, có từ 7.3): migrate chạy lại tạo lại thư mục state, chưa có `server.json`. Rollback chen vào lúc đó báo sai `no state for <vm>` thay vì "đang có migrate khác chạy". Tóm tắt A5 nay hiển thị trong lúc giữ khóa. `--dry-run` vẫn không lấy khóa.
+- **Tài liệu mã thoát** (`c685914`): `migrate migrate <vm>` gặp state đã cutover thì ghi `SKIP(state-exists)` kèm lệnh rollback và trả 1. Mã 4 chỉ xảy ra khi chính tiến trình con gặp state đó.
+- **Gate R1, R3, `MIG_ISCSI_IP`** (`663a31b`, `5ee3ac5`, `5fefbf4`): openrc có `read` thì báo đúng dòng; volume khóa state trước khi kiểm volume-map; Doctor FAIL khi `MIG_ISCSI_IP` trống hoặc không thuộc host; cài UI chép DEPLOY.md; hướng dẫn nâng cấp tại chỗ.
+
+Click matrix của Codex Sol bấm từng nút và option của UI qua Edge headless, Astra review 3 vòng. Lỗi UI tìm được:
+
+- **Ma trận vòng 1** (`d146aab`, `8572e3e`): volume type `__DEFAULT__` bị từ chối; ô giới hạn live nhận giá trị ngoài biên; nút Quay lại về sai màn; ghi chú READY hứa sai; focus không trở về sau dialog rollback; Esc ở Lịch sử; job volume không ghi option hiệu lực.
+- **Astra vòng 2** (`c9b8931`, `b1bb1f5`): option hiệu lực đọc từ `options.json` nay được scrub như mọi đường khác; mọi validator neo bằng `\Z`, không còn lọt ký tự xuống dòng; `defaultMode` đọc `MIG_DEFAULT_OPTS` như CLI; `badInput` của ô số; Plan kiểm lại giới hạn live.
+- **Ma trận vòng 3** (`c652ddb`, `f75b88a`, `549e572`): skip link focus vùng chính thay vì nhảy về Tổng quan; "Theo dõi →" ở Tổng quan hiện đúng job đã chọn; Tổng quan xếp job gần đây theo thời gian.
+- **Astra vòng 3** (`c685914`): job được theo dõi không còn che job đang chạy. Màn Chạy báo job nào đang chạy và có nút "Xem job đang chạy". Hàng đợi và nút dừng thuộc đúng đợt của job đang xem. Link Hàng đợi và đăng xuất bỏ ghim. Focus sau dialog chỉ chờ nút bị khóa khi người dùng chưa chuyển đi. Esc khi đang mở ô chọn nhiều chỉ đóng ô đó, không đóng chi tiết Lịch sử phía sau.
+- **Astra review cuối**: nút "Dừng sau con hiện tại" chỉ gửi tới đợt đang hiển thị; nếu đợt vừa đổi mà màn chưa cập nhật thì từ chối và vẽ lại. Bấm link Hàng đợi khi đang ở màn Chạy bỏ ghim và vẽ lại ngay. Nút "Xem job đang chạy" chuyển focus về tiêu đề job. Nút mở dialog bị xóa khỏi trang thì focus về tiêu đề màn. Câu "không ghi nhận option" không còn quy hết cho bản < 7.3.
+- **Tài liệu** (`fa8d1db`): DEPLOY 2.1 hướng dẫn OpenStack CLI/SDK: nằm trong venv, cài theo bộ đã test hoặc theo upper-constraints của release.
+
+### Tài liệu hợp nhất và hiệu chỉnh so với tài liệu cũ
+
+- **F1** Thay ví dụ production dùng `--keep-source-ports --verify none` bằng verify bật và port nguồn được tháo.
+  Đưa năm option rủi ro vào mục ngoại lệ có điều kiện, nêu người chấp thuận và RPO.
+- Một bộ README/DESIGN/GUIDE/DEPLOY/RUNBOOK/UI/DEVELOPING/RELEASE thay hai bộ hướng dẫn và các design delta.
+  Chuyển 20 tài liệu vào `archive/docs/`, giữ nội dung lưu trữ; REVIEW ở root.
+- Cài từ wheel + requirements-host; UI cài riêng; có venv theo version, audit +a, hook notify và downgrade rehearsal.
+- Làm rõ chạy lại: VM trước cutover tự dọn rồi chạy mới (A6); sau cutover không resume. Volume đơn chưa A6.
+- Sửa “rollback không hỏi”: prompt tên/ident, non-TTY thiếu yes trả 2; dry-run JSON có summary.
+- Sửa “state tương thích hai chiều, hai bản chạy song song”: không dùng binary cũ để xử lý tùy ý state owner-mark/root
+  BFV mới, không chạy song song để lách khóa host.
+- Sửa “blocksync giống từng byte archive”: A1 khác reference. Sửa “WWN mất sau detach”: giữ `.detached.json`.
+- Sửa “cold tạo volume trong downtime”: precreate trước t-stop. Root ephemeral mặc định thành BFV; cờ image là opt-out.
+- Sửa “SG có sẵn không so rule”, “chỉ so policy server group”: so rule, WARN thiếu/thừa/HALF-MADE COPY; group rules
+  khác gây FAIL; nhánh client không nhận rule vẫn WARN và fallback.
+- Sửa “project map không đọc được chỉ WARN”: lỗi dừng. Precedence có ngoại lệ SYS_PY và các tầng AZ/type; volume đơn
+  nhận cả volume-az. Plan chỉ đọc cloud nhưng có thể ghi lại export local.
+- Làm rõ RBD access: chỉ rbd ls; write-check có giới hạn discard/delete cần kiểm ngoài.
+- Sửa mô hình UI token-file/public TLS/runner không network/7 message/khóa riêng: accounts, loopback-only, runner
+  cần network/devices, 9 message, dùng MIG_LOCK chung. Phiên plan/batch có touch, revocation không bao phủ tức thời
+  mọi background stream; Doctor gate không chặn xử lý sự cố.
+- Sửa mô tả UI kế hoạch tuần tự và map đọc theo kiểu bỏ qua lỗi: plan 4 luồng mặc định runner, digest conf/maps trước
+  run; digest chỉ 1 MiB/file và không phải snapshot nguyên tử. CSV theo trang; rerun cần plan/xác nhận mới.
+- Làm rõ marker t-stop không chứng minh stop thành công; migrated không chứng minh ACTIVE; mọi exit trước cutover
+  không nhất thiết 3, mọi batch có FAIL không nhất thiết 5; API timeout 124 được ánh xạ theo ngữ cảnh.
+- Ghi đúng phạm vi còn thiếu: Glance REST chưa filter region; rollback discovery và vài preflight lookup chưa
+  fail-closed toàn bộ; E1 crash-at-marker chưa làm. Không biến docstring mục tiêu thành bảo đảm đã triển khai.
+
+## [7.3.0] — 2026-11-20 · branch `feature/7.3-cli-json` (from main `dfd54da`) · review Fable (R1 fixed) + gate lab ĐẠT 200/0 regression (e2e 50, live 26, newip 26, extras 30, p4feat 24, p6feat 27, failure-injection 17) + v73feat 20/0 — TEST-REPORT-20261120-v73.md · unit + parity 570/0
+
+What the CLI needs before a UI can drive it, per [DESIGN-V7-3-CLI.md](DESIGN-V7-3-CLI.md) (sections 1–8, security
+rules SEC-1…SEC-17 of section 11). Without the new flags and commands the behaviour is the 7.2 one, byte for byte
+(parity), except the D3 line of an ephemeral VM (section 8) and two additions the design asks for: the state file
+`options.json` / `rollback.json` and one more `doctor` line. Guide: [GUIDE-PYTHON.md](GUIDE-PYTHON.md) section 4d.
+Test: `bash tests/unit/run.sh --parity` (new `v73unit.py`, one case per section and per SEC rule); lab gate:
+TEST-REPORT-20261120-v73.md.
+
+### Added
+
+- **1** `options.json` in every migrate/volume state directory, next to the unchanged one-line `options`: the
+  command as typed (`migrate migrate <ident> … --yes`), `effective` = every option with its value and its origin
+  (`from`: `cli`, `default`, `MIG_DEFAULT_OPTS`, `conf`, `az`, `source`, plus `detail`), the conf whitelist
+  (`MIG_DEFAULT_OPTS`, `MIG_AZ`, `MIG_VOLUME_AZ`, `AZ_TYPE_MAP`, `RBD_POOL_MAP`, `RBD_POOL`, `PROJECT_MAP_FILE`,
+  `FLAVOR_MAP_FILE`, `SRC_PROJECT`, `DST_PROJECT`), version, start time. A finished rollback writes `rollback.json`
+  into the `.rolled-back.<epoch>` directory. Both 0600, never overwritten.
+- **2** `migrate plan … --json`, `migrate plan volume … --json`, `migrate doctor --json`: one JSON object on stdout,
+  the text on stderr. A plan row carries the command `migrate` would run, the effective options, the preflight
+  checks (`level`, `text`) and their counts, its log path.
+- **3** `migrate list [selectors] [--volumes [--available|--attached|--all]] [--json]`: the selection of plan/migrate
+  without action, with host, AZ, flavor, image, boot (`bfv`/`ephemeral`), networks, volumes and the state directory
+  of each VM (or the volumes with what they are attached to). 3 openstack calls for a host.
+- **4** `migrate inventory [--count [--host H]] [--json]`: hosts, projects of both clouds; compute/volume zones,
+  flavors, volume types of the destination.
+- **5** `migrate status [--all] [--json]`: live, plan-only and rolled-back state directories, batch logs, running
+  migrate processes. No cloud call.
+- **6** `--dst-host <hypervisor>`: `server create --host` (compute API 2.74, admin). Preflight FAILs before anything is
+  stopped when the host is not a nova-compute host, is down/disabled, sits in another zone than `--az`, or the
+  destination token lacks admin; without `--az` the host's zone becomes the AZ (FAIL when
+  `AZ_TYPE_MAP` maps that zone: pass `--az` or `--volume-type`, review R1). Command line only (dies in
+  `MIG_DEFAULT_OPTS`). `options` gets ` DST_HOST=<h>` only when it is used. `doctor` says whether the destination
+  Nova reaches 2.74.
+- **7** `migrate migrate|volume … --progress-json`: `@@ {"event": …}` lines on stdout (phase, copy, verify,
+  blocksync, pass, t_stop, downtime, result), copy/blocksync at most one per second.
+- **Security (section 11)**: every JSON goes through `jsonout.emit_json`, which refuses credential-like keys and the
+  openrcs' secret values (dies, prints nothing); the JSON commands use read-only clouds (`list`/`show`/`token issue`
+  only); `list`/`inventory`/`status` write nothing; selector values and `--vm-file` are bounded; `status` never
+  follows a symlink out of its roots.
+
+### Changed
+
+- **8 (D3b)** Ephemeral VM: the Glance snapshot, download and upload count as copy time:
+  `downtime breakdown: total 213s, copy 107s (glance 107s), verify 0s, control-plane 106s`.
+- `migrate doctor` prints one more line: `OK    destination Nova API N.M >= 2.74 (--dst-host usable)` (or INFO).
+
+### UI
+
+Branch `feature/7.3-ui` (from `feature/7.3-cli-json`) · phase 1 (code + simulated harness); not deployed yet.
+Design: [DESIGN-UI.md](DESIGN-UI.md) (19–20/11). Install and use: [migui/deploy/DEPLOY-UI.md](migui/deploy/DEPLOY-UI.md).
+Test report: TEST-REPORT-20261120-ui.md.
+
+- **migui** (`migui/`, standard library only): a web UI that drives the CLI above and nothing else. Two processes:
+  `migui-web` (user `migui`, 127.0.0.1:8787 only, login token, one session, CSRF checks, CSP without inline script,
+  audit `/var/log/migui/audit.jsonl`) and `migui-runner` (root, unix socket `/run/migui/runner.sock` 0660
+  root:migui, SO_PEERCRED, 9 messages, argv lists only, one migrate/volume/rollback at a time, scrubbed output, job
+  records `/var/lib/migui/jobs/<id>.json` read-only once ended).
+- Screens of DESIGN-UI 14: Doctor (must be green first), Instance (source host/project → list → quick search →
+  tick → destination AZ/host → options → plan), Volume, Xác nhận (the verbatim commands with their effective options
+  and source badges; type the number of VMs, or the name for one VM / `--keep-source-ports` / `--ip <addr>` /
+  `--in-use` / rollback), Hàng đợi / Đang chạy (live log over SSE, progress from `@@` lines, downtime clock, two-step
+  cancel), Lịch sử (jobs + `migrate status --json`, re-run with the same options, diff two jobs, rollback).
+- `migui/deploy/`: `migui-runner.service`, `migui-web.service` (hardened), idempotent `install.sh`
+  (`--uninstall`, `--purge`), `DEPLOY-UI.md`.
+- Tests: `tests/ui/` (suite `ui` of `tests/unit/run.sh`): the 10 security tests of DESIGN-UI 10 and the functional
+  flows against a real runner + web and a fake `migrate` replaying the simulated clouds of `tests/unit`. The SEC-7
+  grep (`shell=True`, `os.system`, `eval(`, `exec(`) now covers `migui/` too.
+- Deviations from DESIGN-UI, with reasons, in DEPLOY-UI.md 6 and the test report: the runner unit cannot have
+  `PrivateNetwork`/`ProtectSystem=strict` (migrate inherits them); the destination project is shown, not chosen (the
+  CLI takes it from `PROJECT_MAP_FILE` only); the web reads the token at each login instead of once at start (a
+  runner restart rotates it).
+
+## [7.2.0] — 2026-11-19 · nhánh `feature/7.2-audit-fixes` (từ main `e4c419b`) · review Fable + gate lab ĐẠT 200/0 (e2e 50, live 26, newip 26, extras 30, p4feat 24, p6feat 27, failure-injection 17 — TEST-REPORT-20261119-v72.md) · unit + parity 460/0
+
+Sửa toàn bộ phát hiện của [AUDIT-20261119.md](AUDIT-20261119.md) theo [DESIGN-V7-2.md](DESIGN-V7-2.md) (mã A1…D4
+giữ nguyên). Chỉ app Python; bản bash trong `archive/` không đổi. Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md)
+mục 4c. Test: `bash tests/unit/run.sh` (unit + parity, mục 5.3 của [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md));
+gate lab: TEST-REPORT-20261119-v72.md.
+
+### Đổi hành vi
+
+- **A1** Cold: tạo mọi volume đích **trước** khi tắt VM nguồn (như live). Lỗi phía đích (quota, type, pool, caps)
+  dừng run khi VM nguồn còn chạy. Log mới `destination volumes created; stopping the source now`; các lệnh
+  `volume create`/`rbd info` nay đứng trước `stop source VM`. Size lấy từ `volumes.json`.
+- **A4** Tên VM khớp VM ở **nhiều project** (không chỉ trong một project): mỗi VM `SKIP(ambiguous-name: use the ID)`.
+- **B1** Sau khi tháo port, chỉ câu trả lời "not found" mới là Nova đã xóa port; lỗi khác hỏi lại (≤ 60 lần) rồi
+  dừng `cannot read port <id> after detach: …`. Rollback gắn lại `source-ports` ∪ `port-ids.json`.
+- **B2** Đường ephemeral: endpoint Glance theo `OS_INTERFACE` của openrc đích (mặc định `public`, trước ghim
+  `internal`); đọc `OS_CACERT`/`OS_INSECURE`; token mới trước POST, PUT, PATCH.
+- **B3** `detect_boot` đối chiếu trường `image` của server; mâu thuẫn thì dừng `cannot tell the root disk of …`.
+- **B6** Image property của volume chỉ chép allowlist khách (như ephemeral): không còn `os_hash_*`, `os_hidden`.
+- **C2** `--max-passes` ≥ 1, `--delta-limit` ≥ 0 (`… takes a whole number >= 1, not '0'`).
+- **C5** Tên VM có `/` (hoặc `.`/`..`): dừng, chạy bằng ID.
+- **C7** Preflight không còn `systemctl start iscsid`: chỉ kiểm, FAIL kèm `INFO start it: systemctl enable --now iscsid`.
+- `flavor show` của preflight đọc `-f json` (cùng một lệnh, cùng dòng OK/FAIL) để biết vCPU/RAM cho quota.
+
+### Thêm
+
+- **A2** Preflight quota **cả hai cloud** và dung lượng đích (bổ sung 19/11 tối): nguồn `volumes`/`gigabytes`
+  (+ per-type) cho clone tạm; đích `instances`, `cores`, `ram`, `volumes`, `gigabytes` (+ per-type của type đã
+  chọn), `ports`, `secgroups`, `secgroup-rules`, `server_group_members`; IP trống trong allocation pool khi
+  `--ip new`; pool Ceph qua `ceph df detail` (FAIL/WARN <10%/INFO khi thiếu caps). Dòng `  OK    source quota: …`,
+  `  OK    destination quota: …`, `  FAIL  destination quota: <res> need N, M free (used U of L)`. Cloud không trả
+  lời quota: WARN, không chặn. `migrate volume` kiểm phần volume.
+- **A3** Floating IP: `ports.json` có `floating_ips` (khi có), `plan` in `  fip   <addr> on <mac>`, preflight WARN
+  "not migrated", rollback gắn lại floating IP mất liên kết vào port giữ chỗ.
+- **B2** Preflight ephemeral kiểm chỗ trống `/var/lib/mig-migrate` so với disk của flavor, `OS_CACERT` nạp được
+  và image endpoint của `OS_INTERFACE` (review 19/11: trước đó hai việc sau chạy sau khi đã tắt nguồn).
+- **B4** `--ip <addr>` phải là IPv4 thật; preflight FAIL `IP <addr> is not in subnet <cidr> of <net>`.
+- **C6** `--volume-az ZONE` / `MIG_VOLUME_AZ`: AZ Cinder của volume đích khi khác tên AZ compute. Header preflight
+  ` volume-az=<x>`, file state `options` thêm `VOLUME_AZ=` cuối dòng.
+- **C8** Rollback tìm server đích theo tên khi `dst-server-id` rỗng (Nova tạo nhưng client timeout): đúng 1, tạo sau
+  `t-stop` thì xóa.
+- **D2** Lệnh `migrate doctor` (chỉ đọc) và `python -I -m migratetool.brick --check`.
+- **D3** Cuối mỗi migrate: `downtime breakdown: total Ns, copy Ns, verify Ns, control-plane Ns`.
+- **D1** Harness unit + parity vào repo: `tests/unit/` (`run.sh`, stdlib), thêm `v72unit.py` (mỗi mã ≥ 1 case).
+
+### Sửa
+
+- **B5** Rollback không dừng khi `image list`/`volume list` phía nguồn lỗi (WARN rồi làm tiếp: unlock, gắn port,
+  bật VM); clone sót đi qua `drop_volume`.
+- **C1** Escape tên VM trong mọi `server list --name ^<tên>$` (tên có `.`).
+- **C3** Dọn SG copy khi lỗi: xóa hết rule trước rồi mới xóa group (tránh `in use`).
+- **C4** File lỗi brick nằm trong thư mục state của run; `volume show` của rollback không còn file `.err` chung.
+- **D4** Phiên bản `7.2.0`.
+
+## [7.1.0] (đang làm: `7.1.0.dev1`) — 2026-11-18 · merge main 19/11 · review + gate lab ĐẠT 183/0 (e2e 50, live 26, newip 26, extras 30, p4feat 24, p6feat 27 — TEST-REPORT-20261118-v7.md mục "Gate lab 7.1")
+
+Phase P6 của [DESIGN-V7.md](DESIGN-V7.md): port, security group và server group ở đích giống nguồn. Chỉ app
+Python; bản bash trong `archive/` không đổi. Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md) mục 4b (có phần chuyển
+từ 7.0). Test: TEST-REPORT-20261118-v7.md mục Phase 6.
+
+### Đổi hành vi (mặc định mới)
+
+- **Security group**: mỗi SG trên port nguồn → `<AZ đích>-<tên>` trong project đích. Có rồi thì dùng luôn (không so
+  rule); chưa có thì `migrate` tạo trước khi tắt VM nguồn và chép đủ rule (xóa 2 rule egress Neutron tự thêm, copy
+  đệ quy SG được trỏ qua remote group, chống vòng lặp). Bỏ cách tìm SG cùng tên. `--security-group` gõ tay vẫn
+  thắng, tên nguyên văn. Rollback giữ các SG này.
+- **Server group**: VM nguồn trong group thì đích luôn dùng/tạo `<AZ đích>-<tên>` cùng policy, không cần flag.
+  7.0 dùng chữ cứng `az-` và chỉ khi `--keep-server-group`. ⚠ Group `az-*` cũ ở đích không được dùng lại.
+- `<AZ đích>` = `--az` > `MIG_AZ` > AZ compute duy nhất của đích. Đích từ 2 AZ trở lên mà không có cả hai thì
+  preflight FAIL.
+- ⚠ **BREAKING — bỏ `--keep-server-group`** (user chốt 19/11). Gõ cờ này thì app dừng như mọi option lạ:
+  `ERROR: unknown option --keep-server-group`. Nằm trong `MIG_DEFAULT_OPTS` thì dừng ngay lúc đọc conf:
+  `ERROR: MIG_DEFAULT_OPTS: unknown option '--keep-server-group' (MIG_DEFAULT_OPTS="…")`. Script, cron, conf thời
+  7.0 phải xóa cờ trước khi lên 7.1; hành vi không cờ của 7.1 chính là việc cờ đó từng làm (tên `<AZ>-` thay `az-`).
+  `migrate volume <vol> --keep-server-group` cũng ra `unknown option` (7.0: "cannot apply").
+
+### Thêm
+
+- **Port fidelity**: port đích chép port security tắt (`--disable-port-security`, không SG),
+  allowed-address-pairs (`--ip new` thì bỏ kèm WARN), description, dns_name (khi đích có `dns-integration` và
+  `dns_name` đúng là hostname). Port giữ chỗ phía nguồn cũng mang pairs, port security, description.
+  Bỏ preflight FAIL `has allowed-address-pairs (not handled)`. Nhiều fixed IP/port vẫn từ chối.
+- Opt-out: `--no-copy-secgroup` (về đúng hành vi 7.0: SG cùng tên có sẵn), `--no-server-group`.
+- State: file `dst-security-groups`; `ports.json` có thêm `description`/`dns_name` khi port có giá trị (port
+  thường: file giống hệt trước).
+- Port tắt port security mà gõ `--security-group`: dừng ngay, nêu xung đột.
+
+### Sửa
+
+- Tiến trình con brick chạy `python -I -m migratetool.brick` (như tiến trình con selector từ P5): một cây nguồn
+  `migratetool/` ở thư mục hiện tại không che được package đã cài.
+
+## [v7] — 2026-11-18 · nhánh `feature/v7-python-app` (fork từ v6 `6b6c48b`) · phát hành 7.0.0 (`a4ecb38`)
+
+Viết lại thành **một app Python `migrate`**, thay hẳn `migrate-vm.sh` + `migrate-batch.sh` (user chốt
+18/11). Đây là bản **port giữ nguyên hành vi**: cùng state, cùng conf, cùng cách gọi hạ tầng (vẫn
+subprocess `openstack`/`qemu-img`/`rbd`, chưa SDK), cùng quy tắc nghiệp vụ. Thiết kế:
+[DESIGN-V7.md](DESIGN-V7.md). Test: TEST-REPORT-20261118-v7.md.
+Hướng dẫn: [GUIDE-PYTHON.md](GUIDE-PYTHON.md), [DEPLOY-PYTHON.md](DEPLOY-PYTHON.md),
+[WORKFLOW-PYTHON.md](WORKFLOW-PYTHON.md), [DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md).
+
+### Test
+
+- Regression gate trên lab: 4 bộ cũ nguyên văn, chỉ sed đổi lệnh và thêm `--yes`, cộng `blocksync-unit`:
+  - cộng dồn P1–P3: **140/140**;
+  - chạy lại cả 4 bộ trên build P4: e2e 50/0, live 26/0, newip 26/0, extras 30/0.
+- Feature V3–V6 trên CLI mới (`p4feat.sh`): **24/24**. Lượt đầu có 10 FAIL, cả 10 đều oan và đã chẩn đoán
+  trong report.
+- Harness giả lập so với bản bash trên 6 chiều (stdout, stderr, mã thoát, file state, chuỗi lời gọi ra
+  ngoài, world cuối):
+  - P1 44/44 + 4/4 rollback chéo;
+  - P2 65/65;
+  - P3 86/86;
+  - P4 141/141;
+  - P5 **153/153** (141 cũ + 12 mới cho `plan volume`).
+- Unit: P1 23/23, P2–P3 25/25, P4 65/0, P5 48/0 (Linux và Windows).
+
+### Thêm
+
+- App `migrate`:
+  - package `migratetool/` + `pyproject.toml`;
+  - cài bằng `pip install --no-build-isolation .` vào `/opt/mig-venv`;
+  - lệnh `plan`, `migrate`, `volume`, `rollback`.
+- **CLI thống nhất theo selector**:
+  - chọn bằng `--vm`/`--host`/`--project`/`--vm-file`, positional là cách viết gọn của `--vm`;
+  - 1 VM hay N VM đi cùng một đường: bảng `Selected`/`Plan`/`Summary`;
+  - mỗi VM là một tiến trình con, có project riêng và log riêng ở `/var/log/mig-batch/<thời gian>/`;
+  - không còn lệnh `batch`, không còn dấu `--`.
+- **Luôn hỏi `Type yes`** trước khi migrate, kể cả 1 VM, trừ khi có `--yes`. stdin không phải terminal mà
+  thiếu `--yes` thì app dừng.
+- **Volume theo đợt** gộp vào `migrate volume`: `--project p --available|--attached|--all`, `--vm a,b`.
+  Một volume vẫn là `migrate volume <volume> [--in-use]`.
+- **`migrate plan volume <selection>`** (P5): dry-run của volume theo đợt, thay
+  `migrate-batch.sh --volumes … --plan-only`.
+  - Volume available ra `READY`, không có plan riêng, giống batch.
+  - VM của `--attached`/`--vm` chạy preflight `--volumes-only`.
+  - Không hỏi, không đổi gì.
+- `blocksync.py` đóng gói trong package, giống từng byte bản bash, chạy bằng `SYS_PY -I`. `brick_attach.py`
+  thành module `migratetool.brick`.
+- Gõ kiểu cũ thì app dừng kèm hướng dẫn lệnh mới: `batch`, `migrate-volume`, `--`, `--plan-only`, `--volumes`.
+
+### Đổi hành vi (đã duyệt)
+
+- **Thay thế**: 4 file của bản bash chuyển vào [archive/](archive/README.md), giữ nguyên byte. Bản bash
+  dừng ở commit `6b6c48b`. Tài liệu bản bash (GUIDE/DEPLOY/WORKFLOW/DEVELOPING) giữ nguyên; tài liệu app
+  ở các file `*-PYTHON.md` mới.
+- `migrate migrate` luôn hỏi xác nhận (bản bash chạy thẳng). Script và cron phải thêm `--yes`.
+- ⚠ **Một VM cũng tự scope `SRC_PROJECT`/`DST_PROJECT` theo project của VM.**
+  - Bản bash chạy lẻ mà quên đặt env thì VM đích rơi vào project của openrc.
+  - `PROJECT_MAP_FILE` giờ áp cho cả lệnh 1 VM.
+  - Env `SRC_PROJECT`/`DST_PROJECT` bị project của VM đè khi chạy theo selector.
+- State, log và lệnh rollback dùng **đúng chữ đã gõ**: `--vm sg-vm1` thì rollback `sg-vm1`. Riêng
+  `--host`/`--project` vẫn theo ID như batch.
+- Đợt mà mọi hàng đều SKIP thì thoát mã 1; batch thoát 0. `plan` một VM đã có state ra
+  `SKIP(state-exists)`, không export đè lên state cũ.
+- `migrate plan` in preflight ra màn hình. Batch chỉ ghi vào log.
+- Application credential dùng được qua selector khi VM thuộc đúng project của token. Batch bash từ chối thẳng.
+- Conf được đọc chặt: chỉ `KEY=VALUE`. Gặp dòng bash phức tạp thì app dừng kèm số dòng, nên phải soát conf
+  production trước khi chuyển.
+- stderr của tiến trình con gộp vào stdout của `migrate`.
+- Tiến trình con chạy `python -I -m migratetool.single` (P5): thư mục `migratetool/` của repo nằm ở thư mục
+  hiện tại không che được package đã cài.
+- Message lỗi rõ hơn. Các chuỗi mà người, test và script đang bám vào thì giữ nguyên văn
+  ([DEVELOPING-PYTHON.md](DEVELOPING-PYTHON.md) mục 4). Blocksync in rác thay cho JSON thì app dừng kèm nội
+  dung đó, thay vì lỗi jq khó hiểu như bash.
+
+### Sửa (bug của bản bash)
+
+- Rollback khi có từ 2 clone `mig-clone-*` sót cùng tên: bash truyền chuỗi nhiều dòng thành 1 đối số nên
+  không dọn được. App dọn từng clone.
+- Server property chứa `\` hoặc tab bị `@tsv` của bash làm hỏng khi chép sang VM đích. App chép nguyên văn.
+- `--max-passes`/`--delta-limit` không phải số nguyên: bash lặp pre-sync **vô hạn**. App dừng ngay, ví dụ
+  `ERROR: --max-passes takes a whole number, not 'x'`.
+
+### Tài liệu
+
+- Mới: GUIDE-PYTHON, DEPLOY-PYTHON, WORKFLOW-PYTHON, DEVELOPING-PYTHON, archive/README.
+- Sửa: README (bảng trỏ bản Python hiện hành / bản bash trong archive, lệnh cài mới), `migrate.conf.example`
+  (tên lệnh `migrate`, cách app đọc file, ví dụ file map project).
+
+### Commit
+
+- Code: P1 `e0a41a1`, P2 `1fb2e88`, P3 `f584bd5`, P4 `8a48c45`, P5 `5e67653`.
+- Thiết kế: `1f25651`, `fc77812`, `18b4f75`; P6 port fidelity `5b020e2` (thiết kế, chưa code).
+- Report: `3a28aa8`, `b5f1979`, `9b47e50`, `0d58db0`, cùng commit report P5.
+- Archive: `b6f0e2f`. Docs: commit docs P5.
+
+## [v6] — 2026-11-18 · nhánh `feature/v6-batch-hint` (fork từ v5) · test xong: 6/6 lab + 8/8 giả lập
+
+Chỉ đổi message lỗi của `migrate-batch.sh`: gõ `plan`/`migrate`/`rollback` như lệnh con (thói quen
+từ migrate-vm.sh — 2 lỗi thật trên production 18/11) → die kèm hint chỉ cả hai cách gõ đúng.
+Logic, exit code, các message khác giữ nguyên văn; `migrate-vm.sh` không đổi (md5 `5706e763`) nên
+gate vòng 7 của v5 còn hiệu lực. Thiết kế: [DESIGN-V6.md](DESIGN-V6.md). Test:
+TEST-REPORT-20261118-v6.md. Commit: code `aa457dd`, design `9368fe4`.
+
+## [v5] — 2026-11-18 · nhánh `feature/v5-flavor-map` (fork từ v4) · test xong, CHỜ MERGE: feature 16/16, gate vòng 7 = 140/0
+
+Thiết kế: [DESIGN-V5.md](DESIGN-V5.md). Test: TEST-REPORT-20261118-v5.md.
+Hướng dẫn: [GUIDE.md](GUIDE.md) mục 2b.12.
+
+### Test
+
+- Feature trên lab: **16/16 PASS**, phủ 12 case của DESIGN-V5 §4.
+- Regression gate vòng 7 (5 bộ cũ nguyên văn trên build `0c49e3c`): **đang chạy**, kết quả sẽ ghi vào
+  report.
+- Harness giả lập: V5 27/27. Không có flag thì output preflight giống build v4 từng byte (3 kịch bản).
+  Chạy lại các bộ A/B, C, 2d, 2e đều xanh.
+
+### Thêm
+
+- `--flavor-fallback` (cho `plan`/`migrate`, mặc định tắt) cùng biến conf/env `FLAVOR_MAP_FILE`: file
+  map riêng, mỗi dòng `flavor-nguồn flavor-đích`. Khi bật flag, flavor được chọn theo thứ tự:
+  1. `--flavor` gõ tay luôn thắng;
+  2. đích có flavor cùng tên thì dùng luôn, không tra map;
+  3. đích thiếu thì tra map;
+  4. không có trong map thì FAIL kèm gợi ý thêm dòng.
+- Tool không bao giờ tạo flavor. Flavor map ra phải có sẵn ở đích, nhỏ hơn nguồn thì WARN.
+- Bật flag mà `FLAVOR_MAP_FILE` rỗng hoặc dòng map sai dạng thì die.
+- Dùng được trong `MIG_DEFAULT_OPTS` và batch passthrough (bộ lọc `VOLPASS` của batch đã biết flag này).
+  `migrate-volume` từ chối flag.
+
+### Tài liệu
+
+- GUIDE 2b.12, cùng bảng "`migrate-vm.sh` ↔ `migrate-batch.sh`" ở 2b.6: batch không có lệnh con, gõ
+  `migrate-batch.sh plan <vm>` sẽ ra `unknown option plan`.
+- `migrate.conf.example`: thêm `FLAVOR_MAP_FILE`.
+
+### Commit
+
+Code: `0c49e3c`. Thiết kế: `141213b`. Docs: commit docs v5.
+
+## [v4] — 2026-11-18 · nhánh `feature/v4-sg-inuse-vol` · test xong, CHỜ MERGE
+
+Thiết kế: [DESIGN-V4.md](DESIGN-V4.md). Test: TEST-REPORT-20261118.md.
+Hướng dẫn: [GUIDE.md](GUIDE.md) mục 2b.1, 2b.1b, 2b.9–2b.11.
+
+### Test
+
+- Regression gate (5 bộ test cũ chạy nguyên văn, không sửa dòng nào trong `tests/`):
+  - vòng 5 = **140/0** trên build A+B+C (`e4d76d0`);
+  - vòng 6 = **140/0** trên build cuối (`51aa611`).
+- Feature test trên lab: 4 phase = **64 PASS / 0 FAIL**, phủ đủ 27 case của DESIGN-V4 §4.
+- Harness giả lập (không gọi cloud): A/B 27/27, C + batch filter 17/17, §2d 9/9, §2e 28/28.
+- Chưa test trên lab, mới phủ bằng harness giả lập:
+  - `--keep-server-group` với group có `rules` (`max_server_per_host`);
+  - client từ chối `--rule`;
+  - microversion bị ghim dưới 2.64 (trả `policies[]`).
+
+### Thêm
+
+- `migrate-volume <volume> --in-use`: copy volume đang gắn vào VM, không stop, không lock, không
+  detach. Bản copy lấy từ một clone crash-consistent. Tool in mốc giờ clone (UTC) và ghi vào state
+  `clone-time`. Không truyền flag thì volume in-use vẫn bị từ chối như v3, message gợi ý `--in-use`.
+  Volume in-use mà multiattach thì bị từ chối. Lab đã chứng minh mốc: dữ liệu ghi trước clone có
+  trong bản copy, ghi sau thì không.
+- `--keep-server-group` (cho `plan`/`migrate`): VM đích vào server group `az-<tên group nguồn>` ở project
+  đích, cùng policy với group nguồn (và cùng rules nếu client nhận `--rule`).
+  - Group chưa có thì `migrate` tạo ngay trước khi tạo server; `plan` không tạo gì.
+  - Group có sẵn nhưng khác policy, hoặc nhiều group trùng tên: preflight FAIL.
+  - Không dùng chung với `--server-group`.
+  - State ghi `dst-server-group`; rollback không xóa group.
+  - Migrate rải rác nhiều lần (hoặc qua batch) vẫn dồn về cùng một group.
+- `MIG_AZ` và `AZ_TYPE_MAP` (conf hoặc env): AZ mặc định và volume type theo AZ, áp dụng khi không truyền
+  `--az` / `--volume-type`. CLI luôn thắng. Preflight in nguồn gốc giá trị. Chuỗi AZ → type → pool
+  giải thích ở [GUIDE.md](GUIDE.md) mục 2b.1b.
+- `MIG_DEFAULT_OPTS` (conf hoặc env): option mặc định, parse trước option CLI nên CLI thắng.
+  - `MIG_DEFAULT_OPTS=""` tắt cho một lần chạy.
+  - `--keep-server-group` từ defaults gặp `--server-group` gõ tay: bỏ keep kèm INFO, không die.
+  - `migrate-volume` chỉ lấy `--volume-type`, `--az`, `--verify`.
+  - `--in-use` không bao giờ được lấy từ defaults.
+  - Token sai thì die nêu tên biến.
+  - Preflight in 1 dòng INFO liệt kê option đã áp.
+- `migrate.conf.example`: mẫu đủ mọi biến conf, chia nhóm, mỗi biến có mô tả và ví dụ.
+
+### Sửa
+
+- `migrate-batch.sh`: bộ lọc option truyền xuống cho volume rời giờ coi `--keep-server-group` và
+  `--in-use` là option không tham số. Trước đây nó nuốt option kế tiếp, ví dụ `--volume-type X` bị bỏ
+  mất.
+- Rollback dọn được volume đích mồ côi. `create_dest_volume` ghi `volume-map` ngay khi có ID volume
+  (trước bước chờ và check pool RBD), và rollback VM xử lý được volume đang `error` hoặc đã bị xóa.
+  Lab: volume đích rơi `error` thì rollback vẫn chạy hết và dọn được; code cũ die ở bước này.
+
+### Tài liệu
+
+- [WORKFLOW.md](WORKFLOW.md): từng bước migrate một VM, cold 10 bước / live 11 bước với option mặc định
+  (lệnh thật, state, fail thì sao, thời lượng lab).
+- [DEVELOPING.md](DEVELOPING.md): hướng dẫn cho người phát triển tiếp (kiến trúc, state, lớp cấu hình,
+  quy ước, quy trình, test, checklist thêm option).
+- CHANGELOG.md (file này).
+- GUIDE: 2b.1b (chuỗi AZ → type → pool), `MIG_DEFAULT_OPTS` ở 2b.1, 2b.9 `--in-use`,
+  2b.10 `--keep-server-group`, 2b.11 ví dụ v4.
+- DEPLOY: sửa chỗ ghi sai vị trí WWN và `brick-attach.err` (mục 9), thêm phần chưa test của v4 (mục 10).
+
+### Commit
+
+Code:
+
+- `b46e51b`: in-use + keep-server-group.
+- `e4d76d0`: MIG_AZ/AZ_TYPE_MAP + fix batch.
+- `af151e2`: volume mồ côi.
+- `51aa611`: MIG_DEFAULT_OPTS + `migrate.conf.example`.
+
+Thiết kế: `6eb2d9e`, `30b9da2`, `e105dd1`, `7bed2c8`. Report: `2111b1d`.
+Docs: `1353cc5`, `1641270`, `797089b`, cùng commit docs chốt v4.
+
+## [v3] — 2026-11-17/18 · nhánh `feature/batch-migrate` · test xong, CHỜ MERGE
+
+Thiết kế: [DESIGN-V3.md](DESIGN-V3.md). Test: TEST-REPORT-20261117.md (P1 + P2).
+Hướng dẫn: [GUIDE.md](GUIDE.md) mục 2b.
+
+### Thêm
+
+- File cấu hình `/opt/mig/migrate.conf` (đổi đường dẫn bằng `MIG_CONF`). Thứ tự ưu tiên: CLI > env >
+  conf > mặc định.
+- `SRC_PROJECT` / `DST_PROJECT`: chạy mỗi phía trong project của VM. Bắt buộc password openrc;
+  application credential bị chặn bằng message riêng.
+- Lệnh `migrate-volume <volume>`: copy một volume available qua clone, nguồn không bị đụng. Kèm
+  `rollback <volume>`.
+- `--server-group <tên|ID>` (group phải có sẵn ở đích) và `--volumes-only` (cold, chỉ copy volume).
+- `migrate-batch.sh`:
+  - chọn VM theo `--host` / `--project` / `--vm` / `--vm-file`;
+  - `--volumes attached|available|all`;
+  - plan hết, xác nhận một lần, rồi migrate tuần tự;
+  - `PROJECT_MAP_FILE` khi project đích khác tên.
+
+### Đổi hành vi (đã duyệt)
+
+- Tên phía đích theo instance, luôn bật: volume `<vm>-<device>`, port `<vm>-<ip>`. Volume rời giữ
+  tên nguồn và mang description `migrated from <id>` làm guard chống copy trùng.
+- Keypair thiếu ở đích không còn làm preflight FAIL: tool báo INFO và tạo VM không có `key_name`.
+
+### Sửa
+
+- Security group trùng tên giữa các project (vd `default`): tên được resolve sang ID trong đúng
+  project của token (`c862d09`). Phía nguồn, lúc giữa cutover, group không resolve được chỉ WARN.
+
+### Commit
+
+P1: `9e38771`, `c733678`, `2b69692`. P2: `23fb678`. Fix: `c862d09`. Docs: `08e32cf`, `75aaef9`.
+Thiết kế: `6d9ac7c` → `4d18796`.
+
+### Test
+
+P1: gate 110/0, feature 22/22. P2: gate 110/0 + 140/0, feature 11 PASS vòng đầu, retest 7/7.
+Tìm thấy và đã fix 1 bug thật (SG đa project).
+
+## [Production fixes] — 2026-11-17 · nhánh `main` (HEAD `726d968`)
+
+Sửa sau lần chạy production đầu tiên, cùng vài option theo yêu cầu vận hành. Test ghi ở
+TEST-REPORT-20261112.md các mục "Bổ sung 17/11".
+
+### Thêm
+
+- `--keep-source-ports` (`c3b732d`): với `--ip same`, không tháo port nguồn. Đổi lại phải chấp nhận
+  rủi ro split-brain nếu ai bật VM nguồn.
+- `--az <zone>` (`c2e6b5b`): AZ đích cho cả volume lẫn server. Preflight kiểm AZ ở cả compute lẫn
+  volume service.
+- Hiển thị % tiến độ copy/verify/blocksync (`726d968`).
+- `brick_attach.py` nhận application credential qua `OS_AUTH_TYPE` (`12394da`).
+
+### Sửa
+
+- `fb71cd2`:
+  - VM nguồn đã bị lock (stop trả 409): tool tự unlock kèm WARN rồi đi tiếp.
+  - Preflight FAIL nếu đích đã có server cùng tên không thuộc state của lần chạy này.
+- `40241ba`: lock VM nguồn chỉ sau khi tháo port và snapshot ephemeral xong. Lock của Nova chặn các
+  thao tác này với creds không-admin.
+- `6174780`: nhiều VM trùng tên trong project nguồn thì tool die sớm, liệt kê ID; chạy lại bằng ID.
+- `d209701`: cold mode tôn trọng `--verify none`.
+
+Docs: `eb62117` (cài bằng git clone).
+
+## [v2.1] — 2026-11-13
+
+Test: TEST-REPORT-20261112.md các mục "Bổ sung 13/11": `extras.sh` 30/0,
+`powerstore-sim.sh` 30/0, e2e qua multipath 50/0. Mã nằm trong commit đầu của repo `e973d00`.
+
+### Thêm
+
+- `--flavor`, `--security-group`. Server properties và description được copy sang VM đích.
+- VM root ephemeral (không có volume): đi đường Glance snapshot, tải về rồi đẩy lên đích bằng REST.
+- VM nhiều NIC, mỗi NIC giữ đúng port (NIC phải nằm trên network riêng).
+- Nguồn kiểu PowerStore (LIO 2 portal): attach qua multipath bằng `MIG_MULTIPATH=1`.
+
+## [v2] — 2026-11-12
+
+Thiết kế: [DESIGN-V2.md](DESIGN-V2.md). Test: TEST-REPORT-20261112.md,
+gồm `blocksync-unit` 8/0, `e2e-migrate` 50/0, `live-migrate` 26/0, `newip-voltype` 26/0.
+
+### Thêm
+
+- `--mode live`: `blocksync.py` sync theo hash từng chunk 4 MiB, pre-sync nhiều lượt trong lúc VM
+  chạy, cutover chỉ sync phần delta. Tham số đi kèm: `--max-passes`, `--delta-limit`,
+  `--verify readback|full|none`.
+- `--volume-type` cùng `RBD_POOL_MAP` (map type → pool RBD).
+- `--ip same|new|<addr>` và `--start-source`.
+- `lab.sh` để dựng và reset lab.
+
+## [v1] — 2026-11-05
+
+Test: TEST-REPORT-20261105.md: `e2e-migrate` 50/0, `e2e-nova-port` 12/0,
+`failure-injection` 17/0. Mã: [archive/migrate-vm-v1-20261105.sh](archive/migrate-vm-v1-20261105.sh).
+
+### Thêm
+
+- Cold migrate VM boot-from-volume, giữ nguyên IP và MAC:
+  1. stop + lock VM nguồn, tháo port nguồn;
+  2. clone volume, attach clone qua `brick_attach.py`;
+  3. `qemu-img convert` sang RBD, rồi `qemu-img compare`;
+  4. tạo port cùng MAC/IP và VM đích.
+- `plan` (preflight chỉ đọc) và `rollback` (dọn đích, trả VM nguồn).

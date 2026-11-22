@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "migratetool"
+version = "1.0.0"
+description = "migrate: move VMs between two independent OpenStack clouds, iSCSI Cinder -> Ceph RBD"
+readme = "README.md"
+requires-python = ">=3.10"
+# The package itself only needs the standard library. What the convert host runs it with (openstackclient for the
+# 'openstack' commands, os-brick + cinderclient + keystoneauth1 + oslo.* for brick, openstacksdk for 'migrate volume')
+# is the 'host' extra; requirements-host.txt pins every package of the lab venv (C15).
+dependencies = []
+
+[project.optional-dependencies]
+host = [
+    "python-openstackclient==10.5.0",
+    "openstacksdk==4.22.0",
+    "os-brick==7.1.1",
+    "python-cinderclient==9.10.0",
+    "keystoneauth1==5.18.1",
+    "oslo.concurrency==7.6.1",
+    "oslo.config==10.8.0",
+]
+
+[project.scripts]
+migrate = "migratetool.cli:main"
+
+[tool.setuptools]
+packages = ["migratetool"]

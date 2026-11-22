@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>migrate · Chuyển VM giữa hai cloud</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#workspace">Đến nội dung</a>
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol><symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3zm0 5v6m0 3v1"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8V4"/></symbol><symbol id="i-stop" viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/></symbol><symbol id="i-rollback" viewBox="0 0 24 24"><path d="M4 10h10a6 6 0 0 1 0 12M4 10l6-6M4 10l6 6"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><path d="M16 16l5 5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0"/></symbol><symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 4h18l-7 8v8l-4-2v-6z"/></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-2 8M20 3v7h-7"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><path d="M8 8h13v13H8zM16 8V3H3v13h5"/></symbol><symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol><symbol id="i-info" viewBox="0 0 24 24"><path d="M12 10v7m0-11v1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><path d="M5 10h14v11H5zM8 10V6a4 4 0 0 1 8 0v4"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><path d="M12 6v6l4 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0"/></symbol><symbol id="i-server" viewBox="0 0 24 24"><path d="M3 3h18v7H3zM3 14h18v7H3zM6 6h2m-2 11h2"/></symbol></defs></svg>
+<header class="top">
+  <div class="brand">migrate <span id="app-version"></span></div>
+  <nav id="nav" class="hidden" aria-label="Điều hướng chính">
+    <a href="#overview" data-screen="overview">Tổng quan</a>
+    <a href="#doctor" data-screen="doctor">Doctor <span id="doctor-dot" class="dot-none">●</span></a>
+    <a href="#instance" data-screen="instance" class="locked">Instance</a>
+    <a href="#volume" data-screen="volume" class="locked">Volume</a>
+    <a href="#running" data-screen="running" id="nav-running">Hàng đợi (<span id="queue-count">0</span>)</a>
+    <a href="#history" data-screen="history">Lịch sử</a>
+  </nav>
+  <div class="session" id="session-info"></div>
+  <button type="button" id="theme-toggle" class="btn small" aria-label="Đổi giao diện sáng tối">Giao diện</button>
+  <button type="button" id="logout" class="btn small hidden">Đăng xuất</button>
+</header>
+
+<main id="workspace">
+<ol id="stepper" class="stepper hidden" aria-label="Các bước của một đợt"><li><a id="step-doctor" href="#doctor"><span>1</span>Doctor</a></li><li><a id="step-instance" href="#instance"><span>2</span>Chọn</a></li><li><a id="step-options" href="#options"><span>3</span>Tùy chọn</a></li><li><a id="step-confirm" href="#confirm"><span>4</span>Xác nhận</a></li><li><a id="step-running" href="#running"><span>5</span>Chạy</a></li></ol>
+<div id="flash" class="msg hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+<section id="screen-overview" class="hidden"><div class="page-heading"><div><p class="eyebrow">TỔNG QUAN</p><h1>Chuyển VM giữa hai cloud</h1><p class="hint">Chạy Doctor, chọn VM, plan, xác nhận rồi theo dõi từng đợt.</p></div><a id="overview-new" class="btn primary" href="#doctor">Bắt đầu đợt mới</a></div><div class="stats" id="overview-stats"></div><div class="row"><div class="card grow3"><div class="bar"><h2>Hoạt động gần đây</h2><a class="push" href="#history">Xem lịch sử →</a></div><div id="overview-jobs"></div></div><aside class="card side"><h2>Tình trạng hệ thống</h2><p id="overview-doctor"></p><button id="overview-doctor-run" class="btn primary" type="button">Chạy Doctor</button> <a class="btn link" href="#doctor">Xem kết quả Doctor →</a><p id="overview-connection" role="status">Đang kết nối…</p><details><summary>Giải thích thuật ngữ</summary><p>Plan: kiểm tra trước khi chạy, chưa thay đổi nguồn.</p><p>Cutover: dừng nguồn và chuyển dịch vụ sang đích.</p><p>Rollback: xóa bản đích, khôi phục nguồn; dữ liệu mới ghi ở đích sẽ mất.</p></details></aside></div></section>
+
+<!-- Đăng nhập -->
+<section id="screen-login" class="hidden">
+  <div class="card login">
+    <p class="eyebrow">MIGRATE · MIG-HOST</p><h1>Đăng nhập</h1>
+    <p class="hint">Đăng nhập bằng tài khoản vận hành được cấp trên mig-host.</p>
+    <form id="login-form" class="form2" method="post" action="/">
+      <label class="lbl" for="login-user">Tài khoản</label>
+      <input type="text" id="login-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" required>
+      <label class="lbl" for="login-password">Mật khẩu</label>
+      <input type="password" id="login-password" name="password" autocomplete="current-password" maxlength="128" required>
+      <span></span>
+      <button type="submit" id="login-submit" class="btn primary">Đăng nhập</button>
+    </form>
+  </div>
+</section>
+
+<!-- Doctor -->
+<section id="screen-doctor" class="hidden">
+  <div class="card">
+    <div class="bar">
+      <h2>Kiểm tra môi trường</h2>
+      <span class="hint">Kiểm tra host chuyển, hai cloud và lưu trữ trước khi chạy.</span>
+      <button type="button" id="doctor-run" class="btn primary push">Chạy Doctor</button>
+    </div>
+    <div class="bar"><span id="doctor-time" class="hint">Chưa chạy trong phiên này</span><button id="doctor-write" type="button" class="btn hidden">Kiểm tra ghi RBD</button></div><div id="doctor-summary"></div>
+    <div class="scroll"><table><thead><tr><th>Mức</th><th>Kiểm tra</th></tr></thead><tbody id="doctor-rows"></tbody></table></div>
+  </div>
+</section>
+
+<!-- Instance -->
+<section id="screen-instance" class="hidden"><div class="page-heading"><div><p class="eyebrow">ĐỢT MỚI · CHỌN</p><h1>Chọn VM hoặc volume ở cloud nguồn</h1></div><div class="tabs"><a class="active" href="#instance">Instance</a><a href="#volume">Volume</a></div></div>
+  <div class="row">
+    <div class="card grow">
+      <h2>Nguồn</h2>
+      <div class="form2">
+        <span class="lbl">Host</span><div class="msel" id="vm-src-host"></div>
+        <span class="lbl">Project</span><div class="msel" id="vm-src-project"></div>
+      </div>
+      <div class="inline">
+        <button type="button" id="vm-load" class="btn">Tải danh sách</button>
+        <span class="hint">= <span class="mono" id="vm-load-cmd">migrate list --json</span> <span id="vm-load-time"></span></span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="card">
+    <div class="bar">
+      <h2 id="vm-table-title">Instance (0)</h2>
+      <input aria-label="Tìm instance" type="search" id="vm-search" placeholder="tìm nhanh: tên, ID, IP, host">
+      <button type="button" class="btn small" id="vm-paste">Dán danh sách</button><span class="hint" id="vm-shown">lọc ngay trên trình duyệt, không gọi lại CLI</span>
+      <span class="hint push">đã chọn <strong id="vm-selected">0</strong></span>
+      <button type="button" id="vm-select-shown" class="btn small">Chọn hết đang hiện</button>
+      <button type="button" id="vm-select-none" class="btn small">Bỏ chọn</button>
+    </div>
+    <div class="scroll"><table id="vm-table">
+      <thead><tr><th aria-label="Chọn"></th><th>Tên</th><th>ID</th><th>Project nguồn → đích</th><th>Trạng thái</th><th>Boot</th><th>Volume</th><th>IP (--ip theo dòng)</th><th>Flavor</th><th>Host / AZ</th><th>Plan</th><th></th></tr></thead>
+      <tbody id="vm-rows"></tbody>
+    </table></div>
+  </div>
+
+  <div class="selection-bar"><strong id="vm-selection-summary">Đã chọn 0 VM</strong><a id="vm-next" class="btn primary" href="#options">Tiếp: Tùy chọn →</a></div>
+</section>
+
+<section id="screen-options" class="hidden"><div class="page-heading"><div><p class="eyebrow">ĐỢT MỚI · TÙY CHỌN</p><h1>Tùy chọn và plan</h1></div><a href="#instance" class="btn">← Quay lại chọn</a></div><div class="row"><div class="grow3 checks">    <div class="card grow2">
+      <h2>Đích</h2>
+      <div class="form2">
+        <span class="lbl">Project</span><div class="inline"><output id="vm-dst-project"></output><span class="pill skip" id="vm-dst-project-note">= tên nguồn, PROJECT_MAP_FILE nếu có</span></div>
+        <span class="lbl">AZ</span><div class="inline"><select id="vm-dst-az" aria-label="AZ tính toán đích"></select><span class="pill skip" id="vm-dst-az-note"></span></div>
+        <span class="lbl">Host</span><div class="inline"><select id="vm-dst-host" aria-label="Host đích"></select><span class="pill skip">--dst-host, chỉ host up+enabled trong AZ</span></div>
+      </div>
+    </div>  <div class="card">
+    <div class="bar">
+      <h2 id="vm-opt-title">Option cho 0 VM đã chọn</h2>
+      <span class="hint">một bộ option cho cả đợt · di chuột lên tên option để xem help của CLI · chọn ip = "theo dòng" rồi nhập IP từng VM ngay trong nhóm Mạng bên dưới</span>
+    </div>
+    <div class="optgrid" id="option-groups">
+      <label class="lbl" data-help="--mode">mode<select id="o-mode"><option value="">mặc định (cold / MIG_DEFAULT_OPTS)</option><option value="live">live — pre-sync khi VM chạy</option><option value="cold">cold</option></select></label>
+      <div id="vm-row-ips" class="hidden scroll"></div><label class="lbl" data-help="--ip">ip<select id="o-ip"><option value="">mặc định (same)</option><option value="same">same — giữ MAC+IP, tháo port nguồn</option><option value="new">new</option><option value="row">theo dòng</option></select></label>
+      <label class="lbl" data-help="--volume-type">volume-type<select id="o-volume-type"></select></label>
+      <label class="lbl" data-help="--volume-az">volume-az<select id="o-volume-az"></select></label>
+      <label class="lbl" data-help="--flavor">flavor<select id="o-flavor"></select></label>
+      <label class="lbl" data-help="--verify">verify<select id="o-verify"><option value="">mặc định (readback / MIG_DEFAULT_OPTS)</option><option value="readback">readback</option><option value="full">full</option><option value="none">none</option></select></label>
+      <label class="lbl" data-help="--max-passes">max-passes / delta-limit<span class="inline"><input type="number" id="o-max-passes" class="num" min="1" max="50" placeholder="5" aria-label="Số vòng live tối đa"><input type="number" id="o-delta-limit" class="num" min="0" max="65536" placeholder="64 MB" aria-label="Ngưỡng delta MB"></span></label>
+      <label class="lbl" data-help="--security-group">security-group (tùy, cách nhau dấu phẩy)<input type="text" id="o-security-group" placeholder="copy từ nguồn"></label>
+      <label class="lbl" data-help="--server-group">server-group (tùy)<input type="text" id="o-server-group" placeholder="copy từ nguồn"></label>
+      <div class="checks">
+        <label data-help="--no-copy-secgroup"><input type="checkbox" id="o-copy-sg" checked> copy security group → &lt;AZ&gt;-&lt;tên&gt;</label>
+        <label data-help="--no-server-group"><input type="checkbox" id="o-copy-srvgrp" checked> copy server group → &lt;AZ&gt;-&lt;tên&gt;</label>
+        <label data-help="--flavor-fallback"><input type="checkbox" id="o-flavor-fallback"> flavor-fallback (FLAVOR_MAP_FILE)</label>
+      </div>
+      <div class="checks">
+        <label data-help="--start-source"><input type="checkbox" id="o-start-source"> start-source sau khi xong</label>
+        <label data-help="--volumes-only"><input type="checkbox" id="o-volumes-only"> volumes-only (chỉ copy volume)</label>
+        <label class="red" data-help="--keep-source-ports"><input type="checkbox" id="o-keep-ports"> keep-source-ports (không tháo port, rủi ro split-brain) — bắt gõ tên từng VM</label>
+      </div>
+    </div>
+    <div class="bar">
+      <button type="button" id="vm-plan" class="btn primary">Plan 0 VM</button>
+      <button type="button" id="vm-to-confirm" class="btn" disabled>Sang xác nhận (0 PLAN-OK)</button>
+      <span class="hint">Plan = <span class="mono">migrate plan &lt;id&gt; … --json</span> cho từng VM, read-only. Dòng PLAN-FAIL không vào đợt.</span>
+    </div>
+    <div id="vm-plan-panel" class="planpanel hidden"></div>
+  </div></div><aside class="card side preview"><h2>Xem trước tác động</h2><div id="option-preview"></div><p class="hint">Giá trị hiệu lực được xác minh khi Plan. AZ chọn vùng tính toán; volume-az chọn vùng lưu trữ.</p><p class="hint">IP theo dòng: VM nào để trống thì giữ IP cũ (same).</p></aside></div></section>
+<!-- Volume -->
+<section id="screen-volume" class="hidden"><div class="page-heading"><h1>Chọn volume nguồn</h1><div class="tabs"><a href="#instance">Instance</a><a class="active" href="#volume">Volume</a></div></div>
+  <div class="row">
+    <div class="card grow">
+      <h2>Nguồn</h2>
+      <div class="form2">
+        <span class="lbl">Project</span><div class="msel" id="vol-src-project"></div>
+        <span class="lbl">Lọc</span><div class="inline">
+          <label><input type="radio" name="vol-scope" value="available" checked> --available</label>
+          <label><input type="radio" name="vol-scope" value="attached"> --attached</label>
+          <label><input type="radio" name="vol-scope" value="all"> --all</label></div>
+      </div>
+      <div class="inline">
+        <button type="button" id="vol-load" class="btn">Tải danh sách</button>
+        <span class="hint">= <span class="mono" id="vol-load-cmd">migrate list --json --volumes</span></span>
+      </div>
+    </div>
+
+  </div>
+  <div class="card">
+    <div class="bar">
+      <h2 id="vol-table-title">Volume (0)</h2>
+      <input aria-label="Tìm volume" type="search" id="vol-search" placeholder="tìm nhanh: tên, ID, VM">
+      <button type="button" class="btn small" id="vol-paste">Dán danh sách</button><span class="hint" id="vol-shown"></span>
+      <span class="hint push">đã chọn <strong id="vol-selected">0</strong></span>
+      <button type="button" id="vol-select-shown" class="btn small">Chọn hết đang hiện</button>
+      <button type="button" id="vol-select-none" class="btn small">Bỏ chọn</button>
+    </div>
+    <div class="scroll"><table id="vol-table">
+      <thead><tr><th aria-label="Chọn"></th><th>Tên</th><th>ID</th><th>Project nguồn → đích</th><th>Size</th><th>Trạng thái</th><th>Gắn vào</th><th>Type / AZ nguồn</th><th>Plan</th><th></th></tr></thead>
+      <tbody id="vol-rows"></tbody>
+    </table></div>
+
+  </div>
+<div class="selection-bar"><strong id="vol-selection-summary">Đã chọn 0 volume</strong><a id="vol-next" href="#volume-options" class="btn primary">Tiếp: Tùy chọn →</a></div>
+</section>
+
+<section id="screen-volume-options" class="hidden"><div class="page-heading"><div><p class="eyebrow">ĐỢT MỚI · TÙY CHỌN (VOLUME)</p><h1>Tùy chọn và plan</h1></div><a class="btn" href="#volume">← Quay lại chọn</a></div><div class="row"><div class="grow3 checks">    <div class="card grow2">
+      <h2>Đích + option (cho cả đợt)</h2>
+      <div class="form2">
+        <span class="lbl">project</span><div class="inline"><output id="vol-dst-project"></output><span class="pill skip">= nguồn / PROJECT_MAP_FILE</span></div>
+        <span class="lbl" data-help="--az">az</span><select id="vol-az" aria-label="az"></select>
+        <span class="lbl" data-help="--volume-az">volume-az</span><select id="vol-volume-az" aria-label="Vùng lưu trữ đích"></select>
+        <span class="lbl" data-help="--volume-type">volume-type</span><select id="vol-volume-type" aria-label="Loại volume đích"></select>
+        <span class="lbl" data-help="--verify">verify</span><select id="vol-verify" aria-label="Phương thức xác minh dữ liệu"><option value="">mặc định (compare)</option><option value="readback">readback</option><option value="full">full</option><option value="none">none</option></select>
+      </div>
+      <label class="red" data-help="--in-use"><input type="checkbox" id="vol-in-use" disabled> --in-use: copy volume đang gắn từ clone (crash-consistent, VM không tắt). Chỉ mở khi tick đúng một volume in-use.</label>
+    </div><div class="card">    <div class="bar">
+      <button type="button" id="vol-plan" class="btn primary">Plan 0 volume</button>
+      <button type="button" id="vol-to-confirm" class="btn" disabled>Sang xác nhận (0 PLAN-OK)</button>
+      <span class="hint">Mỗi volume một job <span class="mono">migrate volume &lt;id&gt; … --yes</span>, chạy từng cái. Rollback = <span class="mono">migrate rollback vol-&lt;id&gt;</span>, xóa bản copy, không đụng nguồn.</span>
+    </div>
+    <div id="vol-plan-panel" class="planpanel hidden"></div></div></div><aside class="card side preview"><h2>Xem trước tác động</h2><div id="vol-preview"></div><p class="hint">Volume đích là bản copy. Nguồn giữ nguyên; volume đang gắn cần xác nhận riêng.</p></aside></div></section>
+<!-- Xác nhận -->
+<section id="screen-confirm" class="hidden"><div class="card impact"><p class="eyebrow">TRƯỚC KHI CHẠY</p><h2>Đợt này sẽ làm gì</h2><div id="cf-impact"></div></div>
+  <div class="row">
+    <div class="card grow3">
+      <h2 id="cf-title">Xác nhận</h2>
+      <div class="hint" id="cf-sub"></div>
+      <p class="hint">Mỗi dòng là một lệnh nguyên văn runner sẽ chạy, giống hệt gõ tay trên mig-host. Bung dòng để xem nội dung plan (mọi check) và option hiệu lực của con đó (từ <span class="mono">plan --json</span>; volume READY chưa có, được ghi khi chạy); dòng có WARN/FAIL tự mở sẵn.</p>
+      <div id="cf-commands" class="checks"></div>
+      <div id="cf-excluded" class="hint"></div>
+      <div class="conf">
+        <div class="lbl" id="cf-conf-title">Snapshot conf lúc plan — chung cho cả đợt</div>
+        <div class="mono" id="cf-conf"></div><details><summary>Kỹ thuật</summary><pre class="mono" id="cf-technical"></pre></details>
+      </div>
+    </div>
+    <div class="card side">
+      <h2>Điều gì sẽ xảy ra</h2>
+      <ul class="plain" id="cf-what"></ul>
+      <label id="cf-stop-wrap"><input type="checkbox" id="cf-stop" checked> dừng đợt nếu một con FAIL (bỏ tick = <span class="mono">--continue-on-error</span>)</label>
+      <div id="cf-warnings" class="checks"></div><h2 id="cf-type-title">Xác nhận</h2>
+      <label class="lbl" id="cf-type-label" for="cf-typed">Gõ đúng số VM trong đợt</label>
+      <textarea id="cf-typed" class="bigtype mono" rows="2" autocomplete="off"></textarea>
+      <p class="hint" id="cf-type-hint"></p>
+      <div class="inline">
+        <button type="button" id="cf-run" class="btn primary" disabled>Chạy</button>
+        <button type="button" id="cf-back" class="btn">Quay lại sửa option</button>
+      </div>
+      <p class="hint">Đổi bất kỳ option nào = plan lại cả đợt (confirm_token gắn với tập ident + option đã chuẩn hóa). Rollback luôn gõ tên VM, không dùng số đếm.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Đang chạy / Hàng đợi -->
+<section id="screen-running" class="hidden">
+  <div id="run-empty" class="card"><h2>Không có job nào đang chạy</h2><p class="hint">Plan ở màn Instance hoặc Volume rồi xác nhận; job đã xong xem ở Lịch sử.</p></div>
+  <div id="run-pin-note" class="msg info hidden" role="status"><span id="run-pin-text"></span> <button type="button" id="run-pin-back" class="btn small">Xem job đang chạy</button></div>
+  <div id="run-rollback-wrap" class="hidden"><button type="button" id="run-rollback" class="btn danger">Rollback…</button></div><div id="run-panel" class="row hidden">
+    <div class="card grow3">
+      <div class="bar"><h2 id="run-title"></h2><span id="run-connection" class="pill skip push" role="status">Đang kết nối…</span></div><div id="run-failure" class="msg err hidden"></div>
+      <div class="hint" id="run-sub"></div>
+      <div class="stats">
+        <div class="stat"><div class="k">GIAI ĐOẠN</div><div class="v" id="st-pass">—</div><div class="hint" id="st-pass-note"></div></div>
+        <div class="stat"><div class="k">DOWNTIME</div><div class="v mono" id="st-down">—</div><div class="hint" id="st-down-note">chưa t-stop</div></div>
+        <div class="stat"><div class="k">VOLUME</div><div class="v" id="st-vol">—</div><div class="hint" id="st-vol-note"></div></div>
+        <div class="stat"><div class="k">KẾT QUẢ</div><div class="v" id="st-res">—</div><div class="hint" id="st-res-note"></div></div>
+      </div>
+      <div class="hint" id="run-progress-label">tiến độ</div>
+      <div class="segments" id="run-segments"><span id="segment-copy">1 · Copy</span><span id="segment-verify">2 · Verify</span><span id="segment-create">3 · Create</span></div><progress id="run-progress" max="100" value="0" aria-label="Tiến độ giai đoạn"></progress>
+      <div class="hint">Từ dòng <span class="mono">@@ {"event": …}</span> của <span class="mono">--progress-json</span>; không có dòng đó thì UI chỉ hiện log.</div>
+      <div class="bar"><label class="lbl">Mức log<select id="run-log-filter" aria-label="run log filter"><option value="all">Tất cả</option><option value="warn">WARN / FAIL / ERROR</option><option value="event">Sự kiện @@</option></select></label><label class="lbl grow">Tìm trong log<input type="search" id="run-log-search" placeholder="Tìm nội dung…" aria-label="run log search"></label></div><p id="run-log-empty" class="skeleton" role="status">đang chờ dòng log đầu tiên…</p><pre class="log" id="run-log" tabindex="0" aria-label="Log trực tiếp"></pre>
+      <div class="bar">
+        <span class="hint" id="run-log-path"></span>
+        <label class="push"><input type="checkbox" id="run-autoscroll" checked> tự cuộn</label>
+        <a class="btn small" id="run-download" href="#">Tải log</a>
+      </div>
+    </div>
+    <div class="side checks">
+      <div class="card">
+        <details><summary>Option hiệu lực &amp; Plan</summary>
+        <div id="run-options"></div>
+        <h3>Plan lúc đó</h3>
+        <div id="run-plan"></div>
+        <details><summary>Lệnh nguyên văn</summary><code class="mono" id="run-cmd"></code></details></details>
+      </div>
+      <div class="card hidden" id="run-cancel-panel">
+        <h2>Dừng tiến trình</h2>
+        <p class="hint">Bước 1 gửi SIGINT: migrate tự tháo clone, giữ state để rollback. Bước 2 (SIGKILL) chỉ mở theo thời hạn runner (mặc định 120 s) nếu tiến trình không thoát, phải gõ tên VM, và được ghi audit.</p>
+        <button type="button" id="run-cancel" class="btn danger">Hủy job (SIGINT)</button>
+        <div class="inline"><input type="text" id="run-kill-typed" placeholder="gõ tên VM để SIGKILL" disabled aria-label="Tên VM để buộc dừng">
+          <button type="button" id="run-kill" class="btn danger solid" disabled>Buộc dừng (SIGKILL)</button></div>
+        
+      </div>
+      <div class="card">
+        <h2>Hàng đợi (từng con một)</h2>
+        <ol class="queue" id="run-queue"></ol>
+        <label><input type="checkbox" id="run-stop-on-fail" disabled> dừng hàng đợi nếu một con FAIL</label>
+        <button type="button" id="run-stop-after" class="btn small">Dừng sau con hiện tại</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Lịch sử -->
+<section id="screen-history" class="hidden">
+  <div class="card">
+    <div class="bar">
+      <h2>Lịch sử</h2>
+      <label><input type="checkbox" id="hist-live-only"> chỉ state còn sống (chưa rollback)</label>
+      <span class="hint push">audit: /var/log/migui/audit.jsonl (append-only)</span>
+      <button type="button" id="hist-refresh" class="btn small">Làm mới</button>
+    </div>
+    <form id="hist-filter-form" class="history-filters"><label>Tìm VM, ID, operator<input id="hist-search" type="search" placeholder="Tìm lịch sử…"></label><label>Trạng thái<select id="hist-state"><option value="">Tất cả</option><option>OK</option><option>FAIL</option><option>RUNNING</option><option>CANCELLED</option><option>LOST</option><option>SKIPPED</option></select></label><label>Loại<select id="hist-kind"><option value="">Tất cả</option><option value="vm">Instance</option><option value="vol">Volume</option><option value="rollback">Rollback</option></select></label><label>Từ ngày<input id="hist-from" type="date"></label><label>Đến ngày<input id="hist-to" type="date"></label><button type="submit" class="btn" id="hist-apply">Áp dụng</button><a id="hist-csv" class="btn" href="/api/jobs.csv">Xuất CSV</a></form><div class="scroll"><table>
+      <thead><tr><th>Thời gian</th><th>VM</th><th>Lệnh</th><th>Project</th><th>Kết quả</th><th>Downtime</th><th>Giai đoạn</th><th>Người vận hành</th><th></th></tr></thead>
+      <tbody id="hist-rows"></tbody>
+    </table></div>
+  </div>
+  <div class="bar pagination"><span id="hist-page" role="status"></span><button id="hist-prev" class="btn push" type="button">← Trước</button><button id="hist-next" class="btn" type="button">Sau →</button></div><div class="card hidden" id="hist-diff-card">
+    <h2 id="hist-diff-title">So sánh option</h2>
+    <div class="scroll"><table><thead><tr><th>Option</th><th id="hist-diff-a">A</th><th id="hist-diff-b">B</th></tr></thead><tbody id="hist-diff-rows"></tbody></table></div>
+    <p class="hint">Dòng tô cam = khác nhau. Dùng khi hỏi "sao con này vào pool khác / chậm hơn con kia".</p>
+  </div>
+</section>
+<dialog id="action-dialog" aria-labelledby="dialog-title"><div class="bar"><h2 id="dialog-title"></h2><button type="button" id="dialog-close" class="btn small push" aria-label="Đóng">Đóng</button></div><div id="dialog-body"></div><div class="bar"><button type="button" id="dialog-accept" class="btn primary">Tiếp tục</button></div></dialog></main>
+</body>
+</html>

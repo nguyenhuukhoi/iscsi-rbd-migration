@@ -1,0 +1,53 @@
+# migui-web: the unprivileged half of the migrate web UI (DESIGN.md section 8.3 T13). Installed by migui/deploy/install.sh.
+# Listens on 127.0.0.1:8787 only; open it through 'ssh -L 8787:127.0.0.1:8787 root@<mig-host>' (DEPLOY.md).
+[Unit]
+Description=migrate web UI (unprivileged, 127.0.0.1:8787)
+Documentation=file:///opt/migui/DEPLOY.md
+After=migui-runner.service
+Wants=migui-runner.service
+
+[Service]
+Type=simple
+DynamicUser=no
+User=migui
+Group=migui
+ExecStart=/opt/migui/bin/migui-web
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# DEPLOY.md section 6: the web appends to the audit, reads /var/lib/migui/users (root:migui 0640) at each login and
+# connects to the runner socket; nothing else. No MemoryMax: a login hashes with scrypt n=2^15 (32 MiB, one at a time).
+ReadWritePaths=/var/log/migui -/run/migui
+ReadOnlyPaths=/var/lib/migui
+InaccessiblePaths=-/opt/mig -/var/lib/mig-migrate -/var/log/mig-batch -/root -/var/lib/migui/jobs
+
+[Install]
+WantedBy=multi-user.target

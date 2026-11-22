@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""1.0.0 checks of the UI back end (REVIEW-20261121 section 3 contract; B1, B4, B5, B7, B8, C1, C5, C6, C14, D3, D9,
+A5 and A7 on the runner side). Real migui-runner + migui-web on a temporary socket, the fake migrate behind them.
+
+    python3 v1ui.py <repo>
+"""
+import http.client
+import json
+import os
+import re
+import sys
+import tempfile
+import threading
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import harness as H  # noqa: E402
+from harness import VM1, VM2, VM3, ok  # noqa: E402
+
+TMP = tempfile.mkdtemp(prefix="v1ui-", dir=H.WORK)
+SECRET = "Very-Secret-Value-1234"
+conf = os.path.join(TMP, "migrate.conf")
+with open(conf, "w") as f:
+    f.write("RBD_POOL=mig-volumes\n")
+rc = os.path.join(TMP, "src.rc")
+with open(rc, "w") as f:
+    f.write("export OS_AUTH_URL=http://src:5000/v3\nexport OS_PASSWORD=%s\n" % SECRET)
+notify_out = os.path.join(TMP, "notify.jsonl")
+NOTIFY = [H.PY, "-I", "-c", "import json, os, sys\nwith open(sys.argv[1], 'a') as f:\n"
+          "    f.write(json.dumps({k: v for k, v in os.environ.items() if k.startswith('MIG_')}) + '\\n')\n", notify_out]
+os.environ.update(MIG_CONF=conf, SRC_RC=rc, MIGUI_NOTIFY_CMD=json.dumps(NOTIFY),
+                  FAKE_LEAK_LINE="debug: password=%s url https://admin:%s@keystone/v3" % (SECRET, SECRET))
+
+s = H.Stack(control={"plan_delay": 1})
+try:
+    s.login()
+    ses = s.get("/api/session").json
+    ok("1.0.0 GET /api/session: ui_version and features {write_check, plan_jobs, prune}",
+       ses.get("ui_version") == "1.0.0" and ses.get("version") == "1.0.0"
+       and ses.get("features") == {"write_check": True, "plan_jobs": 4, "prune": True}, ses)
+    # D3: before a doctor, only inventory/list/plan/run are gated
+    st = [s.post("/api/rollback", {"ident": VM1}).status, s.get("/api/jobs").status,
+          s.post("/api/jobs/%s/cancel" % ("0" * 16), {}).status, s.post("/api/status").status,
+          s.post("/api/list", {"hosts": ["cmp1"]}).status, s.post("/api/plan", {"kind": "vm", "items": [{"ident": VM1}]}).status]
+    ok("D3 without a green doctor: rollback 409 (no live state), jobs 200, cancel 409, status 200 — never 412; list and "
+       "plan 412", st == [409, 200, 409, 200, 412, 412], st)
+    d = s.post("/api/doctor", {"write_check": True})
+    ok("C6 POST /api/doctor {write_check: true}: the runner runs 'migrate doctor --json --write-check'",
+       d.status == 200 and ["doctor", "--json", "--write-check"] in s.calls(), (d.status, s.calls()[-2:]))
+    s.post("/api/inventory")
+    s.post("/api/list", {"hosts": ["cmp1"]})
+    # C1: three VMs, each 'migrate plan' takes >= 1 s: planned at once
+    t0 = time.monotonic()
+    resp, events, _p = s.sse_post("/api/plan", {"kind": "vm", "items": [{"ident": x} for x in (VM1, VM2, VM3)],
+                                                "options": {"az": "AZ1"}})
+    took = time.monotonic() - t0
+    order = [(e, d_.get("ident")) for e, d_, _t in events if e in ("planning", "row")]
+    per = {}
+    for i, (e, ident) in enumerate(order):
+        per.setdefault(ident, []).append((e, i))
+    batch = next((d_ for e, d_, _t in events if e == "batch"), None) or {}
+    last_row = max(i for i, (e, d_, _t) in enumerate(events) if e == "row")
+    first_batch = next(i for i, (e, d_, _t) in enumerate(events) if e == "batch")
+    ok("C1 a plan of 3 VMs (1 s each) runs them at once (< 2.5 s); per ident: planning before its row; the batch after "
+       "every row", took < 2.5 and sorted(per) == sorted([VM1, VM2, VM3])
+       and all([e for e, _i in v] == ["planning", "row"] for v in per.values()) and last_row < first_batch,
+       (round(took, 2), order))
+    ok("section 3: batch summary fingerprint, conf_digest (sha256), impact, rule from the plan, session",
+       re.match(r"^[0-9a-f]{64}$", batch.get("fingerprint") or "") and re.match(r"^[0-9a-f]{64}$", batch.get("conf_digest") or "")
+       and batch.get("impact") == {"vms": 3, "volumes": 4, "gb": 32, "stop_source": 3, "detach_ports": 3}
+       and batch.get("rule") == {"mode": "count", "expect": ["3"]} and batch.get("session") == ses["session"], batch)
+    # C5: the conf changes between plan and run
+    with open(conf, "a") as f:
+        f.write("MIG_AZ=AZ1\n")
+    r = s.run_batch(batch, "3")
+    ok("C5 migrate.conf changed after the plan: run answers 409 'plan again', nothing started",
+       r.status == 409 and "changed since the plan" in (r.json or {}).get("error", "")
+       and not [c for c in s.calls() if c[0] == "migrate"], r)
+    p = s.plan([VM1, VM2], {"az": "AZ1"})
+    r = s.run_batch(p.json["batch"], "2")
+    jobs = r.json.get("jobs") or []
+    for j in jobs:
+        s.wait_job(j)
+    s.wait_idle()
+    recs = [s.get("/api/jobs/" + j).json["job"] for j in jobs]
+    ok("section 3: job records carry volumes_total (from the plan), exit_class (None on OK), notify_rc 0",
+       [x.get("volumes_total") for x in recs] == [2, 1] and all(x.get("exit_class") is None and x.get("notify_rc") == 0
+                                                                for x in recs), [(x.get("volumes_total"), x.get("exit_class"),
+                                                                                 x.get("notify_rc")) for x in recs])
+    env_log = [json.loads(l) for l in open(os.path.join(s.fake, "env.log")) if l.strip()]
+    mig = [e for e in env_log if e["args"][:1] == ["migrate"]]
+    ok("A7 every migrate the runner starts gets its host lock: MIG_LOCK = the runner's lock file, MIG_LOCK_FD set",
+       mig and all(e["MIG_LOCK"] == os.path.join(s.run, "runner.lock") and (e["MIG_LOCK_FD"] or "").isdigit() for e in mig),
+       mig)
+    notes = [json.loads(l) for l in open(notify_out)] if os.path.exists(notify_out) else []
+    ok("C14 MIGUI_NOTIFY_CMD (an argv, no shell) at the end of each job and of the batch: MIG_EVENT, MIG_JOB, MIG_STATE",
+       [n.get("MIG_EVENT") for n in notes] == ["job", "job", "batch"] and notes[0].get("MIG_JOB") == jobs[0]
+       and all(n.get("MIG_STATE") == "OK" for n in notes) and not any("MIG_LOCK_FD" in n for n in notes), notes)
+    # D9: query, paging, CSV
+    a = s.get("/api/jobs?limit=1").json
+    b = s.get("/api/jobs?q=app02").json
+    c = s.get("/api/jobs?kind=rollback").json
+    e = s.get("/api/jobs?state=OK&from=2020-01-01&to=2099-12-31").json
+    bad = s.get("/api/jobs?offset=-1").status
+    ok("D9 GET /api/jobs: {jobs, total, active}; limit, q, kind, state, from/to; a bad offset is 400",
+       len(a["jobs"]) == 1 and a["total"] == 2 and "active" in a and [x["name"] for x in b["jobs"]] == ["app02"]
+       and c["total"] == 0 and e["total"] == 2 and bad == 400, (a.get("total"), b, c, e.get("total"), bad))
+    csvr = s.get("/api/jobs.csv")
+    lines = csvr.raw.decode().splitlines()
+    ok("D9 GET /api/jobs.csv: text/csv attachment, a header and one line per job",
+       csvr.status == 200 and csvr.headers.get("content-type", "").startswith("text/csv")
+       and "attachment" in csvr.headers.get("content-disposition", "") and lines[0].startswith("id,batch,kind,ident,name")
+       and len(lines) == 3, (csvr.status, lines[:3]))
+    # A5: the rollback the runner prepares
+    rb = s.post("/api/rollback", {"ident": VM1}).json
+    o = rb.get("original") or {}
+    ok("A5 rollback prepare: 'migrate rollback <ident> --yes' (the typed name is the confirmation); original has t_stop, "
+       "dst_server_status, age_seconds, delete",
+       rb["batch"]["commands"] == [["migrate", "rollback", VM1, "--yes"]] and "dst_server_status" in o
+       and "t_stop" in o and isinstance(o.get("age_seconds"), int) and isinstance(o.get("delete"), dict)
+       and ["rollback", VM1, "--dry-run", "--json"] in s.calls(), rb)
+    r = s.run_batch(rb["batch"], VM1)  # D5: the full ident typed instead of the name
+    ok("D5 the ident typed in full confirms a rollback too", r.status == 202, r)
+    s.wait_idle()
+    rb2 = s.post("/api/rollback", {"ident": VM2}).json
+    s.run_batch(rb2["batch"], "app02")
+    s.wait_idle()
+    # B1: a line carrying an openrc's secret value
+    s.control({"mode": "leaky", "steps": 2, "step_secs": 0.01})
+    p = s.plan([VM2], {"az": "AZ1"})
+    r = s.run_batch(p.json["batch"], "app02")
+    jid = r.json["jobs"][0]
+    s.wait_job(jid)
+    log = s.get("/api/jobs/%s/log" % jid).raw.decode()
+    ok("B1 the runner scrubs the openrc's secret value wherever it appears (from its probe), and URL credentials",
+       SECRET not in log and "password=[scrubbed]" in log and "https://admin:[scrubbed]@keystone" in log, log[-600:])
+    s.wait_idle()
+    # B5: the audit cannot be written
+    os.rename(s.audit, s.audit + ".moved")
+    os.mkdir(s.audit)
+    r = s.post("/api/plan", {"kind": "vm", "items": [{"ident": VM3}], "options": {"az": "AZ1"}})
+    os.rmdir(s.audit)
+    os.rename(s.audit + ".moved", s.audit)
+    ok("B5 an audit line that cannot be written: the mutating POST answers 503, nothing runs",
+       r.status == 503 and "audit" in (r.json or {}).get("error", ""), r)
+    # B8: event streams per session
+    s.control({"mode": "slow", "steps": 200, "step_secs": 0.05})
+    p = s.plan([VM3], {"az": "AZ1"})
+    r = s.run_batch(p.json["batch"], H.XSS_NAME)
+    jid = r.json["jobs"][0]
+    conns = []
+    for _ in range(2):
+        c_ = http.client.HTTPConnection("127.0.0.1", s.port, timeout=30)
+        c_.request("GET", "/api/jobs/%s/stream" % jid, headers=s.headers("GET"))
+        conns.append((c_, c_.getresponse()))
+    third = s.get("/api/jobs/%s/stream" % jid, timeout=10).status
+    for c_, resp_ in conns:
+        c_.close()
+    ok("B8 a third event stream of one session: 429 (two are open)", [x[1].status for x in conns] == [200, 200]
+       and third == 429, third)
+    s.post("/api/jobs/%s/cancel" % jid, {})
+    s.wait_idle()
+    # B4: the password changes: the session ends
+    p_ = s.passwd("set", H.USER, stdin="another-password-2026\n")
+    after = s.get("/api/jobs")
+    ok("B4 migui-passwd set: the next request of the old session is 401 (audit session-revoked)",
+       p_.returncode == 0 and after.status == 401 and any(x["action"] == "session-revoked" for x in s.audit_lines()),
+       (p_.stderr, after))
+    # B7: a lock per name
+    for _ in range(5):
+        s.login(H.USER, "wrong-password-0000")
+    locked = s.login(H.USER, "another-password-2026")
+    s.passwd("add", "other", stdin="other-password-2026\n")
+    other = s.login("other", "other-password-2026")
+    ok("B7 five failures lock that name only (429 even with the right password); another account still logs in",
+       locked.status == 429 and other.status == 200, (locked, other))
+finally:
+    s.stop()
+    for k in ("MIG_CONF", "SRC_RC", "MIGUI_NOTIFY_CMD", "FAKE_LEAK_LINE"):
+        os.environ.pop(k, None)
+
+sys.exit(H.total())
