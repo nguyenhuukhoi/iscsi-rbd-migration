@@ -1366,7 +1366,7 @@ sel_child = (
     "    extra = ' grandchild %d' % g.pid\n"
     "    if mode == 'leader-exits':\n"
     "        cli.honour_sigint()\n"
-    "print('child started %s pid %d%s' % (sys.argv[3], os.getpid(), extra), flush=True)\n"
+    "print('child started %s pid %d pgid %d%s' % (sys.argv[3], os.getpid(), os.getpgid(0), extra), flush=True)\n"
     "try:\n"
     "    if mode == 'grandchild':\n"
     "        while True:\n"
@@ -1392,55 +1392,85 @@ def sel_run(verb, jobs, idents, secs, wait_for, after=1.0, ign=0, mode="", go=Fa
     """The probe; SIGINT to its PID 'after' s after the output shows each of wait_for: (rc, output, seconds from the
     SIGINT to the probe's exit, PIDs of the children). ign: each child starts with SIGINT ignored for that many s.
     mode: FAKE_CHILD_MODE. go: create the handshake file 0.3 s after the SIGINT.
-    Round 3: the probe leads its own process group, and a probe that hangs is killed with its group, each child's group
-    (a parallel plan child leads one) and each grandchild, so that a failing probe leaves nothing behind."""
+    Round 3: the probe leads its own process group, and a probe that hangs is killed with what it started.
+    Round 4: only process groups are killed, never a stored PID (by then it may be another process's): the probe's own
+    group and each group a child reported leading (a parallel plan child leads one; its grandchild is in it). Each group
+    is checked non-empty (killpg(pgid, 0)) right before its SIGKILL. The probe is not reaped before the watchdog is
+    disarmed (its exit is awaited with WNOWAIT): while it is a zombie its PID, and so its group's number, is not reused.
+    The timer is cancelled and joined in a finally, and a probe left running by an error here is killed the same way."""
     d_ = tempfile.mkdtemp(dir=WORK)
     gof = os.path.join(d_, "go")
     p_ = subprocess.Popen([sys.executable, '-I', '-c', sel_probe, REPO, sel_child, d_, verb, str(jobs), idents],
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
                           env=dict(os.environ, FAKE_CHILD_SECS=str(secs), FAKE_CHILD_IGN=str(ign),
                                    FAKE_CHILD_MODE=mode, FAKE_CHILD_GO=gof))
-    got, pids, gpids, need = [], [], [], set(wait_for)
+    got, pids, groups, need = [], [], [p_.pid], set(wait_for)
+    wmu, ended = threading.Lock(), [False]
 
     def watchdog():
-        for kill_, id_ in [(os.killpg, p_.pid)] + [(os.killpg, x) for x in pids] + [(os.kill, x) for x in pids + gpids]:
-            try:
-                kill_(id_, signal.SIGKILL)
-            except OSError:
-                pass
+        with wmu:
+            if ended[0]:
+                return
+            for pgid in list(groups):
+                if pgid == os.getpgrp():  # never the suite's own group
+                    continue
+                try:
+                    os.killpg(pgid, 0)  # still non-empty: its number is still that group's
+                    os.killpg(pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+
     timer = threading.Timer(60, watchdog)  # a probe that hangs must not hang the suite
     timer.start()
-    for line in p_.stdout:
-        got.append(line)
-        m_ = re.search(r"child started (\S+) pid (\d+)(?: grandchild (\d+))?", line)
-        if m_:
-            pids.append(int(m_.group(2)))
-            if m_.group(3):
-                gpids.append(int(m_.group(3)))
-            need.discard(m_.group(1))
-            if not need:
-                break
-    threading.Event().wait(after)  # time.sleep is a no-op in this harness
-    os.kill(p_.pid, signal.SIGINT)
-    t_ = time.monotonic()
-    if go:
-        threading.Event().wait(0.3)
-        open(gof, "w").close()
-    got.append(p_.stdout.read())
-    p_.wait()
-    took = time.monotonic() - t_
-    timer.cancel()
+    try:
+        for line in p_.stdout:
+            got.append(line)
+            m_ = re.search(r"child started (\S+) pid (\d+) pgid (\d+)", line)
+            if m_:
+                pids.append(int(m_.group(2)))
+                if int(m_.group(3)) not in groups:
+                    groups.append(int(m_.group(3)))
+                need.discard(m_.group(1))
+                if not need:
+                    break
+        threading.Event().wait(after)  # time.sleep is a no-op in this harness
+        os.kill(p_.pid, signal.SIGINT)  # not reaped yet: still the probe
+        t_ = time.monotonic()
+        if go:
+            threading.Event().wait(0.3)
+            open(gof, "w").close()
+        got.append(p_.stdout.read())
+        os.waitid(os.P_PID, p_.pid, os.WEXITED | os.WNOWAIT)  # exited, left a zombie: not reaped yet
+        took = time.monotonic() - t_
+        with wmu:
+            ended[0] = True
+    finally:
+        timer.cancel()
+        timer.join()
+        if not ended[0]:  # an error above: the probe may still run
+            watchdog()
+            with wmu:
+                ended[0] = True
+        p_.wait()
     return p_.returncode, "".join(got), took, pids
 
 
 def pid_alive(pid, settle=2.0):
-    """A dead process may stay a zombie for a moment, until init reaps the orphan: poll up to settle s."""
+    """A dead process may stay a zombie for a moment, until init reaps the orphan: poll up to settle s.
+    Round 4: a zombie (state Z in /proc/<pid>/stat) counts as dead: it runs no more and holds no pipe, whether or not
+    anything reaps it (a container whose PID 1 does not reap orphans)."""
     deadline = time.monotonic() + settle
     while True:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return False
+        try:
+            with open("/proc/%d/stat" % pid, encoding="ascii", errors="replace") as f_:
+                if f_.read().rsplit(")", 1)[1].split()[0] == "Z":
+                    return False
+        except (OSError, IndexError):
+            pass
         if time.monotonic() >= deadline:
             return True
         threading.Event().wait(0.05)
@@ -1521,7 +1551,7 @@ print("INFO fix-1.0.1 #3 round 2 (never honours SIGINT) selector exit %.2f s aft
 for mode_, what_ in (("grandchild", "each plan child ignores SIGINT"),
                      ("leader-exits", "each plan child exits 130 at the first SIGINT")):
     rc_, out_, took_, pids_ = sel_run("plan", 2, "app01,app02", 30, ["app01", "app02"], after=0.5, mode=mode_)
-    gpids_ = [int(x) for x in re.findall(r"child started \S+ pid \d+ grandchild (\d+)", out_)]
+    gpids_ = [int(x) for x in re.findall(r"child started \S+ pid \d+ pgid \d+ grandchild (\d+)", out_)]
     alive_ = [p_ for p_ in pids_ + gpids_ if pid_alive(p_)]
     ok("fix-1.0.1 #3 round 3 plan --plan-jobs 2, %s and runs 'sleep 120' (SIGINT ignored) with its stderr on the "
        "selector's pipe; kill -INT to the selector: exit 130 in < 15 s, the children and the sleeps dead" % what_,
