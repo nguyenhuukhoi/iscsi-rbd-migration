@@ -83,6 +83,7 @@ suite p6unit "$PY" -I "$HERE/p6unit.py" "$REPO"
 suite v72unit "$PY" -I "$HERE/v72unit.py" "$REPO"
 suite v73unit "$PY" -I "$HERE/v73unit.py" "$REPO"
 suite v1unit "$PY" -I "$HERE/v1unit.py" "$REPO"  # 1.0.0: REVIEW-20261121 phase 1
+suite v11unit "$PY" -I "$HERE/v11unit.py" "$REPO"  # 1.1.0: A20, rollback checks the source exists first
 suite ui env PYTHON="$PY" bash "$REPO/tests/ui/run.sh"  # 7.3 UI (migui): DESIGN-UI 10 and 14, tests/ui/
 if [ "$PARITY" = 1 ]; then
   suite parity /usr/bin/python3 -I "$HERE/scenarios.py" "$@"
