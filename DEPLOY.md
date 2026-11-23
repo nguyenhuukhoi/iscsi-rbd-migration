@@ -33,7 +33,7 @@ Client Ceph trên host lấy từ repo Tentacle (≥ 20.2.4): client mới đọ
 
 ## 2. Artifact và venv
 
-Checkout lấy bằng `git clone --branch v<version> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git` (xem [README.md mục "Cài và chạy thử"](README.md#cài-và-chạy-thử)). Trên máy build từ commit đã review:
+Checkout lấy bằng `git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git` (xem [README.md mục "Cài và chạy thử"](README.md#cài-và-chạy-thử)). Trên máy build từ commit đã review:
 
 ```bash
 ./release.sh
