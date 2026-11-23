@@ -588,26 +588,32 @@ class Runner:
         outlived its child, the worker would wait for it without bound, and the executor's __exit__ for the worker. So
         a group counts as running until it is empty, not only until its leader exited, and the SIGKILL reaches what is
         left of it. The waits here poll against a deadline; either thread may be the one that reaps a child (Popen
-        serialises waitpid): this one in poll(), or the worker in wait()."""
+        serialises waitpid): this one in poll(), or the worker in wait().
+        Round 4: a child or a group once seen not running is dropped from procs for good: never polled, never signalled
+        again (by then its number may belong to another process or group). Only what is left is signalled."""
         with self._pmu:
             self._stopping = True
             procs = list(self._procs)
             groups = {p for p in procs if p in self._groups}  # never killpg a child that shares this process group
 
         def signal_all(sig):
+            nonlocal procs
+            gone = []
             for p in procs:
                 if p in groups:
                     try:
                         os.killpg(p.pid, sig)
                         continue
                     except ProcessLookupError:
-                        pass  # the group is empty already
+                        gone.append(p)  # the group is empty, its leader reaped: nothing of it is left
+                        continue
                     except OSError:
                         pass
                 try:
                     p.send_signal(sig)
                 except OSError:
                     pass
+            procs = [p for p in procs if p not in gone]
 
         def running(p):
             if p.poll() is None:
@@ -621,17 +627,18 @@ class Runner:
             return False
 
         def still_running(grace):
+            nonlocal procs
             deadline = time.monotonic() + grace
             while True:
-                left = [p for p in procs if running(p)]
-                if not left or time.monotonic() >= deadline:
-                    return left
+                procs = [p for p in procs if running(p)]  # shrinks only: what is dropped is never polled again
+                if not procs or time.monotonic() >= deadline:
+                    return
                 time.sleep(0.05)
 
         signal_all(signal.SIGINT)
-        procs = still_running(PLAN_STOP_GRACE_1)
+        still_running(PLAN_STOP_GRACE_1)
         signal_all(signal.SIGINT)
-        procs = still_running(PLAN_STOP_GRACE_2)
+        still_running(PLAN_STOP_GRACE_2)
         signal_all(signal.SIGKILL)
 
     def run(self):

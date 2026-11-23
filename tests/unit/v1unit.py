@@ -1543,6 +1543,54 @@ ok("fix-1.0.1 #3 round 3 plan --plan-jobs 2, both children ignore SIGINT until '
    and "child finished" not in out_, ("rc %s, took %.2f s" % (rc_, took_), pids_, alive_, out_[-1500:]))
 print("INFO fix-1.0.1 #3 round 3 (handshake) selector exit %.2f s after the SIGINT; children %s, alive after: %s"
       % (took_, pids_, alive_))
+# Round 4: a target once seen not running is dropped for good. Fake numbers, os.killpg and poll() patched: group 9001
+# (leader exited) is alive, then empty (ESRCH), then 'alive' again (its number reused); child 9003 (shares the
+# selector's group) runs, then has exited, then 'runs' again (reused). Group 9002 never stops, so the polling and the
+# escalation go on. Each of the first two gets the first SIGINT only, and is polled no more after it was seen gone.
+sig_calls, probes_ = [], {}
+
+
+class FakeProc:
+    def __init__(self, pid, polls):
+        self.pid, self.polls = pid, polls
+
+    def poll(self):
+        probes_[self.pid] = probes_.get(self.pid, 0) + 1
+        return self.polls(probes_[self.pid])
+
+    def send_signal(self, sig):
+        sig_calls.append(("kill", self.pid, sig))
+
+
+def fake_killpg(pgid, sig):
+    if sig == 0:
+        key_ = ("pg", pgid)
+        probes_[key_] = probes_.get(key_, 0) + 1
+        if pgid == 9001 and probes_[key_] == 2:
+            raise ProcessLookupError(3, "No such process")
+        return
+    sig_calls.append(("killpg", pgid, sig))
+
+
+irun = selector.Runner.__new__(selector.Runner)
+pa_ = FakeProc(9001, lambda n: 0)  # leader reaped; the group decides (fake_killpg)
+pb_ = FakeProc(9002, lambda n: None)
+pc_ = FakeProc(9003, lambda n: 0 if n == 2 else None)
+irun._pmu, irun._stopping = threading.Lock(), False
+irun._procs, irun._groups = {pa_, pb_, pc_}, {pa_, pb_}
+saved_ = (os.killpg, selector.PLAN_STOP_GRACE_1, selector.PLAN_STOP_GRACE_2)
+os.killpg, selector.PLAN_STOP_GRACE_1, selector.PLAN_STOP_GRACE_2 = fake_killpg, 0.2, 0.2
+try:
+    irun.interrupt_children()
+finally:
+    os.killpg, selector.PLAN_STOP_GRACE_1, selector.PLAN_STOP_GRACE_2 = saved_
+to_ = {n_: [s_ for _k, p_, s_ in sig_calls if p_ == n_] for n_ in (9001, 9002, 9003)}
+ok("fix-1.0.1 #3 round 4 interrupt_children(): a group seen empty (ESRCH) and a child seen exited are dropped for good: "
+   "their numbers 'alive' again later (reused) get no second SIGINT and no SIGKILL, and are not polled again; the "
+   "group still running gets SIGINT, SIGINT, SIGKILL",
+   to_ == {9001: [signal.SIGINT], 9002: [signal.SIGINT, signal.SIGINT, signal.SIGKILL], 9003: [signal.SIGINT]}
+   and probes_.get(("pg", 9001)) == 2 and probes_.get(9003) == 2 and irun._stopping,
+   (to_, probes_))
 
 # ================================ fix-1.0.1 #4 (Review 23/11): outside_runs() leaves a --dry-run out ================================
 orun = mrunner.Runner.__new__(mrunner.Runner)
