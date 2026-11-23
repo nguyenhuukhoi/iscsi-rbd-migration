@@ -332,7 +332,7 @@ def run(impl, world, args, env_extra=None, conf=None, pre_state=None, tty=None, 
                 files[rel] = norm(text, d) if label else text
     return {"out": norm("".join(outs), d), "err": norm("".join(errs), d), "rc": rcs, "files": files,
             "calls": [l for l in raw if not l.startswith("#step\t")], "rawcalls": raw, "world": json.load(open(wf)),
-            "dir": d,
+            "dir": d, "args": seq, "impls": impls,
             "transformed": transformed}
 
 
@@ -561,6 +561,33 @@ def v1_rule(b, p):
             port.pop("description", None)
 
 
+# --- 1.1.0: the mechanical rule for every scenario (the reference never asks the source before its rollback) ---------
+# Intended: v1.1 A20: a rollback run by the app first reads the source object ('server show <sid>' for a VM state,
+# 'volume show <vid>' for a migrate-volume one) and deletes nothing at the destination when it is gone. That read-only
+# call is dropped from each app rollback step: the calls with the ID of the step's first such call (once, twice when a
+# prompt summary read it too). Not a regex over every step: a migrate step, or the reference's rollback, keeps its calls.
+V11_SOURCE_PROBE = re.compile(r"^src\t(server|volume) show (\S+) -f json -c id -c status$")
+
+
+def v11_rule(p):
+    """Apply the 1.1.0 rule to an app result p (in place): p['rawcalls'] and p['calls'] lose the A20 probe of each
+    rollback step the app ran (run() records each step's args and impl)."""
+    args, impls = p.get("args") or [], p.get("impls") or []
+    steps = _steps(p["rawcalls"])
+    for n, step in enumerate(steps):
+        i = n - 1  # steps[0] is the head before the first '#step' marker
+        app_rollback = 0 <= i < min(len(args), len(impls)) and impls[i] in ("py", "app") \
+            and list(args[i][:1]) == ["rollback"]
+        if not app_rollback:
+            continue
+        probes = [m.group(1, 2) if m else None for m in (V11_SOURCE_PROBE.match(c) for c in step)]
+        first = next((x for x in probes if x), None)
+        if first:
+            steps[n] = [c for c, x in zip(step, probes) if x != first]
+    p["rawcalls"] = [c for step in steps for c in step]
+    p["calls"] = [c for c in p["rawcalls"] if not c.startswith("#step\t")]
+
+
 def compare(name, args, world=None, env=None, conf=None, expect_diff=(), pre_state=None, show=False,
             impls=("bash", "py"), py_args=None, bash_subs=(), out_subseq=False, tty=None, check=None,
             p6=False, subs_all=(), app_calls_ignore=(), v72=False, ref_calls_subs=(), v1=False):
@@ -582,6 +609,7 @@ def compare(name, args, world=None, env=None, conf=None, expect_diff=(), pre_sta
     # HARNESS_NO_OPTOUTS=1: run the old scenarios against the P6 defaults (shows which ones they change).
     p = run(impls[1], pworld, py_args or args, env, conf, pre_state, tty,
             optouts=not p6 and not os.environ.get("HARNESS_NO_OPTOUTS"))
+    v11_rule(p)  # 1.1.0: before the other rules, while each step's calls are still marked
     if not v72:
         nsteps = len(args) if args and isinstance(args[0], list) else 1
         v72_rule(b, p, impls[1].split("+") if "+" in impls[1] else [impls[1]] * nsteps)

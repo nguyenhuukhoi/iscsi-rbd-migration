@@ -218,6 +218,50 @@ ok("A20 volume --dry-run: source_status available while it is there, GONE once d
    and "  ERROR the source volume no longer exists: the destination is the only copy; this rollback is refused"
    in r.outs[3] and "vol-dst-0001" in r.world["dst"]["volumes"], (r.rc, a_, b_, r.outs[3]))
 
+# ================================ parity: v11_rule drops the A20 probe, nothing else ================================
+import parity  # noqa: E402  (already imported by inproc)
+
+
+def ruled(raw, args, impls):
+    p = {"rawcalls": list(raw), "calls": [c for c in raw if not c.startswith("#step\t")], "args": args, "impls": impls}
+    parity.v11_rule(p)
+    return p
+
+
+PROBE_A = "src\tserver show srv-a -f json -c id -c status"
+RAW = ["#step\t0", "src\tserver stop srv-a", PROBE_A, "#step\t1", "src\ttoken issue -f value -c project_id", PROBE_A,
+       "dst\tserver delete d1 --wait", "dst\tserver show d1 -f json -c id -c status",
+       "src\tvolume show c1 -f json -c id -c status", "src\tserver show srv-a -f value -c status"]
+p = ruled(RAW, [["migrate", "app01"], ["rollback", "app01"]], ["py", "py"])
+ok("v11_rule: an app rollback step loses its source probe only; a migrate step, the destination gone polls, a clone's "
+   "poll and the '-f value' status read stay; calls == rawcalls without the markers",
+   p["rawcalls"] == RAW[:5] + RAW[6:] and p["calls"] == [c for c in RAW[:5] + RAW[6:] if not c.startswith("#")], p)
+p = ruled(RAW, [["migrate", "app01"], ["rollback", "app01"]], ["bash", "bash"])
+ok("v11_rule: the reference's own rollback (bash) is left as it is", p["rawcalls"] == RAW, p)
+p = ruled(RAW, [["migrate", "app01"], ["rollback", "app01"]], ["bash", "py"])
+ok("v11_rule: a cross run (bash migrate -> app rollback) loses the probe of the app's step only",
+   p["rawcalls"] == RAW[:5] + RAW[6:], p)
+VRAW = ["#step\t0", "#step\t1", "src\tvolume show v1 -f json -c id -c status", "src\tvolume show c9 -f json -c id -c status",
+        PROBE_A + "x", "src\tvolume show v1 -f json -c id -c status"]
+p = ruled(VRAW, [["volume", "v1"], ["rollback", "vol-v1"]], ["app", "app"])
+ok("v11_rule: a volume rollback loses every 'volume show' of its source ID (a prompt summary read it too), not the "
+   "clone's", p["rawcalls"] == ["#step\t0", "#step\t1", VRAW[3], VRAW[4]], p)
+
+
+def step_mark(n):
+    def f(_wf, _root):
+        with open(os.environ["HARNESS_CALLS"], "a") as fh:
+            fh.write("#step\t%d\n" % n)
+    return f
+
+
+r = app(world(), [step_mark(0), ("migrate", "app01", PLAIN), step_mark(1), ROLL])
+p = ruled(r.calls, [["migrate", "app01"], ["rollback", "app01"]], ["py", "py"])
+gone_ = [c for c in r.calls if c not in p["rawcalls"]]
+ok("v11_rule on a real migrate + rollback: exactly the one A20 probe is dropped",
+   r.rc == [0, 0] and gone_ == ["src\tserver show %s -f json -c id -c status" % SID]
+   and len(p["rawcalls"]) == len(r.calls) - 1, gone_)
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
