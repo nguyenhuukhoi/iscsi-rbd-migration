@@ -1,6 +1,6 @@
 # Triển khai migrate
 
-Mục tiêu: convert host Linux giữa OpenStack 2023.1/PowerStore iSCSI và OpenStack 2026.1/Ceph 19. Bộ pin được lấy từ Ubuntu 24.04, Python 3.12.3. Package yêu cầu Python ≥ 3.10; pin dependency trên Python/OS khác vẫn cần nghiệm thu. UI cần systemd hỗ trợ các directive trong units, hướng triển khai là systemd ≥ 250.
+Mục tiêu: convert host Linux giữa OpenStack 2023.1/PowerStore iSCSI và OpenStack 2026.1/Ceph 19 hoặc 20. Bộ pin được lấy từ Ubuntu 24.04, Python 3.12.3. Package yêu cầu Python ≥ 3.10; pin dependency trên Python/OS khác vẫn cần nghiệm thu. UI cần systemd hỗ trợ các directive trong units, hướng triển khai là systemd ≥ 250.
 
 Thực hiện bằng root trên host chuyên dụng. Không đặt openrc, keyring, token hoặc log chưa scrub trong repository. Các địa chỉ `192.0.2.x`/`198.51.100.x` chỉ là ví dụ.
 
@@ -19,6 +19,9 @@ Thực hiện bằng root trên host chuyên dụng. Không đặt openrc, keyri
 Nếu hai cloud cùng VLAN, allocation pools phải được quy hoạch không chồng nhau, kể cả IP service/metadata và IP cấp cho VM mới. Fixed IP migration phải còn được giữ ở nguồn cho tới hết cửa sổ rollback. Với `--ip same`, tháo port nguồn theo engine; chỉ disable port có thể làm mạng nguồn vẫn giữ đường tới MAC đó. Nova lock không ngăn mọi hành động của admin, nên không thay detach bằng lock đơn thuần. Đây là điều kiện nghiệm thu network, không phải check đầy đủ của preflight.
 
 ```bash
+curl -fsSL https://download.ceph.com/keys/release.asc -o /usr/share/keyrings/ceph-release.asc
+echo "deb [signed-by=/usr/share/keyrings/ceph-release.asc] https://download.ceph.com/debian-tentacle noble main" \
+  > /etc/apt/sources.list.d/ceph-tentacle.list
 apt-get update
 apt-get install -y open-iscsi qemu-utils qemu-block-extra ceph-common python3-rbd jq \
   python3-venv python3-dev gcc libffi-dev libssl-dev e2fsprogs
@@ -26,7 +29,7 @@ systemctl enable --now iscsid
 /usr/bin/python3 -I -c 'import rados, rbd; print("rbd bindings OK")'
 ```
 
-Chọn repository hệ điều hành/Ceph phù hợp Ceph 19 đã được đội storage duyệt. `qemu-block-extra` cung cấp backend RBD cho qemu-img. `python3-rbd` thuộc Python hệ thống, không cài thay bằng pip trong venv. Khi SYS_PY khác đường mặc định, đặt trong conf.
+Client Ceph trên host lấy từ repo Tentacle (≥ 20.2.4): client mới đọc được cả cụm Squid 19 lẫn Tentacle 20, còn `ceph-common` 19.x của Ubuntu không đọc được key `aes256k` mà cụm Tentacle ≥ 20.2.4 phát. Repo và bản client phải được đội storage duyệt. `qemu-block-extra` cung cấp backend RBD cho qemu-img. `python3-rbd` thuộc Python hệ thống, không cài thay bằng pip trong venv. Khi SYS_PY khác đường mặc định, đặt trong conf.
 
 ## 2. Artifact và venv
 
