@@ -30,6 +30,13 @@ SELECTORS = ("--vm", "--host", "--project", "--vm-file")
 SCOPES = ("--available", "--attached", "--all")
 VOLUME_PASS = ("--volume-type", "--az", "--volume-az", "--verify", "--mode")  # what a lone volume accepts (batch VOLPASS)
 MAX_PLAN_JOBS = 8  # C1: plan is read-only; more than this only queues behind the APIs
+# Review 23/11 #3, round 2: the bounded stop of an interrupted parallel plan. A child started in the instant between the
+# SIGINT and the stop inherits SIGINT ignored (cli._sigint_once) and loses the SIGINT passed on to it if that lands
+# before its own handler is installed. So a child still there PLAN_STOP_GRACE_1 s after the first SIGINT gets a second
+# one (its handler is in place by then), and one still there PLAN_STOP_GRACE_2 s after that is killed: a plan child is
+# read-only, a kill loses nothing but the end of its log. Worst case ~8 s from the SIGINT to the exit.
+PLAN_STOP_GRACE_1 = 3.0
+PLAN_STOP_GRACE_2 = 5.0
 IN_USE_ONE = ("--in-use copies one attached volume: migrate volume <volume> --in-use (the attached volumes of a "
               "selected VM go with their VM)")
 
@@ -565,15 +572,36 @@ class Runner:
     def interrupt_children(self):
         """Review 23/11 #3: SIGINT reached this process (kill -INT <pid>) while plan children run in worker threads, where
         no KeyboardInterrupt is raised: pass it to each running child, and start no other. Each child cancels and
-        exits, its worker reads its output to the end and returns."""
+        exits, its worker reads its output to the end and returns. Bounded (PLAN_STOP_GRACE_1/2): a second SIGINT for a
+        child that lost the first one while starting, then SIGKILL. Waits here have a timeout: the worker reaps."""
         with self._pmu:
             self._stopping = True
             procs = list(self._procs)
-        for p in procs:
-            try:
-                p.send_signal(signal.SIGINT)
-            except OSError:
-                pass
+
+        def signal_all(sig):
+            for p in procs:
+                try:
+                    p.send_signal(sig)
+                except (OSError, ProcessLookupError):
+                    pass
+
+        def still_running(grace):
+            deadline = time.monotonic() + grace
+            left = []
+            for p in procs:
+                try:
+                    p.wait(timeout=max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    left.append(p)
+                except (OSError, ProcessLookupError):
+                    pass
+            return left
+
+        signal_all(signal.SIGINT)
+        procs = still_running(PLAN_STOP_GRACE_1)
+        signal_all(signal.SIGINT)
+        procs = still_running(PLAN_STOP_GRACE_2)
+        signal_all(signal.SIGKILL)
 
     def run(self):
         s, cfg = self.s, self.cfg
@@ -613,7 +641,10 @@ class Runner:
                     list(pool.map(lambda r: self.plan_row(r, vmx, tee, "[%s] " % r.ident), todo_plan))
                 except KeyboardInterrupt:
                     # Review 23/11 #3: inside the with: its __exit__ waits for the workers, which wait for their children.
-                    # Rows not started yet are dropped, the running children get the SIGINT; then the wait is short.
+                    # First no child starts any more (a worker that took its row already finds _stopping set), then the
+                    # rows not started yet are dropped and the running children stopped, within seconds (bounded).
+                    with self._pmu:
+                        self._stopping = True
                     pool.shutdown(wait=False, cancel_futures=True)
                     self.interrupt_children()
                     raise
