@@ -181,7 +181,11 @@ finally:
 
 # fix-1.0.1 (Review 23/11 #2): a cancel that lands after migrate printed its result rc 0 (the VM is migrated, the
 # selector still finishing) leaves the job OK, flagged cancel.late; the batch still stops (the next job SKIPPED).
-s = H.Stack(control={"modes": {VM1: "late", VM2: "slow"}, "steps": 4, "step_secs": 0.05, "late_secs": 3})
+# Round 2: late_secs 6 so the cancel cannot miss the window on a slow host; the audit 'end' keeps the real exit, the
+# batch notification says CANCELLED (no job failed).
+late_notify = os.path.join(TMP, "notify-late.jsonl")
+os.environ["MIGUI_NOTIFY_CMD"] = json.dumps(NOTIFY[:-1] + [late_notify])
+s = H.Stack(control={"modes": {VM1: "late", VM2: "slow"}, "steps": 4, "step_secs": 0.05, "late_secs": 6})
 try:
     s.ready()
     p = s.plan([VM1, VM2], {"az": "AZ1"})
@@ -206,7 +210,19 @@ try:
        and j1.get("state") == "OK" and j1.get("rc") == 0 and (j1.get("cancel") or {}).get("late") is True
        and (j1.get("cancel") or {}).get("sigint_at") and j2.get("state") == "SKIPPED",
        (seen, c, j1.get("state"), j1.get("rc"), j1.get("cancel"), j2.get("state"), log1[-300:]))
+    end1 = [x for x in s.audit_lines() if x.get("action") == "end" and x.get("job") == jobs[0]]
+    ok("fix-1.0.1 #2 round 2 the late-cancelled job: cancel.exit 130 (the exit migrate gave), audit 'end' rc 0 with "
+       "detail exit 130",
+       (j1.get("cancel") or {}).get("exit") == 130 and len(end1) == 1 and end1[0].get("rc") == 0
+       and (end1[0].get("detail") or {}).get("exit") == 130 and (end1[0].get("detail") or {}).get("state") == "OK",
+       (j1.get("cancel"), end1))
+    lnotes = [json.loads(l) for l in open(late_notify)] if os.path.exists(late_notify) else []
+    ok("fix-1.0.1 #2 round 2 the batch of the late cancel ([OK, SKIPPED], stopped as cancelled) notifies CANCELLED, "
+       "not FAIL; its first job notifies OK",
+       [(n.get("MIG_EVENT"), n.get("MIG_STATE")) for n in lnotes] == [("job", "OK"), ("batch", "CANCELLED")],
+       lnotes)
 finally:
     s.stop()
+    os.environ.pop("MIGUI_NOTIFY_CMD", None)
 
 sys.exit(H.total())

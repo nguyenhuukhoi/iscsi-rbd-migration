@@ -1130,7 +1130,8 @@ class Runner:
         with j.cond:
             self.seal(j)
             j.cond.notify_all()
-        self.audit("end", session=j.session, job=j.id, argv=j.argv, rc=rc, state=j.state, operator=j.operator)
+        late = {"exit": j.cancel.get("exit")} if j.cancel.get("late") else {}  # rc is the result's 0, exit what it gave
+        self.audit("end", session=j.session, job=j.id, argv=j.argv, rc=rc, state=j.state, operator=j.operator, **late)
 
     def on_line(self, j, raw):
         """One line of migrate's output: scrubbed (T9); '@@ {...}' becomes a progress event, the rest a log line."""
