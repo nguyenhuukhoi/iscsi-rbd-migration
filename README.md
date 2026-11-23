@@ -1,4 +1,4 @@
-# migrate 1.0.0
+# migrate 1.0.1
 
 Chuyển VM giữa hai cloud OpenStack độc lập: Cinder iSCSI trên LVM hoặc Dell PowerStore ở nguồn → Cinder trên Ceph RBD ở đích. Package `migratetool/` cung cấp CLI `migrate`. Web UI `migui/` gọi cùng CLI trên host convert. `live` giảm downtime bằng pre-sync; vẫn phải tắt VM để cutover. Không chuyển RAM hoặc kết nối đang mở.
 
@@ -21,7 +21,7 @@ Trên host đã chuẩn bị theo [DEPLOY.md](DEPLOY.md), dùng wheel được r
 
 ```bash
 python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-1.0.0-py3-none-any.whl
+/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-1.0.1-py3-none-any.whl
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
 migrate --version
 migrate doctor --write-check

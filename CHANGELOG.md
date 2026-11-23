@@ -15,10 +15,10 @@ Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu l
 
 ## [1.0.1] — 2026-11-23 · branch `fix-1.0.1` · bug fixes from the review of 23/11 (no data-path change)
 
-- Selector: Ctrl-C / `kill -INT` during `migrate migrate|volume` over a selection still prints Summary, the rollback hint of the interrupted row (`FAIL(interrupted)`, later rows `SKIP(not-run)`) and Totals, then exits 130.
-- UI runner: a cancel that arrives after migrate printed its `result` rc 0 leaves the job OK, rc 0, `cancel.late` (the batch still stops); the UI notes "Hủy đến sau khi job đã xong".
-- Selector: `kill -INT <pid>` of `migrate plan --plan-jobs N` passes SIGINT to every running plan child and starts no other; exit 130 within seconds.
-- UI runner: a running `migrate ... --dry-run` (e.g. `rollback --dry-run`) no longer counts as a run outside the UI (no more 423).
+- Selector: Ctrl-C / `kill -INT` during the migrate loop of a selection (`migrate migrate|volume`; a SIGINT earlier — listing, plan, prompt — exits 130 as before) still prints Summary, the rollback hint of the interrupted row (`FAIL(interrupted)`, later rows `SKIP(not-run)`) and Totals, then exits 130. A row whose child had already returned keeps the result of its exit code.
+- UI runner: a cancel that arrives after migrate printed its `result` rc 0 leaves the job OK, rc 0, `cancel.late` (the batch still stops, its notification says `CANCELLED`; the audit `end` carries the real `exit`); the UI notes "Hủy đến sau khi job đã xong".
+- Selector: `kill -INT <pid>` of `migrate plan --plan-jobs N` passes SIGINT to every running plan child and starts no other; exit 130 within ~10 s even if a child was still starting (a second SIGINT after 3 s, SIGKILL after 5 s more: plan is read-only).
+- UI runner: a running `migrate ... --dry-run` (e.g. `rollback --dry-run`; only a `--dry-run` after the verb counts) no longer counts as a run outside the UI (no more 423).
 - UI runner: the host lock file it holds says `pid N (migui-runner)`, so the CLI's refusal names who holds it.
 
 ## [1.0.0] — 2026-11-21 · branch `v1` · engine + runner/web (Opus), UI + tài liệu (Codex), review/click-through (Fable), click matrix (Codex) · gate lab 22/11 (RELEASE-1.0.0.md mục 5)
