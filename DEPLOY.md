@@ -1,4 +1,4 @@
-# Triển khai migrate 1.0.0
+# Triển khai migrate 1.0.1
 
 Mục tiêu: convert host Linux giữa OpenStack 2023.1/PowerStore iSCSI và OpenStack 2026.1/Ceph 19. Bộ pin được lấy từ Ubuntu 24.04, Python 3.12.3. Package yêu cầu Python ≥ 3.10; pin dependency trên Python/OS khác vẫn cần nghiệm thu. UI cần systemd hỗ trợ các directive trong units, hướng triển khai là systemd ≥ 250.
 
@@ -43,10 +43,10 @@ Chuyển wheel, `.sha256`, `requirements-host.txt` và checkout UI cùng release
 
 ```bash
 cd dist
-sha256sum -c migratetool-1.0.0-py3-none-any.whl.sha256
+sha256sum -c migratetool-1.0.1-py3-none-any.whl.sha256
 cd ..
 python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-1.0.0-py3-none-any.whl
+/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-1.0.1-py3-none-any.whl
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
 /opt/mig-venv/bin/migrate --version
 ```
@@ -82,7 +82,7 @@ python3 -m venv /opt/mig-venv
 /opt/mig-venv/bin/pip install --upgrade pip
 /opt/mig-venv/bin/pip install -c https://releases.openstack.org/constraints/upper/2026.1 \
   python-openstackclient openstacksdk os-brick python-cinderclient keystoneauth1 oslo.concurrency oslo.config
-/opt/mig-venv/bin/pip install --no-deps dist/migratetool-1.0.0-py3-none-any.whl
+/opt/mig-venv/bin/pip install --no-deps dist/migratetool-1.0.1-py3-none-any.whl
 /opt/mig-venv/bin/pip check
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
 ```
