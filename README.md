@@ -15,18 +15,6 @@ cutover -------------------------> stop nguồn, tháo port, lock, copy cuối
 Nova đích <----------------------- volume + port mới; state giữ để rollback
 ```
 
-## Lấy mã và build wheel
-
-Trên máy build (Ubuntu 24.04, không cần là host convert): `apt-get install -y git python3-pip python3-setuptools`, rồi:
-
-```bash
-git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
-cd iscsi-rbd-migration
-./release.sh        # in SHA256, tạo dist/migratetool-<version>-py3-none-any.whl và .sha256
-```
-
-`<tag>` là bản phát hành muốn cài, ví dụ `v1.0.1`; danh sách tag: `git ls-remote --tags https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git` hoặc trang Tags trên GitHub (bỏ `--branch` để lấy `main`). `release.sh` gọi `python3 -m pip`; muốn dùng python khác (ví dụ của một venv đã có pip) thì đặt `PYTHON=/đường/dẫn/python`. Chép `dist/*.whl`, `dist/*.sha256`, `requirements-host.txt` và cả checkout (UI cài từ `migui/deploy/install.sh`) sang host convert.
-
 ## Cài và chạy thử
 
 Chạy bằng root trên host convert Ubuntu 24.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (bản 1.0.1, 23/11/2026).
@@ -70,14 +58,17 @@ printf '%s\n' 'd /run/mig 0700 root root -' > /etc/tmpfiles.d/migrate.conf
 
 `MIG_ISCSI_IP` là IP của host này trên mạng iSCSI.
 
-5. Cài tool vào venv (wheel và `requirements-host.txt` từ bước build; lệnh cài luôn OpenStack CLI và SDK đúng bộ đã test, chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)):
+5. Lấy mã và cài tool vào venv (cài luôn OpenStack CLI và SDK đúng bộ đã test; chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). `<tag>` là bản muốn cài, ví dụ `v1.0.1` (danh sách: trang Tags trên GitHub; bỏ `--branch` để lấy `main`):
 
 ```bash
+git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git /opt/mig-src
 python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-<version>-py3-none-any.whl
+/opt/mig-venv/bin/pip install -r /opt/mig-src/requirements-host.txt /opt/mig-src
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
 migrate --version
 ```
+
+Host không ra Internet, hoặc cần wheel + SHA256 theo quy trình thay đổi: build bằng `release.sh` trên máy khác, xem [DEPLOY.md mục 2](DEPLOY.md#2-artifact-và-venv).
 
 6. Kiểm tra rồi chạy canary (đọc plan, gõ `yes` khi CLI hỏi; `--yes` cho script):
 
@@ -90,10 +81,10 @@ migrate rollback canary-vm        # trả VM về nguồn khi cần
 
 Trên lab: doctor 21 mục OK; VM 10 GB + 2 GB cold mất 8 phút kể cả `--verify full`, rollback 1,5 phút. `doctor --write-check` tạo rồi dọn image RBD thử nghiệm; plan ghi export/log cục bộ, không sửa cloud. Chi tiết (PowerStore/multipath, host không Internet, nâng cấp): [DEPLOY.md](DEPLOY.md).
 
-UI được cài riêng từ checkout cùng release, không nằm trong wheel:
+UI được cài từ cùng checkout:
 
 ```bash
-sudo migui/deploy/install.sh
+sudo /opt/mig-src/migui/deploy/install.sh
 sudo /opt/migui/bin/migui-passwd add operator
 # Trên workstation:
 ssh -L 8787:127.0.0.1:8787 operator@192.0.2.20
