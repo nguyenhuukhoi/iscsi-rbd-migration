@@ -1,4 +1,4 @@
-# Hướng dẫn vận hành migrate
+# Hướng dẫn vận hành Migrate
 
 CLI và UI dùng chung engine, cấu hình và khóa host. Chạy từng VM tuần tự. Đọc [RUNBOOK.md](RUNBOOK.md) trước chiến dịch; dựng host theo [DEPLOY.md](DEPLOY.md). Tên và địa chỉ trong ví dụ là dữ liệu tài liệu.
 

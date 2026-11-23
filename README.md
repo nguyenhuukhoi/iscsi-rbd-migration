@@ -1,4 +1,4 @@
-# migrate
+# Migrate
 
 Chuyển VM giữa hai cloud OpenStack độc lập: Cinder iSCSI trên LVM hoặc Dell PowerStore ở nguồn → Cinder trên Ceph RBD ở đích. Package `migratetool/` cung cấp CLI `migrate`. Web UI `migui/` gọi cùng CLI trên host convert. `live` giảm downtime bằng pre-sync; vẫn phải tắt VM để cutover. Không chuyển RAM hoặc kết nối đang mở.
 

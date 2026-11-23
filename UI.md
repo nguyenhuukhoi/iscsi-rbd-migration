@@ -1,4 +1,4 @@
-# Sử dụng web UI migrate
+# Sử dụng web UI Migrate
 
 UI chạy trên convert host qua SSH tunnel. Cài đặt và account ở [DEPLOY.md](DEPLOY.md). Ý nghĩa option và ngoại lệ ở [GUIDE.md](GUIDE.md); điều kiện nghiệm thu ở [RUNBOOK.md](RUNBOOK.md). Các tên màn và thao tác dưới đây theo `migui/static/index.html` và `app.js` đang có.
 

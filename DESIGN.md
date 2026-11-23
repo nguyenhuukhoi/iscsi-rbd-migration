@@ -1,4 +1,4 @@
-# Thiết kế chuẩn migrate
+# Thiết kế chuẩn Migrate
 
 Tài liệu mô tả code của bản phát hành hiện tại (số bản: `migrate --version`). Tên hàm trong ngoặc là điểm truy vết khi hành vi không hiển nhiên. [GUIDE.md](GUIDE.md) định nghĩa cú pháp vận hành; [DEPLOY.md](DEPLOY.md) định nghĩa cách dựng host; [RUNBOOK.md](RUNBOOK.md) định nghĩa các bước nghiệm thu. Lịch sử chỉ nằm trong [CHANGELOG.md](CHANGELOG.md).
 
