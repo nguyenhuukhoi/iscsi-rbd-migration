@@ -1465,6 +1465,15 @@ orun.cli_json = lambda args, timeout, on_line=None: (0, {"running": [
 ok("fix-1.0.1 #4 outside_runs(): 'migrate rollback x --dry-run --json' is not a run outside the UI; 'rollback x --yes' "
    "and 'migrate app01' still are", orun.outside_runs() == [102, 103], orun.outside_runs())
 
+# ================================ fix-1.0.1 #2 round 2: the batch notification after a late cancel ================================
+bcases = [(["OK", "OK"], ""), (["OK", "OK"], "cancelled"), (["OK", "SKIPPED"], "cancelled"),
+          (["CANCELLED", "SKIPPED"], "cancelled"), (["FAIL", "SKIPPED"], "app01 failed (stop on failure)"),
+          (["OK", "SKIPPED"], "stopped after the current job"), (["FAIL", "CANCELLED"], "cancelled")]
+bgot = [mrunner.batch_state(st_, why_) for st_, why_ in bcases]
+ok("fix-1.0.1 #2 round 2 batch_state(): all OK is OK; [OK, SKIPPED] of a cancelled batch (late cancel) is CANCELLED, "
+   "not FAIL; [CANCELLED, SKIPPED] CANCELLED; [FAIL, SKIPPED] and [OK, SKIPPED] after stop-after-current FAIL",
+   bgot == ["OK", "OK", "CANCELLED", "CANCELLED", "FAIL", "FAIL", "CANCELLED"], bgot)
+
 # ================================ fix-1.0.1 #5 (Review 23/11): the runner writes its pid into the lock file ================================
 lrun = mrunner.Runner.__new__(mrunner.Runner)
 lrun.lock_path = os.path.join(WORK, "lock5", "migrate.lock")

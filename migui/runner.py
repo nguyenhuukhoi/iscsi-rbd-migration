@@ -112,6 +112,17 @@ def verb_of(argv):
     return ""
 
 
+def batch_state(states, stop_reason):
+    """The state the batch notification carries: OK when every job is OK; CANCELLED when a job was cancelled or the
+    batch was (Review 23/11 #2, round 2: a cancel that came after a job's result rc 0 leaves that job OK and the
+    rest SKIPPED, a batch cancelled all the same); FAIL otherwise."""
+    if all(s == "OK" for s in states):
+        return "OK"
+    if "CANCELLED" in states or stop_reason == "cancelled":
+        return "CANCELLED"
+    return "FAIL"
+
+
 def _eff(effective, key):
     v = (effective or {}).get(key) if isinstance(effective, dict) else None
     return v.get("value") if isinstance(v, dict) else None
@@ -1035,9 +1046,8 @@ class Runner:
         finally:
             b.state = "DONE"
             os.close(lockfd)
-            states = [j.state for j in b.jobs]
-            self.notify_event("batch", b.id, "OK" if all(s == "OK" for s in states) else
-                              ("CANCELLED" if "CANCELLED" in states else "FAIL"), batch=b.id, operator=b.operator)
+            self.notify_event("batch", b.id, batch_state([j.state for j in b.jobs], b.stop_reason), batch=b.id,
+                              operator=b.operator)
             with self.mu:
                 if self.active is b:
                     self.active = None
