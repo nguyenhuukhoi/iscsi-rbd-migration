@@ -1376,6 +1376,16 @@ ok("fix-1.0.1 #1 kill -INT during a selector migrate run: the Summary is printed
    and re.search(r"^  app01: inspect, then to undo: \S*migrate rollback app01$", out_, re.M)
    and "Totals: OK 0  FAIL 1  SKIP 1" in out_, out_)
 
+# ================================ fix-1.0.1 #4 (Review 23/11): outside_runs() leaves a --dry-run out ================================
+orun = mrunner.Runner.__new__(mrunner.Runner)
+orun.cli_json = lambda args, timeout, on_line=None: (0, {"running": [
+    {"pid": 101, "cmdline": ["/opt/mig-venv/bin/migrate", "rollback", "x", "--dry-run", "--json"]},
+    {"pid": 102, "cmdline": ["/opt/mig-venv/bin/migrate", "rollback", "x", "--yes"]},
+    {"pid": 103, "cmdline": ["/usr/bin/python3", "/opt/mig-venv/bin/migrate", "migrate", "app01", "--yes"]},
+    {"pid": 104, "cmdline": ["/opt/mig-venv/bin/migrate", "status", "--json"]}]}, "")
+ok("fix-1.0.1 #4 outside_runs(): 'migrate rollback x --dry-run --json' is not a run outside the UI; 'rollback x --yes' "
+   "and 'migrate app01' still are", orun.outside_runs() == [102, 103], orun.outside_runs())
+
 # ================================ version ================================
 ok("1.0.0 version: migratetool, migui and pyproject agree",
    migratetool.__version__ == "1.0.0" and __import__("migui").__version__ == "1.0.0"

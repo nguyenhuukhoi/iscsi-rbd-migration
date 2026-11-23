@@ -1005,10 +1005,13 @@ class Runner:
         return fd
 
     def outside_runs(self):
-        """pids of migrate/volume/rollback processes 'migrate status --json' sees (8: runs outside the UI)."""
+        """pids of migrate/volume/rollback processes 'migrate status --json' sees (8: runs outside the UI). Review 23/11
+        #4: a --dry-run (rollback --dry-run, which the UI itself runs to prepare a rollback) reads only and takes no
+        lock: not counted."""
         rc, data, _tail = self.cli_json(["status", "--json"], TIMEOUTS["status"])
         return [p.get("pid") for p in (data or {}).get("running") or []
-                if isinstance(p, dict) and verb_of(p.get("cmdline") or []) in RUN_VERBS]
+                if isinstance(p, dict) and verb_of(p.get("cmdline") or []) in RUN_VERBS
+                and "--dry-run" not in (p.get("cmdline") or [])]
 
     def run_batch(self, b, lockfd):
         b.lockfd = lockfd
