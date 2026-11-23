@@ -706,14 +706,7 @@ class Runner:
                         args = ["--progress-json"] + args
                     current = r
                     r.child_rc = self.child(r, verb_c, args, f, tee=True)
-                    if r.child_rc == 0:
-                        r.res = "OK"
-                        with open(f, encoding="utf-8", errors="replace") as fh:
-                            m = contract.KEYPAIR_WARN_RE.search(fh.read())
-                        if m:
-                            r.res = "OK(no key_name: %s)" % m.group(1)
-                    else:
-                        r.res, r.info = "FAIL", r.ident
+                    self.migrate_result(r)
                 if r.res.startswith("FAIL") and not s.cont:
                     stop = True
         except KeyboardInterrupt:
@@ -731,10 +724,29 @@ class Runner:
         out("Totals: OK %d  FAIL %d  SKIP %d  (logs: %s)"
             % (self.count("OK*"), self.count("FAIL*"), self.count("SKIP*"), self.log_dir))
 
+    def migrate_result(self, r):
+        """The result of a row from the exit code of its migrate child: 0 is OK (OK(no key_name: ...) when its log says
+        the keypair was not found), anything else FAIL with the ident for the rollback hint."""
+        if r.child_rc == 0:
+            r.res = "OK"
+            try:
+                with open(os.path.join(self.log_dir, "migrate-%s.log" % r.id), encoding="utf-8", errors="replace") as fh:
+                    m = contract.KEYPAIR_WARN_RE.search(fh.read())
+            except OSError:
+                m = None
+            if m:
+                r.res = "OK(no key_name: %s)" % m.group(1)
+        else:
+            r.res, r.info = "FAIL", r.ident
+
     def interrupted(self, current):
         """Review 23/11 #1: the rows of an interrupted migrate run. The row whose child was running (it has not been
-        given a result yet) is FAIL(interrupted) with its rollback hint; every row not run yet is SKIP(not-run)."""
-        if current is not None and current.res in ("PLAN-OK", "READY"):
+        given a result yet) is FAIL(interrupted) with its rollback hint; every row not run yet is SKIP(not-run).
+        Round 2: a child that had returned (the SIGINT came between its exit and the row's result) is classified by
+        its exit code, as the run would have."""
+        if current is not None and current.child_rc is not None and current.res in ("PLAN-OK", "READY", "OK"):
+            self.migrate_result(current)
+        elif current is not None and current.res in ("PLAN-OK", "READY"):
             current.res, current.info = "FAIL(interrupted)", current.ident
         for r in self.rows:
             if r.res in ("PLAN-OK", "READY", "PLAN-FAIL"):

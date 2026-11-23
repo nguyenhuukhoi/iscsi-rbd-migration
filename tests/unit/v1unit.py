@@ -1314,6 +1314,16 @@ sel_probe = (
     "run.volume_pass = lambda: ([], [])\n"
     "if sys.argv[4] == 'migrate':\n"
     "    run.plan_row = lambda r, vmx, tee, prefix: setattr(r, 'res', 'PLAN-OK')\n"
+    "if sys.argv[7:] == ['boundary']:  # round 2: the interrupt lands after the child returned 0, before the row's result\n"
+    "    def child(r, verb, args, logf, tee, prefix=''):\n"
+    "        with open(logf, 'w') as f:\n"
+    "            f.write('WARN keypair kp1 not at destination\\n')\n"
+    "        return 0\n"
+    "    real = run.migrate_result\n"
+    "    def once(r):\n"
+    "        run.migrate_result = real\n"
+    "        raise KeyboardInterrupt\n"
+    "    run.child, run.migrate_result = child, once\n"
     "with cli.sigint_scope():\n"
     "    rc = cli.guarded(run.run)\n"
     "print('rc', rc, flush=True)\n")
@@ -1383,6 +1393,35 @@ ok("fix-1.0.1 #1 kill -INT during a selector migrate run: the Summary is printed
    and re.search(r"^vm\s+id-app02\s+app02\s.*SKIP\(not-run\)$", out_, re.M)
    and re.search(r"^  app01: inspect, then to undo: \S*migrate rollback app01$", out_, re.M)
    and "Totals: OK 0  FAIL 1  SKIP 1" in out_, out_)
+# Round 2: the boundary of #1. interrupted() on a row whose child had returned classifies it by that exit code.
+bdir = tempfile.mkdtemp(dir=WORK)
+brun = selector.Runner.__new__(selector.Runner)
+brun.log_dir, brun.rows = bdir, []
+for n_, rc_b in (("b0", 0), ("b1", 0), ("b3", 3), ("bn", None)):
+    r_ = selector.Row("vm", "id-" + n_, n_, "ACTIVE", "admin", "admin", "PLAN-OK")
+    r_.ident, r_.child_rc = n_, rc_b
+    brun.rows.append(r_)
+set_file(os.path.join(bdir, "migrate-id-b1.log"), "x\nWARN keypair kp1 not at destination\n")
+bres = {}
+for r_ in brun.rows:
+    for o_ in brun.rows:
+        o_.res, o_.info = "PLAN-OK", ""
+    with redirect_stdout(io.StringIO()):
+        brun.interrupted(r_)
+    bres[r_.ident] = (r_.res, r_.info)
+ok("fix-1.0.1 #1 round 2 interrupted(): the row whose child returned 0 is OK (OK(no key_name: kp1) when its log says "
+   "so), returned 3 is FAIL with its ident, still running (no exit code) is FAIL(interrupted)",
+   bres == {"b0": ("OK", ""), "b1": ("OK(no key_name: kp1)", ""), "b3": ("FAIL", "b3"),
+            "bn": ("FAIL(interrupted)", "bn")}, bres)
+res = subprocess.run([sys.executable, '-I', '-c', sel_probe, REPO, sel_child, tempfile.mkdtemp(dir=WORK), "migrate", "1",
+                      "app01,app02", "boundary"], capture_output=True, text=True, timeout=60)
+out_ = res.stdout + res.stderr
+ok("fix-1.0.1 #1 round 2 the interrupt lands after the migrate child returned 0 and before the row's result: the "
+   "Summary says OK(no key_name: kp1), not FAIL(interrupted), no rollback hint; the next row SKIP(not-run), exit 130",
+   res.returncode == 0 and "rc 130" in out_
+   and re.search(r"^vm\s+id-app01\s+app01\s.*OK\(no key_name: kp1\)$", out_, re.M)
+   and re.search(r"^vm\s+id-app02\s+app02\s.*SKIP\(not-run\)$", out_, re.M)
+   and "rollback app01" not in out_ and "Totals: OK 1  FAIL 0  SKIP 1" in out_, out_)
 rc_, out_, took_, pids_ = sel_run("plan", 3, "app01,app02,app03", 30, ["app01", "app02", "app03"])
 alive_ = [p_ for p_ in pids_ if pid_alive(p_)]
 ok("fix-1.0.1 #3 plan --plan-jobs 3, three plan children sleeping 30 s, kill -INT to the selector PID only (not the "
