@@ -31,7 +31,19 @@ apt-get install -y git open-iscsi qemu-utils qemu-block-extra ceph-common python
 systemctl enable --now iscsid
 ```
 
-2. Openrc hai cloud, file root 0600, chỉ gồm các dòng `export OS_*` (không `read`, không prompt; mẫu password và application credential: [DEPLOY.md mục 3](DEPLOY.md#3-openrc-hai-cloud)):
+2. Lấy mã và cài tool vào venv (cài luôn OpenStack CLI và SDK đúng bộ đã test; chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). `<tag>` là bản muốn cài, ví dụ `v1.0.1` (danh sách: trang Tags trên GitHub; bỏ `--branch` để lấy `main`):
+
+```bash
+git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git /opt/mig-src
+python3 -m venv /opt/mig-venv
+/opt/mig-venv/bin/pip install -r /opt/mig-src/requirements-host.txt /opt/mig-src
+ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
+migrate --version
+```
+
+Host không ra Internet, hoặc cần wheel + SHA256 theo quy trình thay đổi: build bằng `release.sh` trên máy khác, xem [DEPLOY.md mục 2](DEPLOY.md#2-artifact-và-venv).
+
+3. Openrc hai cloud, file root 0600, chỉ gồm các dòng `export OS_*` (không `read`, không prompt; mẫu password và application credential: [DEPLOY.md mục 3](DEPLOY.md#3-openrc-hai-cloud)):
 
 ```bash
 install -d -m 0700 /opt/mig/src /opt/mig/dst
@@ -39,9 +51,9 @@ install -m 0600 /dev/null /opt/mig/src/admin-openrc.sh   # cloud nguồn (iSCSI)
 install -m 0600 /dev/null /opt/mig/dst/admin-openrc.sh   # cloud đích (Ceph)
 ```
 
-3. Ceph client của cụm đích: `/etc/ceph/ceph.conf` và keyring của user có quyền ghi pool đích (tạo user: [DEPLOY.md mục 4](DEPLOY.md#4-ceph-và-iscsi-powerstore)), kiểm bằng `rbd --id mig-xfer -p <pool> ls`.
+4. Ceph client của cụm đích: `/etc/ceph/ceph.conf` và keyring của user có quyền ghi pool đích (tạo user: [DEPLOY.md mục 4](DEPLOY.md#4-ceph-và-iscsi-powerstore)), kiểm bằng `rbd --id mig-xfer -p <pool> ls`.
 
-4. Conf `/opt/mig/migrate.conf` (root 0600) và thư mục làm việc. `RBD_POOL_MAP` map **tên volume type đích** sang pool RBD; toàn bộ khóa trong [migrate.conf.example](migrate.conf.example) và [GUIDE.md mục 4](GUIDE.md#4-cấu-hình-và-map).
+5. Conf `/opt/mig/migrate.conf` (root 0600) và thư mục làm việc. `RBD_POOL_MAP` map **tên volume type đích** sang pool RBD; toàn bộ khóa trong [migrate.conf.example](migrate.conf.example) và [GUIDE.md mục 4](GUIDE.md#4-cấu-hình-và-map).
 
 ```bash
 cat > /opt/mig/migrate.conf <<'EOF'
@@ -57,18 +69,6 @@ printf '%s\n' 'd /run/mig 0700 root root -' > /etc/tmpfiles.d/migrate.conf
 ```
 
 `MIG_ISCSI_IP` là IP của host này trên mạng iSCSI.
-
-5. Lấy mã và cài tool vào venv (cài luôn OpenStack CLI và SDK đúng bộ đã test; chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). `<tag>` là bản muốn cài, ví dụ `v1.0.1` (danh sách: trang Tags trên GitHub; bỏ `--branch` để lấy `main`):
-
-```bash
-git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git /opt/mig-src
-python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -r /opt/mig-src/requirements-host.txt /opt/mig-src
-ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
-migrate --version
-```
-
-Host không ra Internet, hoặc cần wheel + SHA256 theo quy trình thay đổi: build bằng `release.sh` trên máy khác, xem [DEPLOY.md mục 2](DEPLOY.md#2-artifact-và-venv).
 
 6. Kiểm tra rồi chạy canary (đọc plan, gõ `yes` khi CLI hỏi; `--yes` cho script):
 
