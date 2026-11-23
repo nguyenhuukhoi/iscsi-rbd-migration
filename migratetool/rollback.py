@@ -14,6 +14,9 @@ files). DESIGN.md, "rollback":
 - A14: the source gets back the power state it had when migrate exported it (SHUTOFF stays SHUTOFF).
 - A5: summary() is what 'migrate rollback' shows before it asks 'Type <name>' (and --dry-run prints).
 - A6: clean_before_cutover() is the destination half alone, for a run that failed before it stopped the source.
+- A20 (1.1.0): nothing is deleted at the destination before the source object (the VM, or the volume of a
+  migrate-volume state) has answered 'show'. Gone: the destination is the only copy, the rollback refuses. Not
+  readable (auth, network, scope): it refuses too, and says so.
 """
 import json
 import os
@@ -283,12 +286,52 @@ def _port_device(r, pid):
               "the rollback again" % (pid, last))
 
 
+def source_status(r, kind, oid):
+    """A20: (status, why) of the source object, read-only ('<kind> show <id> -f json -c id -c status'): its Nova or
+    Cinder status when it answers, "GONE" when the API says not found, None (why: the last stderr line) otherwise."""
+    res = r.src.run(kind, "show", oid, "-f", "json", "-c", "id", "-c", "status", stderr=proc.CAPTURE)
+    if res.rc == 0:
+        try:
+            status = json.loads(res.stdout or "{}").get("status")
+        except (ValueError, AttributeError):
+            status = None
+        return (status if isinstance(status, str) and status else "UNKNOWN"), ""
+    if GONE_RE.search(res.stderr):
+        return "GONE", ""
+    return None, _last_line(res.stderr) or "exit %d" % res.rc
+
+
+def require_source(r, kind, oid, label, st):
+    """A20: the source object still exists, else Die before anything is deleted at the destination; its status.
+    kind: server|volume (the openstack noun); label: "VM <name>" or "volume <name>". Gone: the destination objects
+    this state recorded are the only copy. 'migrate prune' never removes a live state directory (only
+    <ident>.rolled-back.<epoch> ones), so retiring the state is named as a step by hand, not as a command."""
+    noun, _sep, name = label.partition(" ")
+    status, why = source_status(r, kind, oid)
+    if status == "GONE":
+        held = []
+        if kind == "server":
+            held.append("server %s" % (st.read("dst-server-id").strip() or "none recorded"))
+        held.append("volumes %s" % (" ".join(dv for _s, dv in st.volume_map()) or "none recorded"))
+        raise Die("source %s %s (%s) no longer exists at the source: the destination (%s) is the only copy, nothing "
+                  "was deleted. Keep the destination: the state directory %s stays live ('migrate prune' removes only "
+                  "rolled-back state directories, never a live one); once you are sure the destination is the copy to "
+                  "keep, remove that directory by hand. A rollback cannot give back a %s that is gone."
+                  % (noun, oid, name or "no name", ", ".join(held), st.path, noun))
+    if status is None:
+        raise Die("cannot read source %s %s (%s): nothing was deleted; check the source credentials/SRC_PROJECT and "
+                  "run the rollback again" % (noun, oid, why))
+    return status
+
+
 def rollback_vm(r, st):
     if not st.exists("server.json"):
         raise Die("no state for %s in %s" % (st.arg, st.path))
     server = st.json("server.json")
     sid = server.get("id")
     vm = st.arg
+    # A20: the source VM answers before anything at the destination is deleted.
+    require_source(r, "server", sid, "VM " + jqs(server.get("name")), st)
 
     if st.nonempty("dst-server-id"):
         log("delete destination server")

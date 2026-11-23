@@ -13,7 +13,7 @@ import sys
 from . import config, proc, progress, record
 from .copyvol import brick, cleanup_attach, copy_volume_cold, copy_volume_props
 from .preflight import Checker, iscsid_preflight, quota_preflight, systemctl_ok
-from .rollback import drop_volume
+from .rollback import drop_volume, require_source
 from .state import StateDir
 from .util import UUID_RE, Die, Exit, jq_alt, jqs, lines, log, out, prog
 
@@ -212,7 +212,10 @@ def find_volume_state(r, arg):
 
 
 def rollback_volume(r, st):
-    vid = jqs(st.json("volume.json").get("id"))
+    vj = st.json("volume.json")
+    vid = jqs(vj.get("id"))
+    # A20: the source volume answers before its copy is deleted.
+    require_source(r, "volume", vid, "volume " + (jqs(vj.get("name")) if vj.get("name") else ""), st)
     if st.exists("volume-map"):
         for _svid, dvid in st.volume_map():
             drop_volume(r, r.dst, dvid, "destination volume")
