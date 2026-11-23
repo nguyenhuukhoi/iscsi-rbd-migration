@@ -37,17 +37,17 @@ try:
     before, ncalls = len(plans(s)), len(s.calls())
     gone = s.post("/api/rollback", {"ident": VM1})
     err = (gone.json or {}).get("error", "")
-    ok("A20 rollback prepare, the source VM gone: 409 '<ident>: the source VM no longer exists at the source; the "
-       "destination is the only copy, a rollback would delete it', no batch",
-       gone.status == 409 and err == "%s: the source VM no longer exists at the source; the destination is the only "
-       "copy, a rollback would delete it" % VM1 and "batch" not in (gone.json or {}), gone)
+    ok("A20 rollback prepare, the source VM gone: 409 '<ident>: the source VM is not found at the source (deleted, or "
+       "not visible to the source credentials); the destination is the only copy, a rollback would delete it', no batch",
+       gone.status == 409 and err == "%s: the source VM is not found at the source (deleted, or not visible to the source "
+       "credentials); the destination is the only copy, a rollback would delete it" % VM1 and "batch" not in (gone.json or {}), gone)
     new = s.calls()[ncalls:]
     ok("A20 the refusal planned nothing: no 'plan' in the audit; the runner ran the dry-run and no rollback",
        len(plans(s)) == before and ["rollback", VM1, "--dry-run", "--json"] in new
        and not [c for c in new if c[:1] == ["rollback"] and "--dry-run" not in c], (plans(s)[before:], new))
     gv = s.post("/api/rollback", {"ident": "vol-" + VOL1})
     ok("A20 rollback prepare, the source volume gone: 409 naming 'the source volume'",
-       gv.status == 409 and "the source volume no longer exists at the source" in (gv.json or {}).get("error", "")
+       gv.status == 409 and "the source volume is not found at the source (deleted, or not visible" in (gv.json or {}).get("error", "")
        and len(plans(s)) == before, gv)
 
     s.control({"source_status": {VM1: None}})

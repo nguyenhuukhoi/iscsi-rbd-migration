@@ -303,9 +303,10 @@ def source_status(r, kind, oid):
 
 def require_source(r, kind, oid, label, st):
     """A20: the source object still exists, else Die before anything is deleted at the destination; its status.
-    kind: server|volume (the openstack noun); label: "VM <name>" or "volume <name>". Gone: the destination objects
-    this state recorded are the only copy. 'migrate prune' never removes a live state directory (only
-    <ident>.rolled-back.<epoch> ones), so retiring the state is named as a step by hand, not as a command."""
+    kind: server|volume (the openstack noun); label: "VM <name>" or "volume <name>". Not found (deleted,
+    or not visible to the source credentials/SRC_PROJECT): the destination objects this state recorded are the only
+    copy. 'migrate prune' never removes a live state directory (only <ident>.rolled-back.<epoch> ones), so retiring
+    the state is named as a step by hand, not as a command."""
     noun, _sep, name = label.partition(" ")
     status, why = source_status(r, kind, oid)
     if status == "GONE":
@@ -313,8 +314,9 @@ def require_source(r, kind, oid, label, st):
         if kind == "server":
             held.append("server %s" % (st.read("dst-server-id").strip() or "none recorded"))
         held.append("volumes %s" % (" ".join(dv for _s, dv in st.volume_map()) or "none recorded"))
-        raise Die("source %s %s (%s) no longer exists at the source: the destination (%s) is the only copy, nothing "
-                  "was deleted. Keep the destination: the state directory %s stays live ('migrate prune' removes only "
+        raise Die("source %s %s (%s) is not found at the source (deleted, or not visible to the source "
+                  "credentials/SRC_PROJECT): the destination (%s) is the only copy, nothing was deleted. Check the "
+                  "scope first. Keep the destination: the state directory %s stays live ('migrate prune' removes only "
                   "rolled-back state directories, never a live one); once you are sure the destination is the copy to "
                   "keep, remove that directory by hand. A rollback cannot give back a %s that is gone."
                   % (noun, oid, name or "no name", ", ".join(held), st.path, noun))
@@ -481,8 +483,8 @@ def summary_lines(d):
                                                    now)]
     tail = []
     if src == "GONE":
-        tail.append("  ERROR the source %s no longer exists: the destination is the only copy; this rollback is refused"
-                    % noun)
+        tail.append("  ERROR the source %s is not found at the source: the destination is the only copy; this "
+                    "rollback is refused" % noun)
     elif "source_status" in d and src is None:
         tail.append("  WARN the source %s could not be read (%s): the rollback refuses until it can"
                     % (noun, d.get("source_error") or "no answer"))
