@@ -126,12 +126,18 @@ def args_after_verb(argv):
 
 
 def batch_state(states, stop_reason):
-    """The state the batch notification carries: OK when every job is OK; CANCELLED when a job was cancelled or the
-    batch was (Review 23/11 #2, round 2: a cancel that came after a job's result rc 0 leaves that job OK and the
-    rest SKIPPED, a batch cancelled all the same); FAIL otherwise."""
+    """The state the batch notification carries (Review 23/11 #2, rounds 2 and 3):
+    - FAIL when a job failed: a cancel or a stop that came after it does not hide the failure;
+    - OK when every job is OK, a stop or a cancel that came after the last job's result included;
+    - CANCELLED when a job was cancelled, or the operator stopped the batch (stop_reason: "cancelled", which a cancel
+      after a job's result rc 0 leaves with that job OK and the rest SKIPPED, or "stopped after the current job"). A
+      "stop on failure" always comes with a FAIL job, caught above;
+    - FAIL otherwise."""
+    if "FAIL" in states:
+        return "FAIL"
     if all(s == "OK" for s in states):
         return "OK"
-    if "CANCELLED" in states or stop_reason == "cancelled":
+    if "CANCELLED" in states or stop_reason:
         return "CANCELLED"
     return "FAIL"
 

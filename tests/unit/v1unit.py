@@ -1564,11 +1564,16 @@ ok("fix-1.0.1 #4 round 2 outside_runs() looks for --dry-run after the verb only:
 # ================================ fix-1.0.1 #2 round 2: the batch notification after a late cancel ================================
 bcases = [(["OK", "OK"], ""), (["OK", "OK"], "cancelled"), (["OK", "SKIPPED"], "cancelled"),
           (["CANCELLED", "SKIPPED"], "cancelled"), (["FAIL", "SKIPPED"], "app01 failed (stop on failure)"),
-          (["OK", "SKIPPED"], "stopped after the current job"), (["FAIL", "CANCELLED"], "cancelled")]
+          (["OK", "SKIPPED"], "stopped after the current job"), (["FAIL", "CANCELLED"], "cancelled"),
+          (["OK", "OK"], "stopped after the current job"), (["OK", "FAIL", "SKIPPED"], "stopped after the current job"),
+          (["OK", "SKIPPED"], "")]
 bgot = [mrunner.batch_state(st_, why_) for st_, why_ in bcases]
-ok("fix-1.0.1 #2 round 2 batch_state(): all OK is OK; [OK, SKIPPED] of a cancelled batch (late cancel) is CANCELLED, "
-   "not FAIL; [CANCELLED, SKIPPED] CANCELLED; [FAIL, SKIPPED] and [OK, SKIPPED] after stop-after-current FAIL",
-   bgot == ["OK", "OK", "CANCELLED", "CANCELLED", "FAIL", "FAIL", "CANCELLED"], bgot)
+# Round 3 (deliberate changes): [OK, SKIPPED] after "stopped after the current job" FAIL -> CANCELLED (the operator
+# stopped it), [FAIL, CANCELLED] CANCELLED -> FAIL (a failure is not hidden by a cancel after it).
+ok("fix-1.0.1 #2 round 3 batch_state(): any FAIL is FAIL ([FAIL, SKIPPED] on failure, [FAIL, CANCELLED], a FAIL before a "
+   "stop-after); else all OK is OK (also after a cancel or a stop-after that came after the last job); else CANCELLED "
+   "for a cancelled job or an operator stop ([OK, SKIPPED] after a late cancel or after stop-after); else FAIL",
+   bgot == ["OK", "OK", "CANCELLED", "CANCELLED", "FAIL", "CANCELLED", "FAIL", "OK", "FAIL", "FAIL"], bgot)
 
 # ================================ fix-1.0.1 #5 (Review 23/11): the runner writes its pid into the lock file ================================
 lrun = mrunner.Runner.__new__(mrunner.Runner)

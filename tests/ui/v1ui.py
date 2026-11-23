@@ -225,4 +225,28 @@ finally:
     s.stop()
     os.environ.pop("MIGUI_NOTIFY_CMD", None)
 
+# fix-1.0.1 round 3: 'Dừng sau con hiện tại' (POST /api/batches/<id>/stop) while the first of two slow jobs runs: the
+# job finishes OK, the next is SKIPPED, and the batch notifies CANCELLED (the operator stopped it), not FAIL.
+stop_notify = os.path.join(TMP, "notify-stop.jsonl")
+os.environ["MIGUI_NOTIFY_CMD"] = json.dumps(NOTIFY[:-1] + [stop_notify])
+s = H.Stack(control={"modes": {VM1: "slow", VM2: "slow"}, "steps": 30, "step_secs": 0.1})
+try:
+    s.ready()
+    p = s.plan([VM1, VM2], {"az": "AZ1"})
+    r = s.run_batch(p.json["batch"], "2")
+    jobs = r.json.get("jobs") or []
+    act = s.get("/api/jobs").json.get("active") or {}
+    stp = s.post("/api/batches/%s/stop" % act.get("id"), {})
+    s.wait_idle()
+    js = [s.get("/api/jobs/" + x).json["job"]["state"] for x in jobs]
+    snotes = [json.loads(l) for l in open(stop_notify)] if os.path.exists(stop_notify) else []
+    ok("fix-1.0.1 #2 round 3 stop after the current job ([OK, SKIPPED]): the batch notifies CANCELLED, not FAIL; its "
+       "first job notifies OK",
+       stp.status == 200 and js == ["OK", "SKIPPED"]
+       and [(n.get("MIG_EVENT"), n.get("MIG_STATE")) for n in snotes] == [("job", "OK"), ("batch", "CANCELLED")],
+       (stp, js, snotes))
+finally:
+    s.stop()
+    os.environ.pop("MIGUI_NOTIFY_CMD", None)
+
 sys.exit(H.total())
