@@ -1290,6 +1290,92 @@ r = app(w2, [("volume", "data", []), vol_lock_free])
 ok("final review: R3 a finished migrate volume releases its state directory lock (taken again at once in the same process)",
    r.rc == [0] and vol_lock_free.free is True, (r.rc, getattr(vol_lock_free, "free", None), r.err[-300:]))
 
+# ================================ fix-1.0.1 (Review 23/11): the selector under SIGINT ================================
+# A probe process runs Runner.run() of 'migrate migrate --vm app01,app02 --yes' with the listing and the plan stubbed
+# and CHILD replaced by a fake child; SIGINT goes to the probe's PID only ('kill -INT <pid>').
+sel_probe = (
+    "import os, signal, sys, threading, types\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from migratetool import cli, selector\n"
+    "signal.signal(signal.SIGINT, signal.default_int_handler)  # the harness may run with SIGINT ignored\n"
+    "selector.CHILD = [sys.executable, '-I', '-c', sys.argv[2], sys.argv[1]]\n"
+    "run = selector.Runner.__new__(selector.Runner)\n"
+    "run._out = threading.Lock()\n"
+    "run.s = types.SimpleNamespace(verb=sys.argv[4], scope='all', plan_only=False, plan_jobs=int(sys.argv[5]), yes=True,\n"
+    "                              cont=False, passed=[], progress=False, json=False)\n"
+    "run.cfg = types.SimpleNamespace(PROJECT_MAP_FILE='')\n"
+    "run.pmap, run.rows, run.log_dir = {}, [], sys.argv[3]\n"
+    "def rows():\n"
+    "    for n in sys.argv[6].split(','):\n"
+    "        r = selector.Row('vm', 'id-' + n, n, 'ACTIVE', 'admin', 'admin', 'selected')\n"
+    "        r.ident = n\n"
+    "        run.rows.append(r)\n"
+    "run.enumerate_vms, run.load_pmap, run.row_env = rows, (lambda: None), (lambda r: None)\n"
+    "run.volume_pass = lambda: ([], [])\n"
+    "if sys.argv[4] == 'migrate':\n"
+    "    run.plan_row = lambda r, vmx, tee, prefix: setattr(r, 'res', 'PLAN-OK')\n"
+    "with cli.sigint_scope():\n"
+    "    rc = cli.guarded(run.run)\n"
+    "print('rc', rc, flush=True)\n")
+# the fake child: says it started (with its PID), then sleeps; a SIGINT makes it exit 130 as a migrate child does
+sel_child = (
+    "import os, sys, time\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from migratetool import cli\n"
+    "cli.honour_sigint()\n"
+    "print('child started %s pid %d' % (sys.argv[3], os.getpid()), flush=True)\n"
+    "try:\n"
+    "    time.sleep(float(os.environ.get('FAKE_CHILD_SECS', '5')))\n"
+    "    print('child finished', flush=True)\n"
+    "except KeyboardInterrupt:\n"
+    "    print('child interrupted', flush=True)\n"
+    "    sys.exit(130)\n")
+
+
+def sel_run(verb, jobs, idents, secs, wait_for, after=1.0):
+    """The probe; SIGINT to its PID 'after' s after the output shows each of wait_for: (rc, output, seconds from the
+    SIGINT to the probe's exit, PIDs of the children)."""
+    d_ = tempfile.mkdtemp(dir=WORK)
+    p_ = subprocess.Popen([sys.executable, '-I', '-c', sel_probe, REPO, sel_child, d_, verb, str(jobs), idents],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=dict(os.environ, FAKE_CHILD_SECS=str(secs)))
+    got, pids, need = [], [], set(wait_for)
+    timer = threading.Timer(60, p_.kill)  # a probe that hangs must not hang the suite
+    timer.start()
+    for line in p_.stdout:
+        got.append(line)
+        m_ = re.search(r"child started (\S+) pid (\d+)", line)
+        if m_:
+            pids.append(int(m_.group(2)))
+            need.discard(m_.group(1))
+            if not need:
+                break
+    threading.Event().wait(after)  # time.sleep is a no-op in this harness
+    os.kill(p_.pid, signal.SIGINT)
+    t_ = time.monotonic()
+    got.append(p_.stdout.read())
+    p_.wait()
+    took = time.monotonic() - t_
+    timer.cancel()
+    return p_.returncode, "".join(got), took, pids
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+rc_, out_, _took, _pids = sel_run("migrate", 1, "app01,app02", 5, ["app01"])
+ok("fix-1.0.1 #1 kill -INT during a selector migrate run: the Summary is printed, the running row FAIL(interrupted) "
+   "with its rollback hint, the row after it SKIP(not-run), exit 130",
+   rc_ == 0 and "rc 130" in out_ and 0 <= out_.find("child interrupted") < out_.find("Summary:")
+   and re.search(r"^vm\s+id-app01\s+app01\s.*FAIL\(interrupted\)$", out_, re.M)
+   and re.search(r"^vm\s+id-app02\s+app02\s.*SKIP\(not-run\)$", out_, re.M)
+   and re.search(r"^  app01: inspect, then to undo: \S*migrate rollback app01$", out_, re.M)
+   and "Totals: OK 0  FAIL 1  SKIP 1" in out_, out_)
+
 # ================================ version ================================
 ok("1.0.0 version: migratetool, migui and pyproject agree",
    migratetool.__version__ == "1.0.0" and __import__("migui").__version__ == "1.0.0"

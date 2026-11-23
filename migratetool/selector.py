@@ -255,7 +255,8 @@ class Runner:
     def hints(self):
         """How to undo a failed run or an earlier state; rollback goes by the recorded ID or name."""
         for r in self.rows:
-            if r.res in ("FAIL", "SKIP(state-exists)"):
+            # Review 23/11 #1: every FAIL* row with an ident to roll back (FAIL, FAIL(interrupted)); FAIL(plan) ran nothing
+            if (r.res.startswith("FAIL") and r.res != "FAIL(plan)") or r.res == "SKIP(state-exists)":
                 envtxt = "".join("%s=%s " % (k, r.env[k]) for k in ("SRC_PROJECT", "DST_PROJECT") if k in r.env)
                 out("  %s: inspect, then to undo: %s%s rollback %s" % (r.name or r.id, envtxt, prog(), r.info))
 
@@ -617,41 +618,62 @@ class Runner:
 
         stop = False
         attempted = []
-        for r in self.rows:
-            if r.res not in ("PLAN-OK", "READY", "PLAN-FAIL"):
-                continue
-            if stop:
-                r.res = "SKIP(not-run)"
-                continue
-            attempted.append(r)
-            if r.res == "PLAN-FAIL":
-                r.res = "FAIL(plan)"
-            else:
-                if r.kind == "vm":
-                    verb_c, args = "migrate", vmx + s.passed
+        current = None
+        try:
+            for r in self.rows:
+                if r.res not in ("PLAN-OK", "READY", "PLAN-FAIL"):
+                    continue
+                if stop:
+                    r.res = "SKIP(not-run)"
+                    continue
+                attempted.append(r)
+                if r.res == "PLAN-FAIL":
+                    r.res = "FAIL(plan)"
                 else:
-                    verb_c, args = "migrate-volume", volpass
-                f = os.path.join(self.log_dir, "migrate-%s.log" % r.id)
-                log("=== %s %s (%s) %s -> %s" % (r.kind, r.name or "(no name)", r.id, r.sp, r.dp))
-                if s.progress:  # 7.3 (7): single.py takes the flag off before the options
-                    args = ["--progress-json"] + args
-                r.child_rc = self.child(r, verb_c, args, f, tee=True)
-                if r.child_rc == 0:
-                    r.res = "OK"
-                    with open(f, encoding="utf-8", errors="replace") as fh:
-                        m = contract.KEYPAIR_WARN_RE.search(fh.read())
-                    if m:
-                        r.res = "OK(no key_name: %s)" % m.group(1)
-                else:
-                    r.res, r.info = "FAIL", r.ident
-            if r.res.startswith("FAIL") and not s.cont:
-                stop = True
+                    if r.kind == "vm":
+                        verb_c, args = "migrate", vmx + s.passed
+                    else:
+                        verb_c, args = "migrate-volume", volpass
+                    f = os.path.join(self.log_dir, "migrate-%s.log" % r.id)
+                    log("=== %s %s (%s) %s -> %s" % (r.kind, r.name or "(no name)", r.id, r.sp, r.dp))
+                    if s.progress:  # 7.3 (7): single.py takes the flag off before the options
+                        args = ["--progress-json"] + args
+                    current = r
+                    r.child_rc = self.child(r, verb_c, args, f, tee=True)
+                    if r.child_rc == 0:
+                        r.res = "OK"
+                        with open(f, encoding="utf-8", errors="replace") as fh:
+                            m = contract.KEYPAIR_WARN_RE.search(fh.read())
+                        if m:
+                            r.res = "OK(no key_name: %s)" % m.group(1)
+                    else:
+                        r.res, r.info = "FAIL", r.ident
+                if r.res.startswith("FAIL") and not s.cont:
+                    stop = True
+        except KeyboardInterrupt:
+            # Review 23/11 #1: Ctrl-C / kill -INT still ends with the Summary and the rollback hint of the row that was
+            # running (child() has drained and reaped it); then the interrupt goes on (exit 130). SIGINT is ignored
+            # from here on (cli._sigint_once), so a second Ctrl-C cannot cut the summary short.
+            self.interrupted(current)
+            raise
+        self.summary()
+        return self.exit_code(attempted)
 
+    def summary(self):
         self.show("Summary:")
         self.hints()
         out("Totals: OK %d  FAIL %d  SKIP %d  (logs: %s)"
             % (self.count("OK*"), self.count("FAIL*"), self.count("SKIP*"), self.log_dir))
-        return self.exit_code(attempted)
+
+    def interrupted(self, current):
+        """Review 23/11 #1: the rows of an interrupted migrate run. The row whose child was running (it has not been
+        given a result yet) is FAIL(interrupted) with its rollback hint; every row not run yet is SKIP(not-run)."""
+        if current is not None and current.res in ("PLAN-OK", "READY"):
+            current.res, current.info = "FAIL(interrupted)", current.ident
+        for r in self.rows:
+            if r.res in ("PLAN-OK", "READY", "PLAN-FAIL"):
+                r.res = "SKIP(not-run)"
+        self.summary()
 
     def plan_row(self, r, vmx, tee, prefix):
         """The plan child of one row; sets r.res (PLAN-OK, PLAN-FAIL, SKIP(ephemeral-root)) and r.info."""
