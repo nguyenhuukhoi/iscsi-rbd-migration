@@ -15,8 +15,8 @@ files). DESIGN.md, "rollback":
 - A5: summary() is what 'migrate rollback' shows before it asks 'Type <name>' (and --dry-run prints).
 - A6: clean_before_cutover() is the destination half alone, for a run that failed before it stopped the source.
 - A20 (1.1.0): nothing is deleted at the destination before the source object (the VM, or the volume of a
-  migrate-volume state) has answered 'show'. Gone: the destination is the only copy, the rollback refuses. Not
-  readable (auth, network, scope): it refuses too, and says so.
+  migrate-volume state) has answered 'show'. Not found: the destination may be the only remaining copy, the rollback
+  refuses. Not readable (auth, network, scope, an unexpected answer): it refuses too, and says so.
 """
 import json
 import os
@@ -320,9 +320,9 @@ def source_status(r, kind, oid):
 def require_source(r, kind, oid, label, st):
     """A20: the source object still exists, else Die before anything is deleted at the destination; its status.
     kind: server|volume (the openstack noun); label: "VM <name>" or "volume <name>". Not found (deleted,
-    or not visible to the source credentials/SRC_PROJECT): the destination objects this state recorded are the only
-    copy. 'migrate prune' never removes a live state directory (only <ident>.rolled-back.<epoch> ones), so retiring
-    the state is named as a step by hand, not as a command."""
+    or not visible to the source credentials/SRC_PROJECT, or the wrong endpoint): the destination objects this state
+    recorded may be the only remaining copy. 'migrate prune' never removes a live state directory (only
+    <ident>.rolled-back.<epoch> ones), so retiring the state is named as a step by hand, not as a command."""
     noun, _sep, name = label.partition(" ")
     status, why = source_status(r, kind, oid)
     if status == "GONE":
@@ -330,15 +330,16 @@ def require_source(r, kind, oid, label, st):
         if kind == "server":
             held.append("server %s" % (st.read("dst-server-id").strip() or "none recorded"))
         held.append("volumes %s" % (" ".join(dv for _s, dv in st.volume_map()) or "none recorded"))
-        raise Die("source %s %s (%s) is not found at the source (deleted, or not visible to the source "
-                  "credentials/SRC_PROJECT): the destination (%s) is the only copy, nothing was deleted. Check the "
-                  "scope first. Keep the destination: the state directory %s stays live ('migrate prune' removes only "
-                  "rolled-back state directories, never a live one); once you are sure the destination is the copy to "
-                  "keep, remove that directory by hand. A rollback cannot give back a %s that is gone."
+        raise Die("source %s %s (%s) is not found at the source (deleted, not visible to the source "
+                  "credentials/SRC_PROJECT, or the wrong source endpoint/region): the destination (%s) may be the only "
+                  "remaining copy; this rollback deleted nothing. Keep the destination. The state directory %s stays "
+                  "live ('migrate prune' removes only rolled-back state directories, never a live one): check the "
+                  "source scope and endpoint before removing it by hand, once you are sure the destination is the copy "
+                  "to keep. A rollback cannot give back a %s that is gone."
                   % (noun, oid, name or "no name", ", ".join(held), st.path, noun))
     if status is None:
-        raise Die("cannot read source %s %s (%s): nothing was deleted; check the source credentials/SRC_PROJECT and "
-                  "run the rollback again" % (noun, oid, why))
+        raise Die("cannot read source %s %s (%s): this rollback deleted nothing; check the source "
+                  "credentials/SRC_PROJECT and run the rollback again" % (noun, oid, why))
     return status
 
 
@@ -508,8 +509,8 @@ def summary_lines(d):
                                                    d.get("source_id") or "(no source id)", now)]
     tail = []
     if src == "GONE":
-        tail.append("  ERROR the source %s is not found at the source: the destination is the only copy; this "
-                    "rollback is refused" % noun)
+        tail.append("  ERROR the source %s is not found at the source: the destination may be the only remaining "
+                    "copy; this rollback is refused" % noun)
     elif "source_status" in d and src is None:
         tail.append("  WARN the source %s could not be read (%s): the rollback refuses until it can"
                     % (noun, d.get("source_error") or "no answer"))

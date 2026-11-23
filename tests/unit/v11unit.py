@@ -67,9 +67,10 @@ r = app(world(), [("migrate", "app01", PLAIN), edit(drop_source_vm), mark, ROLL]
 print("INFO case 1 rc=%s last stderr line=%r dst servers=%s dst volumes=%s dst deletes=%s state live=%s"
       % (r.rc, last_err(r), sorted(r.world["dst"]["servers"]), sorted(r.world["dst"]["volumes"]),
          dst_deletes(r.calls), os.path.isdir(os.path.join(r.state, "app01"))))
-ok("A20 the source VM is gone: the rollback stops (exit 1) naming it, 'is not found at the source (deleted, or not visible ...)'",
-   r.rc == [0, 1] and "source VM %s (app01) is not found at the source (deleted, or not visible to the source "
-   "credentials/SRC_PROJECT): the destination" % SID in r.err and "Check the scope first. Keep the destination" in r.err,
+ok("A20 the source VM is gone: the rollback stops (exit 1) naming it, 'is not found at the source (deleted, not visible ..., or the wrong endpoint)'",
+   r.rc == [0, 1] and "source VM %s (app01) is not found at the source (deleted, not visible to the source "
+   "credentials/SRC_PROJECT, or the wrong source endpoint/region): the destination" % SID in r.err
+   and "this rollback deleted nothing. Keep the destination." in r.err,
    (r.rc, r.err[-600:]))
 ok("A20 the source VM is gone: no 'server delete', 'volume delete', 'port delete' or 'image delete' at the destination",
    not dst_deletes(r.calls), dst_deletes(r.calls))
@@ -79,12 +80,12 @@ ok("A20 the source VM is gone: the destination server and both volumes are still
                                                                              r.world["dst"]["volumes"].keys()))
 ok("A20 the source VM is gone: the state directory stays live (not retired)",
    os.path.isfile(os.path.join(r.state, "app01", "volume-map")) and not retired(r, "app01"), os.listdir(r.state))
-ok("A20 the message names what is the only copy (server, volumes), the live state directory, and says prune never "
-   "removes it (no invented command)",
-   "the destination (server srv-dst-0001, volumes vol-dst-0001 vol-dst-0002) is the only copy, nothing was deleted"
-   in r.err and "the state directory %s stays live" % os.path.join(r.state, "app01") in r.err
+ok("A20 the message names what may be the only remaining copy (server, volumes), the live state directory, says "
+   "prune never removes it (no invented command) and to check the source scope and endpoint first",
+   "the destination (server srv-dst-0001, volumes vol-dst-0001 vol-dst-0002) may be the only remaining copy; this "
+   "rollback deleted nothing" in r.err and "The state directory %s stays live" % os.path.join(r.state, "app01") in r.err
    and "'migrate prune' removes only rolled-back state directories, never a live one" in r.err
-   and "remove that directory by hand" in r.err, r.err[-800:])
+   and "check the source scope and endpoint before removing it by hand" in r.err, r.err[-800:])
 ok("A20 the probe is the rollback's last call at the source: no unlock, no port, no start after it",
    [c for c in after_mark(r.calls) if c.startswith("src\t")][-1:] == ["src\tserver show %s -f json -c id -c status" % SID]
    and not [c for c in after_mark(r.calls) if c.startswith("src\tserver unlock")], after_mark(r.calls))
@@ -108,7 +109,7 @@ r = app(world(), [("migrate", "app01", PLAIN),
                   mark, ROLL])
 ok("A20 'server show' of the source answers 500: the rollback stops, 'cannot read source VM' with the reason; "
    "nothing deleted at the destination, the state live",
-   r.rc == [0, 1] and "cannot read source VM %s (Internal Server Error (HTTP 500)): nothing was deleted; check the "
+   r.rc == [0, 1] and "cannot read source VM %s (Internal Server Error (HTTP 500)): this rollback deleted nothing; check the "
    "source credentials/SRC_PROJECT and run the rollback again" % SID in r.err and not dst_deletes(r.calls)
    and "srv-dst-0001" in r.world["dst"]["servers"] and not retired(r, "app01"), (r.rc, r.err[-500:]))
 r = app(world(), [("migrate", "app01", PLAIN),
@@ -140,16 +141,16 @@ VROLL = ("rollback", "vol-vol-src-data")
 r = app(VW, [("volume", "data", []), edit(lambda x: x["src"]["volumes"].pop("vol-src-data")), mark, VROLL])
 ok("A20 volume: the source volume is gone: exit 1, 'source volume vol-src-data (data) is not found', the copy "
    "kept, no 'volume delete', the state live",
-   r.rc == [0, 1] and "source volume vol-src-data (data) is not found at the source (deleted, or not visible to the source "
-   "credentials/SRC_PROJECT): the destination (volumes "
-   "vol-dst-0001) is the only copy" in r.err and "vol-dst-0001" in r.world["dst"]["volumes"]
+   r.rc == [0, 1] and "source volume vol-src-data (data) is not found at the source (deleted, not visible to the source "
+   "credentials/SRC_PROJECT, or the wrong source endpoint/region): the destination (volumes "
+   "vol-dst-0001) may be the only remaining copy" in r.err and "vol-dst-0001" in r.world["dst"]["volumes"]
    and not dst_deletes(r.calls) and not retired(r, "vol-vol-src-data")
    and after_mark(r.calls)[-1] == "src\tvolume show vol-src-data -f json -c id -c status", (r.rc, r.err[-500:]))
 r = app(VW, [("volume", "data", []),
              edit(lambda x: x["src"].update(fail={"volume show vol-src-data": "Gateway Timeout (HTTP 504)"})),
              mark, VROLL])
 ok("A20 volume: the source volume cannot be read: 'cannot read source volume', the copy kept",
-   r.rc == [0, 1] and "cannot read source volume vol-src-data (Gateway Timeout (HTTP 504)): nothing was deleted"
+   r.rc == [0, 1] and "cannot read source volume vol-src-data (Gateway Timeout (HTTP 504)): this rollback deleted nothing"
    in r.err and "vol-dst-0001" in r.world["dst"]["volumes"] and not dst_deletes(r.calls), (r.rc, r.err[-400:]))
 r = app(VW, [("volume", "data", []), mark, VROLL])
 ok("A20 volume: the source volume is there: probed once, the copy deleted, the state retired (as 1.0.1)",
@@ -185,7 +186,7 @@ ok("A20 --dry-run --json, the source VM gone: source_status GONE, source_error n
    and obj.get("source_error") is None and obj.get("source_power") == "ACTIVE"
    and obj.get("delete", {}).get("server") == "srv-dst-0001", (r.rc, obj))
 ok("A20 --dry-run (text), the source VM gone: an ERROR line 'this rollback is refused', no 'then the source VM is' line",
-   "  ERROR the source VM is not found at the source: the destination is the only copy; this rollback is refused" in r.outs[2]
+   "  ERROR the source VM is not found at the source: the destination may be the only remaining copy; this rollback is refused" in r.outs[2]
    and "then the source VM is" not in r.outs[2] and "now GONE" not in r.outs[2], r.outs[2])
 ok("A20 'rollback' without --yes and no terminal, the source VM gone: the summary on stderr has the ERROR line; exit 2",
    r.rc[3] == 2 and "ERROR the source VM is not found at the source" in r.errs[3], (r.rc, r.errs[3][-500:]))
@@ -218,7 +219,7 @@ a_, b_ = dry_json(r, 1), dry_json(r, 2)
 ok("A20 volume --dry-run: source_status available while it is there, GONE once deleted; the text has the ERROR line",
    r.rc == [0, 0, 0, 0] and a_.get("kind") == "vol" and a_.get("source_status") == "available"
    and b_.get("source_status") == "GONE"
-   and "  ERROR the source volume is not found at the source: the destination is the only copy; this rollback is refused"
+   and "  ERROR the source volume is not found at the source: the destination may be the only remaining copy; this rollback is refused"
    in r.outs[3] and "vol-dst-0001" in r.world["dst"]["volumes"], (r.rc, a_, b_, r.outs[3]))
 
 # ================================ a state without a source id (Astra review) ================================

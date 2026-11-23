@@ -861,7 +861,7 @@ const invWith = (hosts, projects) => ({ data: { source: { hosts, projects }, des
   ok('R2-9 ACTIVE source will restart and null deletion scope is safe',texts(t.$('dialog-body')).some(x=>x.includes('nguồn sẽ được bật lại')));
   ok('A20 rollback dialog: no source_status (not read) shows "Nguồn hiện tại: không đọc được"',texts(t.$('dialog-body')).includes('Nguồn hiện tại: không đọc được'));
   await t.$('dialog-close').fire('click');
-  for (const [st,want] of [['SHUTOFF','Nguồn hiện tại: SHUTOFF'],['GONE','Nguồn hiện tại: không tìm thấy (đã xóa hoặc credentials nguồn không thấy)'],[null,'Nguồn hiện tại: không đọc được']]) {
+  for (const [st,want] of [['SHUTOFF','Nguồn hiện tại: SHUTOFF'],['GONE','Nguồn hiện tại: không tìm thấy (đã xóa, hoặc credentials/scope/endpoint nguồn không thấy)'],[null,'Nguồn hiện tại: không đọc được']]) {
     h.openConfirm({...RB,at:Date.now(),original:{source_power:'ACTIVE',source_status:st,delete:null}},'instance');
     ok('A20 rollback dialog: source_status '+st+' shows "'+want+'", once',texts(t.$('dialog-body')).filter(x=>x.startsWith('Nguồn hiện tại: ')).length===1 && texts(t.$('dialog-body')).includes(want),texts(t.$('dialog-body')));
     await t.$('dialog-close').fire('click');

@@ -38,9 +38,9 @@ try:
     gone = s.post("/api/rollback", {"ident": VM1})
     err = (gone.json or {}).get("error", "")
     ok("A20 rollback prepare, the source VM gone: 409 '<ident>: the source VM is not found at the source (deleted, or "
-       "not visible to the source credentials); the destination is the only copy, a rollback would delete it', no batch",
+       "not visible to the source credentials); the destination may be the only remaining copy, a rollback would delete it', no batch",
        gone.status == 409 and err == "%s: the source VM is not found at the source (deleted, or not visible to the source "
-       "credentials); the destination is the only copy, a rollback would delete it" % VM1 and "batch" not in (gone.json or {}), gone)
+       "credentials); the destination may be the only remaining copy, a rollback would delete it" % VM1 and "batch" not in (gone.json or {}), gone)
     new = s.calls()[ncalls:]
     ok("A20 the refusal planned nothing: no 'plan' in the audit; the runner ran the dry-run and no rollback",
        len(plans(s)) == before and ["rollback", VM1, "--dry-run", "--json"] in new

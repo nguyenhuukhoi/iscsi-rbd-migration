@@ -901,9 +901,9 @@ class Runner:
         # A20 (1.1.0): the source is gone: refused before a batch exists (the engine would refuse it too). Not read
         # (None): prepared, original.source_status shows it; the engine refuses at run time if it still cannot read it.
         if orig.get("source_status") == "GONE":
-            raise Reject(409, "%s: the source %s is not found at the source (deleted, or not visible to the "
-                         "source credentials); the destination is the only copy, a rollback would delete it"
-                         % (ident, "volume" if entry.get("kind") == "vol" else "VM"))
+            raise Reject(409, "%s: the source %s is not found at the source (deleted, or not visible to the source "
+                         "credentials); the destination may be the only remaining copy, a rollback would delete "
+                         "it" % (ident, "volume" if entry.get("kind") == "vol" else "VM"))
         job = Job(id=secrets.token_hex(8), kind="rollback", ident=ident, name=name, argv=["migrate"] + args,
                   exec_argv=list(self.cfg.migrate) + args, effective=eff, conf=(opts or {}).get("conf"),
                   projects=(eff or {}).get("projects", {}).get("value") if isinstance(eff, dict) else None,

@@ -358,7 +358,7 @@ Hai lệnh cuối dừng VM nguồn, không tạo VM đích. Kiểm `volume-map`
 
 `rollback --dry-run --json` liệt kê chủ yếu ID đã ghi; không phải inventory mồ côi toàn diện. Rollback thật không dùng `--json`. Prompt nhận tên nguồn hoặc ident đầy đủ. Không TTY và thiếu `--yes` → exit 2. `--yes` bỏ tóm tắt tương tác và prompt; automation cần lưu dry-run trước.
 
-Rollback hỏi nguồn trước khi xóa gì ở đích (A20): nguồn trả not found (`source_status` = `GONE` trong dry-run: VM/volume đã bị xóa, hoặc credentials/`SRC_PROJECT` nguồn không thấy nó) thì rollback từ chối, exit 1, đích giữ nguyên vì là bản sao duy nhất; kiểm scope trước; muốn bỏ state đó thì xóa thư mục state bằng tay (`prune` không đụng state sống). Không đọc được nguồn (`source_status` = `null`) thì cũng từ chối: sửa credentials/`SRC_PROJECT` rồi chạy lại.
+Rollback hỏi nguồn trước khi xóa gì ở đích (A20): nguồn trả not found (`source_status` = `GONE` trong dry-run: VM/volume đã bị xóa, credentials/`SRC_PROJECT` nguồn không thấy nó, hoặc sai endpoint/region) thì rollback từ chối, exit 1, không xóa gì ở đích vì đích có thể là bản sao duy nhất còn lại; kiểm scope và endpoint nguồn trước; muốn bỏ state đó thì xóa thư mục state bằng tay (`prune` không đụng state sống). Không đọc được nguồn (`source_status` = `null`) thì cũng từ chối: sửa credentials/`SRC_PROJECT` rồi chạy lại. Rollback chạy lại sau khi lỗi giữa chừng vẫn qua khi nguồn vẫn đọc được.
 
 Rollback xóa server/port/volume/image đích của lần chạy, dọn clone, trả port và trạng thái điện nguồn lúc export. SG/server group copy được giữ. Nguồn vốn `SHUTOFF` vẫn `SHUTOFF`; nguồn vốn chạy được start lại. **Không reverse sync**. RPO: mất toàn bộ ghi chỉ có ở đích sau cutover. `t_stop` là thời gian marker, không phải thời gian ứng dụng chạy ở đích.
 
