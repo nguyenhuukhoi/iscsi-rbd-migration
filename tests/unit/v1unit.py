@@ -748,10 +748,12 @@ ok("C8 success exits 0", r.rc == [0])
 # ================================ C1: --plan-jobs ================================
 seen, peak, mu = [], [0], threading.Lock()
 live = [0]
+groups_seen = []
 
 
-def slow_child(self, r_, verb, args, logf, tee, prefix=""):
+def slow_child(self, r_, verb, args, logf, tee, prefix="", own_group=False):
     with mu:
+        groups_seen.append((verb, own_group))
         live[0] += 1
         peak[0] = max(peak[0], live[0])
     threading.Event().wait(0.3)  # time.sleep is a no-op in this harness
@@ -777,6 +779,20 @@ selector.Runner.child = orig_child
 ok("C1 --plan-jobs 3: three plan children at once, each tee line after [<ident>], the Plan table complete",
    r.rc == [0] and peak[0] == 3 and sorted(seen) == ["app01", "app02", "app03"]
    and "[app02]   OK    something" in r.out and r.out.count("PLAN-OK") >= 3, (r.rc, peak, r.out[-600:]))
+par_groups = groups_seen[:]
+del groups_seen[:]
+selector.Runner.child = slow_child
+r1 = app(w, [("cli", ["plan", "--vm", "app01,app02,app03", "--plan-jobs", "1"] + PLAIN)])
+seq_groups = groups_seen[:]
+del groups_seen[:]
+r2 = app(w, [("cli", ["migrate", "--vm", "app01,app02", "--yes"] + PLAIN)])
+mig_groups = groups_seen[:]
+selector.Runner.child = orig_child
+ok("fix-1.0.1 #3 round 3 own_group: the plan children of 'plan --plan-jobs 3' lead their own process group; those of "
+   "'plan --plan-jobs 1' and every child of 'migrate' (its plan and its migrate children) stay in the selector's",
+   par_groups == [("plan", True)] * 3 and seq_groups == [("plan", False)] * 3
+   and mig_groups and all(g_ is False for _v, g_ in mig_groups) and ("migrate", False) in mig_groups,
+   (par_groups, seq_groups, mig_groups, r1.rc, r2.rc, r2.out[-400:]))
 r = app(world(), [("cli", ["plan", "app01", "--plan-jobs", "9"] + PLAIN)])
 ok("C1 --plan-jobs takes 1 to 8", r.rc == [1] and "--plan-jobs takes a number from 1 to 8" in r.err, r.err)
 
@@ -1125,7 +1141,7 @@ fwd_parent = (
     "cli.honour_sigint()\n"
     "selector.CHILD = [sys.executable, '-I', '-c', sys.argv[2], sys.argv[1]]\n"
     "run = selector.Runner.__new__(selector.Runner)\n"
-    "run._out, run._pmu, run._procs, run._stopping = threading.Lock(), threading.Lock(), set(), False\n"
+    "run._out, run._pmu, run._procs, run._groups, run._stopping = threading.Lock(), threading.Lock(), set(), set(), False\n"
     "row = types.SimpleNamespace(env={}, ident='x')\n"
     "def later():\n"
     "    time.sleep(2)\n"
@@ -1300,7 +1316,7 @@ sel_probe = (
     "signal.signal(signal.SIGINT, signal.default_int_handler)  # the harness may run with SIGINT ignored\n"
     "selector.CHILD = [sys.executable, '-I', '-c', sys.argv[2], sys.argv[1]]\n"
     "run = selector.Runner.__new__(selector.Runner)\n"
-    "run._out, run._pmu, run._procs, run._stopping = threading.Lock(), threading.Lock(), set(), False\n"
+    "run._out, run._pmu, run._procs, run._groups, run._stopping = threading.Lock(), threading.Lock(), set(), set(), False\n"
     "run.s = types.SimpleNamespace(verb=sys.argv[4], scope='all', plan_only=False, plan_jobs=int(sys.argv[5]), yes=True,\n"
     "                              cont=False, passed=[], progress=False, json=False)\n"
     "run.cfg = types.SimpleNamespace(PROJECT_MAP_FILE='')\n"
@@ -1326,19 +1342,40 @@ sel_probe = (
     "    run.child, run.migrate_result = child, once\n"
     "with cli.sigint_scope():\n"
     "    rc = cli.guarded(run.run)\n"
-    "print('rc', rc, flush=True)\n")
-# the fake child: says it started (with its PID), then sleeps; a SIGINT makes it exit 130 as a migrate child does
+    "print('rc', rc, flush=True)\n"
+    "sys.exit(rc)  # round 3: the exit code of the real entry point (console script: sys.exit(main()))\n")
+# the fake child: says it started (with its PID), then sleeps; a SIGINT makes it exit 130 as a migrate child does.
+# Round 3, FAKE_CHILD_MODE:
+#   grandchild    SIGINT ignored, then starts 'sleep 120' with its stderr inherited (the pipe the selector reads, as an
+#                 'openstack' call of Cloud.run does; the sleep inherits SIGINT ignored too), and never exits by itself
+#   leader-exits  the same 'sleep 120', but the child itself honours SIGINT: it exits 130, the sleep keeps the pipe
+#   handshake     SIGINT ignored until the file FAKE_CHILD_GO exists (polled every 50 ms), then honour_sigint()
 sel_child = (
-    "import os, signal, sys, time\n"
+    "import os, signal, subprocess, sys, time\n"
     "sys.path.insert(0, sys.argv[1])\n"
     "from migratetool import cli\n"
+    "mode = os.environ.get('FAKE_CHILD_MODE', '')\n"
     "ign = float(os.environ.get('FAKE_CHILD_IGN', '0'))\n"
-    "if ign:  # round 2: a child started after the selector had the SIGINT inherits it ignored, until honour_sigint()\n"
+    "if ign or mode:  # round 2: a child started after the selector had the SIGINT inherits it ignored, until honour_sigint()\n"
     "    signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
     "else:\n"
     "    cli.honour_sigint()\n"
-    "print('child started %s pid %d' % (sys.argv[3], os.getpid()), flush=True)\n"
+    "extra = ''\n"
+    "if mode in ('grandchild', 'leader-exits'):\n"
+    "    g = subprocess.Popen(['sleep', '120'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)\n"
+    "    extra = ' grandchild %d' % g.pid\n"
+    "    if mode == 'leader-exits':\n"
+    "        cli.honour_sigint()\n"
+    "print('child started %s pid %d%s' % (sys.argv[3], os.getpid(), extra), flush=True)\n"
     "try:\n"
+    "    if mode == 'grandchild':\n"
+    "        while True:\n"
+    "            time.sleep(1)\n"
+    "    if mode == 'handshake':\n"
+    "        while not os.path.exists(os.environ['FAKE_CHILD_GO']):\n"
+    "            time.sleep(0.05)\n"
+    "        cli.honour_sigint()\n"
+    "        print('child armed', flush=True)\n"
     "    if ign:\n"
     "        time.sleep(ign)\n"
     "        cli.honour_sigint()\n"
@@ -1346,30 +1383,49 @@ sel_child = (
     "    print('child finished', flush=True)\n"
     "except KeyboardInterrupt:\n"
     "    print('child interrupted', flush=True)\n"
+    "    if mode == 'handshake':\n"
+    "        print('child got a SIGINT after go', flush=True)\n"
     "    sys.exit(130)\n")
 
 
-def sel_run(verb, jobs, idents, secs, wait_for, after=1.0, ign=0):
+def sel_run(verb, jobs, idents, secs, wait_for, after=1.0, ign=0, mode="", go=False):
     """The probe; SIGINT to its PID 'after' s after the output shows each of wait_for: (rc, output, seconds from the
-    SIGINT to the probe's exit, PIDs of the children). ign: each child starts with SIGINT ignored for that many s."""
+    SIGINT to the probe's exit, PIDs of the children). ign: each child starts with SIGINT ignored for that many s.
+    mode: FAKE_CHILD_MODE. go: create the handshake file 0.3 s after the SIGINT.
+    Round 3: the probe leads its own process group, and a probe that hangs is killed with its group, each child's group
+    (a parallel plan child leads one) and each grandchild, so that a failing probe leaves nothing behind."""
     d_ = tempfile.mkdtemp(dir=WORK)
+    gof = os.path.join(d_, "go")
     p_ = subprocess.Popen([sys.executable, '-I', '-c', sel_probe, REPO, sel_child, d_, verb, str(jobs), idents],
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                          env=dict(os.environ, FAKE_CHILD_SECS=str(secs), FAKE_CHILD_IGN=str(ign)))
-    got, pids, need = [], [], set(wait_for)
-    timer = threading.Timer(60, p_.kill)  # a probe that hangs must not hang the suite
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+                          env=dict(os.environ, FAKE_CHILD_SECS=str(secs), FAKE_CHILD_IGN=str(ign),
+                                   FAKE_CHILD_MODE=mode, FAKE_CHILD_GO=gof))
+    got, pids, gpids, need = [], [], [], set(wait_for)
+
+    def watchdog():
+        for kill_, id_ in [(os.killpg, p_.pid)] + [(os.killpg, x) for x in pids] + [(os.kill, x) for x in pids + gpids]:
+            try:
+                kill_(id_, signal.SIGKILL)
+            except OSError:
+                pass
+    timer = threading.Timer(60, watchdog)  # a probe that hangs must not hang the suite
     timer.start()
     for line in p_.stdout:
         got.append(line)
-        m_ = re.search(r"child started (\S+) pid (\d+)", line)
+        m_ = re.search(r"child started (\S+) pid (\d+)(?: grandchild (\d+))?", line)
         if m_:
             pids.append(int(m_.group(2)))
+            if m_.group(3):
+                gpids.append(int(m_.group(3)))
             need.discard(m_.group(1))
             if not need:
                 break
     threading.Event().wait(after)  # time.sleep is a no-op in this harness
     os.kill(p_.pid, signal.SIGINT)
     t_ = time.monotonic()
+    if go:
+        threading.Event().wait(0.3)
+        open(gof, "w").close()
     got.append(p_.stdout.read())
     p_.wait()
     took = time.monotonic() - t_
@@ -1377,18 +1433,23 @@ def sel_run(verb, jobs, idents, secs, wait_for, after=1.0, ign=0):
     return p_.returncode, "".join(got), took, pids
 
 
-def pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+def pid_alive(pid, settle=2.0):
+    """A dead process may stay a zombie for a moment, until init reaps the orphan: poll up to settle s."""
+    deadline = time.monotonic() + settle
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        threading.Event().wait(0.05)
 
 
 rc_, out_, _took, _pids = sel_run("migrate", 1, "app01,app02", 5, ["app01"])
 ok("fix-1.0.1 #1 kill -INT during a selector migrate run: the Summary is printed, the running row FAIL(interrupted) "
    "with its rollback hint, the row after it SKIP(not-run), exit 130",
-   rc_ == 0 and "rc 130" in out_ and 0 <= out_.find("child interrupted") < out_.find("Summary:")
+   rc_ == 130 and "rc 130" in out_ and 0 <= out_.find("child interrupted") < out_.find("Summary:")
    and re.search(r"^vm\s+id-app01\s+app01\s.*FAIL\(interrupted\)$", out_, re.M)
    and re.search(r"^vm\s+id-app02\s+app02\s.*SKIP\(not-run\)$", out_, re.M)
    and re.search(r"^  app01: inspect, then to undo: \S*migrate rollback app01$", out_, re.M)
@@ -1418,7 +1479,7 @@ res = subprocess.run([sys.executable, '-I', '-c', sel_probe, REPO, sel_child, te
 out_ = res.stdout + res.stderr
 ok("fix-1.0.1 #1 round 2 the interrupt lands after the migrate child returned 0 and before the row's result: the "
    "Summary says OK(no key_name: kp1), not FAIL(interrupted), no rollback hint; the next row SKIP(not-run), exit 130",
-   res.returncode == 0 and "rc 130" in out_
+   res.returncode == 130 and "rc 130" in out_
    and re.search(r"^vm\s+id-app01\s+app01\s.*OK\(no key_name: kp1\)$", out_, re.M)
    and re.search(r"^vm\s+id-app02\s+app02\s.*SKIP\(not-run\)$", out_, re.M)
    and "rollback app01" not in out_ and "Totals: OK 1  FAIL 0  SKIP 1" in out_, out_)
@@ -1426,13 +1487,13 @@ rc_, out_, took_, pids_ = sel_run("plan", 3, "app01,app02,app03", 30, ["app01", 
 alive_ = [p_ for p_ in pids_ if pid_alive(p_)]
 ok("fix-1.0.1 #3 plan --plan-jobs 3, three plan children sleeping 30 s, kill -INT to the selector PID only (not the "
    "group) after 1 s: the selector exits 130 in < 15 s and all three children are dead (each got the SIGINT)",
-   rc_ == 0 and "rc 130" in out_ and took_ < 15 and len(pids_) == 3 and not alive_ and out_.count("child interrupted") == 3,
+   rc_ == 130 and "rc 130" in out_ and took_ < 15 and len(pids_) == 3 and not alive_ and out_.count("child interrupted") == 3,
    ("took %.2f s" % took_, pids_, alive_, out_[-1500:]))
 print("INFO fix-1.0.1 #3 selector exit %.2f s after the SIGINT; children %s, alive after: %s" % (took_, pids_, alive_))
 rc_, out_, took_, pids_ = sel_run("plan", 2, "app01,app02,app03", 30, ["app01", "app02"])
 ok("fix-1.0.1 #3 plan --plan-jobs 2 over three VMs, kill -INT while two run: the third plan child is never started, "
    "exit 130 in < 15 s",
-   rc_ == 0 and "rc 130" in out_ and took_ < 15 and "child started app03" not in out_
+   rc_ == 130 and "rc 130" in out_ and took_ < 15 and "child started app03" not in out_
    and not [p_ for p_ in pids_ if pid_alive(p_)], ("took %.2f s" % took_, out_[-1500:]))
 # Round 2: the race of a plan child started between the SIGINT and the stop. It inherits SIGINT ignored and the one the
 # selector passes on lands before its handler is installed (simulated: ignored for its first 2 s): the second SIGINT,
@@ -1441,7 +1502,7 @@ rc_, out_, took_, pids_ = sel_run("plan", 2, "app01,app02", 30, ["app01", "app02
 alive_ = [p_ for p_ in pids_ if pid_alive(p_)]
 ok("fix-1.0.1 #3 round 2 plan --plan-jobs 2, both children start with SIGINT ignored for 2 s (the startup race), "
    "kill -INT 0.5 s after both run: the first SIGINT is lost, the second one stops them; exit 130 in < 15 s, both dead",
-   rc_ == 0 and "rc 130" in out_ and took_ < 15 and len(pids_) == 2 and not alive_
+   rc_ == 130 and "rc 130" in out_ and took_ < 15 and len(pids_) == 2 and not alive_
    and out_.count("child interrupted") == 2, ("took %.2f s" % took_, pids_, alive_, out_[-1500:]))
 print("INFO fix-1.0.1 #3 round 2 (startup race) selector exit %.2f s after the SIGINT; children %s, alive after: %s"
       % (took_, pids_, alive_))
@@ -1450,9 +1511,37 @@ rc_, out_, took_, pids_ = sel_run("plan", 2, "app01,app02", 30, ["app01", "app02
 alive_ = [p_ for p_ in pids_ if pid_alive(p_)]
 ok("fix-1.0.1 #3 round 2 plan --plan-jobs 2, both children ignore SIGINT for 60 s: they are killed, the selector exits "
    "130 in < 15 s, no 'child finished'",
-   rc_ == 0 and "rc 130" in out_ and took_ < 15 and len(pids_) == 2 and not alive_ and "child finished" not in out_,
+   rc_ == 130 and "rc 130" in out_ and took_ < 15 and len(pids_) == 2 and not alive_ and "child finished" not in out_,
    ("took %.2f s" % took_, pids_, alive_, out_[-1500:]))
 print("INFO fix-1.0.1 #3 round 2 (never honours SIGINT) selector exit %.2f s after the SIGINT; children %s, alive after: %s"
+      % (took_, pids_, alive_))
+# Round 3: a grandchild holds the pipe. Each plan child runs 'sleep 120' whose stderr is the pipe its worker reads (as an
+# 'openstack' call of Cloud.run does). Killing the child alone leaves the worker reading until the sleep ends, and the
+# executor's __exit__ waiting for the worker: the signals must reach the child's whole process group.
+for mode_, what_ in (("grandchild", "each plan child ignores SIGINT"),
+                     ("leader-exits", "each plan child exits 130 at the first SIGINT")):
+    rc_, out_, took_, pids_ = sel_run("plan", 2, "app01,app02", 30, ["app01", "app02"], after=0.5, mode=mode_)
+    gpids_ = [int(x) for x in re.findall(r"child started \S+ pid \d+ grandchild (\d+)", out_)]
+    alive_ = [p_ for p_ in pids_ + gpids_ if pid_alive(p_)]
+    ok("fix-1.0.1 #3 round 3 plan --plan-jobs 2, %s and runs 'sleep 120' (SIGINT ignored) with its stderr on the "
+       "selector's pipe; kill -INT to the selector: exit 130 in < 15 s, the children and the sleeps dead" % what_,
+       rc_ == 130 and "rc 130" in out_ and took_ < 15 and len(pids_) == 2 and len(gpids_) == 2 and not alive_
+       and (mode_ != "leader-exits" or out_.count("child interrupted") == 2),
+       ("rc %s, took %.2f s" % (rc_, took_), pids_, gpids_, alive_, out_[-1500:]))
+    print("INFO fix-1.0.1 #3 round 3 (%s) selector exit %.2f s after the SIGINT; children %s, grandchildren %s, alive "
+          "after: %s" % (mode_, took_, pids_, gpids_, alive_))
+# Round 3: the lost first SIGINT, by handshake rather than by timing. Each child ignores SIGINT until the file 'go' is
+# there; the harness creates it 0.3 s after its SIGINT to the selector, so the SIGINT passed on at once is lost whatever
+# the speed of the host, and only the second one (PLAN_STOP_GRACE_1 s later) can stop the children.
+rc_, out_, took_, pids_ = sel_run("plan", 2, "app01,app02", 30, ["app01", "app02"], after=0.5, mode="handshake",
+                                  go=True)
+alive_ = [p_ for p_ in pids_ if pid_alive(p_)]
+ok("fix-1.0.1 #3 round 3 plan --plan-jobs 2, both children ignore SIGINT until 'go' is created 0.3 s after the kill -INT "
+   "to the selector: both see the second SIGINT (not a SIGKILL), exit 130 in >= PLAN_STOP_GRACE_1 and < 15 s, both dead",
+   rc_ == 130 and "rc 130" in out_ and selector.PLAN_STOP_GRACE_1 - 0.1 <= took_ < 15 and len(pids_) == 2
+   and not alive_ and out_.count("child armed") == 2 and out_.count("child got a SIGINT after go") == 2
+   and "child finished" not in out_, ("rc %s, took %.2f s" % (rc_, took_), pids_, alive_, out_[-1500:]))
+print("INFO fix-1.0.1 #3 round 3 (handshake) selector exit %.2f s after the SIGINT; children %s, alive after: %s"
       % (took_, pids_, alive_))
 
 # ================================ fix-1.0.1 #4 (Review 23/11): outside_runs() leaves a --dry-run out ================================

@@ -120,7 +120,7 @@ if hasattr(proc, "run_stream"):
     proc.run_stream = fake_stream
 
 
-def fake_child(self, r, verb, args, logf, tee, prefix=""):
+def fake_child(self, r, verb, args, logf, tee, prefix="", own_group=False):
     """selector.Runner.child in this process: single.main with the row's SRC_PROJECT/DST_PROJECT, its stdout and
     stderr into the log (and to our stdout when tee), as the real child's are."""
     CHILD_ARGV.append([verb, r.ident, *args])

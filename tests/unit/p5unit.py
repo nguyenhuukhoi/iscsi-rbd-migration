@@ -178,7 +178,7 @@ def sel_run(args, w=None, child_rc=None, pre_state=(), tty=False):
         orig_init(self, s, cfg)
         self.src, self.dst = FakeCloud(w, calls), FakeCloud(w, calls)
 
-    def child(self, r, verb, a, logf, tee, prefix=""):
+    def child(self, r, verb, a, logf, tee, prefix="", own_group=False):
         children.append((verb, r.ident, list(a), tee, dict(r.env)))
         rc = (child_rc or {}).get(r.id, 0)
         text = "Destination preflight (volumes-only):\n  OK    something\n" if rc == 0 else "  FAIL  flavor m1.big\n"

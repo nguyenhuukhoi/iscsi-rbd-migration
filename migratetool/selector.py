@@ -34,7 +34,9 @@ MAX_PLAN_JOBS = 8  # C1: plan is read-only; more than this only queues behind th
 # SIGINT and the stop inherits SIGINT ignored (cli._sigint_once) and loses the SIGINT passed on to it if that lands
 # before its own handler is installed. So a child still there PLAN_STOP_GRACE_1 s after the first SIGINT gets a second
 # one (its handler is in place by then), and one still there PLAN_STOP_GRACE_2 s after that is killed: a plan child is
-# read-only, a kill loses nothing but the end of its log. Worst case ~8 s from the SIGINT to the exit.
+# read-only, a kill loses nothing but the end of its log. Worst case ~8 s from the SIGINT to the exit. Round 3: these
+# signals go to the child's own process group, so an 'openstack' call it runs (which holds the pipe the selector reads)
+# stops with it (Runner.interrupt_children).
 PLAN_STOP_GRACE_1 = 3.0
 PLAN_STOP_GRACE_2 = 5.0
 IN_USE_ONE = ("--in-use copies one attached volume: migrate volume <volume> --in-use (the attached volumes of a "
@@ -249,6 +251,7 @@ class Runner:
         # Review 23/11 #3: the children running now (plan children run in worker threads, which get no SIGINT), and
         # whether an interrupt stopped the run: no child starts after that. _pmu guards both.
         self._procs = set()
+        self._groups = set()  # round 3: those of _procs that lead a process group of their own (child(own_group=True))
         self._stopping = False
         self._pmu = threading.Lock()
 
@@ -523,9 +526,12 @@ class Runner:
                 "rows": rows, "totals": totals, "rc": rc}
 
     # --- children -----------------------------------------------------------------------------
-    def child(self, r, verb, args, logf, tee, prefix=""):
+    def child(self, r, verb, args, logf, tee, prefix="", own_group=False):
         """One child, stdin /dev/null, stdout+stderr into its log (and to the terminal when tee, each line after prefix).
-        A7: a child of 'migrate migrate|volume' inherits this run's host lock (MIG_LOCK_FD)."""
+        A7: a child of 'migrate migrate|volume' inherits this run's host lock (MIG_LOCK_FD).
+        own_group (a plan child of a parallel plan only, Review 23/11 #3 round 3): the child leads a process group of its
+        own, so that interrupt_children() stops it together with what it runs. Every other child stays in this process
+        group: a Ctrl-C at the terminal reaches it directly, as before."""
         env = dict(os.environ)
         env.update(r.env)
         env, fds = locking.child_env(env)
@@ -535,8 +541,10 @@ class Runner:
                     raise KeyboardInterrupt
                 p = subprocess.Popen(CHILD + [verb, r.ident, *args], env=env, stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
-                                     bufsize=1, pass_fds=fds)
+                                     bufsize=1, pass_fds=fds, start_new_session=own_group)
                 self._procs.add(p)
+                if own_group:
+                    self._groups.add(p)
 
             def copy(line):
                 lf.write(line)
@@ -568,34 +576,57 @@ class Runner:
             finally:
                 with self._pmu:
                     self._procs.discard(p)
+                    self._groups.discard(p)
 
     def interrupt_children(self):
         """Review 23/11 #3: SIGINT reached this process (kill -INT <pid>) while plan children run in worker threads, where
         no KeyboardInterrupt is raised: pass it to each running child, and start no other. Each child cancels and
         exits, its worker reads its output to the end and returns. Bounded (PLAN_STOP_GRACE_1/2): a second SIGINT for a
-        child that lost the first one while starting, then SIGKILL. Waits here have a timeout: the worker reaps."""
+        child that lost the first one while starting, then SIGKILL.
+        Round 3: a parallel plan child leads its own process group (child(own_group=True)) and the signals go to that
+        whole group. An 'openstack' call of the child writes its stderr into the pipe the worker reads: if the call
+        outlived its child, the worker would wait for it without bound, and the executor's __exit__ for the worker. So
+        a group counts as running until it is empty, not only until its leader exited, and the SIGKILL reaches what is
+        left of it. The waits here poll against a deadline; either thread may be the one that reaps a child (Popen
+        serialises waitpid): this one in poll(), or the worker in wait()."""
         with self._pmu:
             self._stopping = True
             procs = list(self._procs)
+            groups = {p for p in procs if p in self._groups}  # never killpg a child that shares this process group
 
         def signal_all(sig):
             for p in procs:
+                if p in groups:
+                    try:
+                        os.killpg(p.pid, sig)
+                        continue
+                    except ProcessLookupError:
+                        pass  # the group is empty already
+                    except OSError:
+                        pass
                 try:
                     p.send_signal(sig)
-                except (OSError, ProcessLookupError):
+                except OSError:
                     pass
+
+        def running(p):
+            if p.poll() is None:
+                return True
+            if p in groups:
+                try:
+                    os.killpg(p.pid, 0)  # the leader has exited, a member of its group is left
+                    return True
+                except OSError:
+                    return False
+            return False
 
         def still_running(grace):
             deadline = time.monotonic() + grace
-            left = []
-            for p in procs:
-                try:
-                    p.wait(timeout=max(0.0, deadline - time.monotonic()))
-                except subprocess.TimeoutExpired:
-                    left.append(p)
-                except (OSError, ProcessLookupError):
-                    pass
-            return left
+            while True:
+                left = [p for p in procs if running(p)]
+                if not left or time.monotonic() >= deadline:
+                    return left
+                time.sleep(0.05)
 
         signal_all(signal.SIGINT)
         procs = still_running(PLAN_STOP_GRACE_1)
@@ -638,7 +669,7 @@ class Runner:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=jobs) as pool:
                 try:
-                    list(pool.map(lambda r: self.plan_row(r, vmx, tee, "[%s] " % r.ident), todo_plan))
+                    list(pool.map(lambda r: self.plan_row(r, vmx, tee, "[%s] " % r.ident, own_group=True), todo_plan))
                 except KeyboardInterrupt:
                     # Review 23/11 #3: inside the with: its __exit__ waits for the workers, which wait for their children.
                     # First no child starts any more (a worker that took its row already finds _stopping set), then the
@@ -753,8 +784,9 @@ class Runner:
                 r.res = "SKIP(not-run)"
         self.summary()
 
-    def plan_row(self, r, vmx, tee, prefix):
-        """The plan child of one row; sets r.res (PLAN-OK, PLAN-FAIL, SKIP(ephemeral-root)) and r.info."""
+    def plan_row(self, r, vmx, tee, prefix, own_group=False):
+        """The plan child of one row; sets r.res (PLAN-OK, PLAN-FAIL, SKIP(ephemeral-root)) and r.info. own_group: see
+        child() (the parallel plan only)."""
         s = self.s
         f = os.path.join(self.log_dir, "plan-%s.log" % r.id)
         r.log = f
@@ -762,7 +794,7 @@ class Runner:
         # and 'migrate volume' it goes to the log only. With --json the child also prints its effective
         # options as one '@@ {"effective": ...}' line (single.py takes the marker off before the options).
         marker = ["--json"] if s.json else []
-        if self.child(r, "plan", marker + vmx + s.passed, f, tee=tee, prefix=prefix) == 0:
+        if self.child(r, "plan", marker + vmx + s.passed, f, tee=tee, prefix=prefix, own_group=own_group) == 0:
             r.res = "PLAN-OK"
         else:
             with open(f, encoding="utf-8", errors="replace") as fh:
