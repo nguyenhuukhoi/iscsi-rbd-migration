@@ -239,6 +239,11 @@ class Runner:
         # C12: '<time>-<6 hex>': two runs started in the same second get two directories
         self.log_dir = os.path.join(config.LOG_ROOT, "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(3)))
         self._out = threading.Lock()  # C1: one tee line at a time from parallel plan children
+        # Review 23/11 #3: the children running now (plan children run in worker threads, which get no SIGINT), and
+        # whether an interrupt stopped the run: no child starts after that. _pmu guards both.
+        self._procs = set()
+        self._stopping = False
+        self._pmu = threading.Lock()
 
     # --- output -------------------------------------------------------------------------------
     def show(self, title):
@@ -518,9 +523,14 @@ class Runner:
         env.update(r.env)
         env, fds = locking.child_env(env)
         with open(logf, "w", encoding="utf-8") as lf:
-            p = subprocess.Popen(CHILD + [verb, r.ident, *args], env=env, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
-                                 bufsize=1, pass_fds=fds)
+            with self._pmu:  # Review 23/11 #3: started and registered at once, never after an interrupt
+                if self._stopping:
+                    raise KeyboardInterrupt
+                p = subprocess.Popen(CHILD + [verb, r.ident, *args], env=env, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                                     bufsize=1, pass_fds=fds)
+                self._procs.add(p)
+
             def copy(line):
                 lf.write(line)
                 lf.flush()
@@ -530,22 +540,40 @@ class Runner:
                         sys.stdout.flush()
 
             try:
-                for line in p.stdout:
-                    copy(line)
-            except KeyboardInterrupt:
-                # Ctrl-C reaches the whole process group, but kill -INT <pid of this selector> reaches this process only:
-                # pass it on. A child that had it already ignores this one (cli._sigint_once), so its cleanup is not cut.
                 try:
-                    p.send_signal(signal.SIGINT)
-                except OSError:
-                    pass
-                # Keep reading until the child is done: its cleanup lines belong in its log, and a pipe nobody reads
-                # would block a child that prints more than the pipe holds.
-                for line in p.stdout:
-                    copy(line)
-                p.wait()
-                raise
-            return p.wait()
+                    for line in p.stdout:
+                        copy(line)
+                except KeyboardInterrupt:
+                    # Ctrl-C reaches the whole process group, but kill -INT <pid of this selector> reaches this process
+                    # only: pass it on. A child that had it already ignores this one (cli._sigint_once), so its cleanup
+                    # is not cut. (Main thread only: a plan child in a worker thread gets it from interrupt_children.)
+                    try:
+                        p.send_signal(signal.SIGINT)
+                    except OSError:
+                        pass
+                    # Keep reading until the child is done: its cleanup lines belong in its log, and a pipe nobody
+                    # reads would block a child that prints more than the pipe holds.
+                    for line in p.stdout:
+                        copy(line)
+                    p.wait()
+                    raise
+                return p.wait()
+            finally:
+                with self._pmu:
+                    self._procs.discard(p)
+
+    def interrupt_children(self):
+        """Review 23/11 #3: SIGINT reached this process (kill -INT <pid>) while plan children run in worker threads, where
+        no KeyboardInterrupt is raised: pass it to each running child, and start no other. Each child cancels and
+        exits, its worker reads its output to the end and returns."""
+        with self._pmu:
+            self._stopping = True
+            procs = list(self._procs)
+        for p in procs:
+            try:
+                p.send_signal(signal.SIGINT)
+            except OSError:
+                pass
 
     def run(self):
         s, cfg = self.s, self.cfg
@@ -581,7 +609,14 @@ class Runner:
             # C1: plan children are read-only: up to --plan-jobs at once; each tee line names its ident.
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=jobs) as pool:
-                list(pool.map(lambda r: self.plan_row(r, vmx, tee, "[%s] " % r.ident), todo_plan))
+                try:
+                    list(pool.map(lambda r: self.plan_row(r, vmx, tee, "[%s] " % r.ident), todo_plan))
+                except KeyboardInterrupt:
+                    # Review 23/11 #3: inside the with: its __exit__ waits for the workers, which wait for their children.
+                    # Rows not started yet are dropped, the running children get the SIGINT; then the wait is short.
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    self.interrupt_children()
+                    raise
         else:
             for r in todo_plan:
                 self.plan_row(r, vmx, tee, "")

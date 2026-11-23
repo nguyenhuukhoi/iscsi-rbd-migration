@@ -1125,7 +1125,7 @@ fwd_parent = (
     "cli.honour_sigint()\n"
     "selector.CHILD = [sys.executable, '-I', '-c', sys.argv[2], sys.argv[1]]\n"
     "run = selector.Runner.__new__(selector.Runner)\n"
-    "run._out = threading.Lock()\n"
+    "run._out, run._pmu, run._procs, run._stopping = threading.Lock(), threading.Lock(), set(), False\n"
     "row = types.SimpleNamespace(env={}, ident='x')\n"
     "def later():\n"
     "    time.sleep(2)\n"
@@ -1300,7 +1300,7 @@ sel_probe = (
     "signal.signal(signal.SIGINT, signal.default_int_handler)  # the harness may run with SIGINT ignored\n"
     "selector.CHILD = [sys.executable, '-I', '-c', sys.argv[2], sys.argv[1]]\n"
     "run = selector.Runner.__new__(selector.Runner)\n"
-    "run._out = threading.Lock()\n"
+    "run._out, run._pmu, run._procs, run._stopping = threading.Lock(), threading.Lock(), set(), False\n"
     "run.s = types.SimpleNamespace(verb=sys.argv[4], scope='all', plan_only=False, plan_jobs=int(sys.argv[5]), yes=True,\n"
     "                              cont=False, passed=[], progress=False, json=False)\n"
     "run.cfg = types.SimpleNamespace(PROJECT_MAP_FILE='')\n"
@@ -1375,6 +1375,18 @@ ok("fix-1.0.1 #1 kill -INT during a selector migrate run: the Summary is printed
    and re.search(r"^vm\s+id-app02\s+app02\s.*SKIP\(not-run\)$", out_, re.M)
    and re.search(r"^  app01: inspect, then to undo: \S*migrate rollback app01$", out_, re.M)
    and "Totals: OK 0  FAIL 1  SKIP 1" in out_, out_)
+rc_, out_, took_, pids_ = sel_run("plan", 3, "app01,app02,app03", 30, ["app01", "app02", "app03"])
+alive_ = [p_ for p_ in pids_ if pid_alive(p_)]
+ok("fix-1.0.1 #3 plan --plan-jobs 3, three plan children sleeping 30 s, kill -INT to the selector PID only (not the "
+   "group) after 1 s: the selector exits 130 in < 5 s and all three children are dead (each got the SIGINT)",
+   rc_ == 0 and "rc 130" in out_ and took_ < 5 and len(pids_) == 3 and not alive_ and out_.count("child interrupted") == 3,
+   ("took %.2f s" % took_, pids_, alive_, out_[-1500:]))
+print("INFO fix-1.0.1 #3 selector exit %.2f s after the SIGINT; children %s, alive after: %s" % (took_, pids_, alive_))
+rc_, out_, took_, pids_ = sel_run("plan", 2, "app01,app02,app03", 30, ["app01", "app02"])
+ok("fix-1.0.1 #3 plan --plan-jobs 2 over three VMs, kill -INT while two run: the third plan child is never started, "
+   "exit 130 in < 5 s",
+   rc_ == 0 and "rc 130" in out_ and took_ < 5 and "child started app03" not in out_
+   and not [p_ for p_ in pids_ if pid_alive(p_)], ("took %.2f s" % took_, out_[-1500:]))
 
 # ================================ fix-1.0.1 #4 (Review 23/11): outside_runs() leaves a --dry-run out ================================
 orun = mrunner.Runner.__new__(mrunner.Runner)
