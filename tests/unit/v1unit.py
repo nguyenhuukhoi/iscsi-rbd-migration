@@ -1669,9 +1669,9 @@ if lfd is not None:
     os.close(lfd)
 
 # ================================ version ================================
-ok("1.0.1 version: migratetool, migui and pyproject agree",
-   migratetool.__version__ == "1.0.1" and __import__("migui").__version__ == "1.0.1"
-   and 'version = "1.0.1"' in open(os.path.join(REPO, "pyproject.toml")).read(), migratetool.__version__)
+ok("1.1.0 version: migratetool, migui and pyproject agree",
+   migratetool.__version__ == "1.1.0" and __import__("migui").__version__ == "1.1.0"
+   and 'version = "1.1.0"' in open(os.path.join(REPO, "pyproject.toml")).read(), migratetool.__version__)
 
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))

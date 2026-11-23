@@ -13,6 +13,22 @@ Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit 
 Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
 [archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
 
+## [1.1.0] — 2026-11-23 · branch `rollback-source-check` · rollback checks the source exists before it deletes anything (no data-path change)
+
+Thiết kế: `ISCSI-RBD-MIGRATION-ROLLBACK-SOURCE-CHECK-DESIGN.md` (Lab). Test: `bash tests/unit/run.sh --parity` (bộ mới
+`tests/unit/v11unit.py`, `tests/ui/v11ui.py`): trên mig-host `ALL pass=925 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63,
+v72unit 84, v73unit 106, v1unit 144, v11unit 27, ui 183, parity 205); UI guards 122/0. Báo cáo: `TEST-REPORT-rollback-source-check.md` (labkit).
+
+### Thêm
+
+- **A20** `migrate rollback` hỏi nguồn trước mọi thao tác xóa ở đích: `openstack server show <source id> -f json -c id -c status` cho state VM, `volume show <source id>` cho state `migrate volume` (`rollback.require_source`). Trả lời được thì đi tiếp như 1.0.1 (status nào cũng được). Not found: dừng, exit 1, `source VM|volume <id> (<name>) no longer exists at the source: the destination (server …, volumes …) is the only copy, nothing was deleted …`, state vẫn sống; thông báo nói `migrate prune` không bao giờ xóa state sống, nên khi chắc chắn giữ đích thì xóa thư mục state bằng tay. Lỗi khác (auth, mạng, scope): dừng, `cannot read source VM|volume <id> (<lý do>): nothing was deleted; check the source credentials/SRC_PROJECT and run the rollback again`. Rollback chạy lại sau lỗi giữa chừng vẫn qua (chỉ hỏi nguồn). `clean_before_cutover` (A6) không đổi.
+- `rollback --dry-run [--json]`: trường `source_status` (status Nova/Cinder hiện tại của nguồn, `"GONE"` khi not found, `null` khi không đọc được) và `source_error` (lý do khi `null`). Text: `, now <status>` ở dòng đầu; dòng `ERROR the source … no longer exists: … this rollback is refused` (GONE) hoặc `WARN the source … could not be read (…)` (null). Summary trước prompt cũng vậy.
+- UI: runner từ chối chuẩn bị rollback (`POST /api/rollback`) khi dry-run nói `source_status: "GONE"`: 409 `<ident>: the source VM|volume no longer exists at the source; the destination is the only copy, a rollback would delete it`, không tạo batch. `null` vẫn chuẩn bị được, `original.source_status = null`. Hộp xác nhận rollback có dòng `Nguồn hiện tại: <status>` (`không còn tồn tại`, `không đọc được`).
+
+### Đổi hành vi
+
+- Rollback từ chối khi VM/volume nguồn không còn hoặc không đọc được. Trước đây (1.0.1) nó xóa server, port, volume, image đích rồi mới lỗi ở bước trả nguồn: bản sao duy nhất mất.
+
 ## [1.0.1] — 2026-11-23 · branch `fix-1.0.1` · bug fixes from the review of 23/11 (no data-path change)
 
 - Selector: Ctrl-C / `kill -INT` during the migrate loop of a selection (`migrate migrate|volume`; a SIGINT earlier — listing, plan, prompt — exits 130 as before) still prints Summary, the rollback hint of the interrupted row (`FAIL(interrupted)`, later rows `SKIP(not-run)`) and Totals, then exits 130. A row whose child had already returned keeps the result of its exit code (a row whose child had exited but whose exit code was not yet recorded is still `FAIL(interrupted)`).

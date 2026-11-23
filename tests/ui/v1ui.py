@@ -35,8 +35,8 @@ s = H.Stack(control={"plan_delay": 1})
 try:
     s.login()
     ses = s.get("/api/session").json
-    ok("1.0.1 GET /api/session: ui_version and features {write_check, plan_jobs, prune}",
-       ses.get("ui_version") == "1.0.1" and ses.get("version") == "1.0.1"
+    ok("1.1.0 GET /api/session: ui_version and features {write_check, plan_jobs, prune}",
+       ses.get("ui_version") == "1.1.0" and ses.get("version") == "1.1.0"
        and ses.get("features") == {"write_check": True, "plan_jobs": 4, "prune": True}, ses)
     # D3: before a doctor, only inventory/list/plan/run are gated
     st = [s.post("/api/rollback", {"ident": VM1}).status, s.get("/api/jobs").status,
