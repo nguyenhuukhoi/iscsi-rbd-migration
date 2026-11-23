@@ -286,6 +286,17 @@ def _port_device(r, pid):
               "the rollback again" % (pid, last))
 
 
+def recorded_source_id(doc):
+    """A20: the source ID a state recorded (the "id" of server.json / volume.json), None when it has none: then
+    nothing may be probed or deleted ('openstack server show None' is no answer)."""
+    sid = doc.get("id") if isinstance(doc, dict) else None
+    return sid if isinstance(sid, str) and sid.strip() else None
+
+
+def no_source_id(st, fname):
+    return Die("state %s has no source id in %s: nothing was deleted" % (st.path, fname))
+
+
 def source_status(r, kind, oid):
     """A20: (status, why) of the source object, read-only ('<kind> show <id> -f json -c id -c status'): its Nova or
     Cinder status when it answers, "GONE" when the API says not found, None (why: the last stderr line) otherwise."""
@@ -330,7 +341,9 @@ def rollback_vm(r, st):
     if not st.exists("server.json"):
         raise Die("no state for %s in %s" % (st.arg, st.path))
     server = st.json("server.json")
-    sid = server.get("id")
+    sid = recorded_source_id(server)
+    if sid is None:
+        raise no_source_id(st, "server.json")
     vm = st.arg
     # A20: the source VM answers before anything at the destination is deleted.
     require_source(r, "server", sid, "VM " + jqs(server.get("name")), st)
@@ -446,17 +459,24 @@ def summary(r, st, kind):
     if t_stop is not None:
         d["t_stop"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t_stop))
         d["age_seconds"] = max(0, now - t_stop)
+    def probe(kind_, doc):
+        """source_id, source_status, source_error; a state without a source ID is not probed."""
+        d["source_id"] = recorded_source_id(doc)
+        if d["source_id"] is None:
+            d["source_error"] = "no source id in state"
+            return
+        d["source_status"], why = source_status(r, kind_, d["source_id"])
+        d["source_error"] = why or None
+
     if kind == "vol":
         vj = st.json("volume.json") if st.exists("volume.json") else {}
-        d["name"], d["source_id"] = jqs(vj.get("name")) if vj.get("name") else "", jqs(vj.get("id"))
-        d["source_status"], d["source_error"] = source_status(r, "volume", d["source_id"])
-        d["source_error"] = d["source_error"] or None
+        d["name"] = jqs(vj.get("name")) if vj.get("name") else ""
+        probe("volume", vj)
         return d
     server = st.json("server.json")
-    d["name"], d["source_id"] = jqs(server.get("name")), jqs(server.get("id"))
+    d["name"] = jqs(server.get("name"))
+    probe("server", server)
     d["source_power"] = server.get("status") if isinstance(server.get("status"), str) else None
-    d["source_status"], d["source_error"] = source_status(r, "server", d["source_id"])
-    d["source_error"] = d["source_error"] or None
     dsid = st.read("dst-server-id").strip()
     if dsid:
         d["dst_server_id"] = d["delete"]["server"] = dsid
@@ -479,8 +499,8 @@ def summary_lines(d):
     noun = "VM" if d["kind"] == "vm" else "volume"
     src = d.get("source_status")
     now = ", now %s" % src if src and src != "GONE" else ""
-    out = ["Rollback of %s (source %s %s %s%s):" % (d["ident"], noun, d.get("name") or "(no name)", d.get("source_id"),
-                                                   now)]
+    out = ["Rollback of %s (source %s %s %s%s):" % (d["ident"], noun, d.get("name") or "(no name)",
+                                                   d.get("source_id") or "(no source id)", now)]
     tail = []
     if src == "GONE":
         tail.append("  ERROR the source %s is not found at the source: the destination is the only copy; this "

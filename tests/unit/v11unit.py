@@ -221,6 +221,41 @@ ok("A20 volume --dry-run: source_status available while it is there, GONE once d
    and "  ERROR the source volume is not found at the source: the destination is the only copy; this rollback is refused"
    in r.outs[3] and "vol-dst-0001" in r.world["dst"]["volumes"], (r.rc, a_, b_, r.outs[3]))
 
+# ================================ a state without a source id (Astra review) ================================
+def drop_state_id(ident, fname):
+    """The state's server.json / volume.json lost its "id" (hand-edited, truncated export)."""
+    def step(_wf, root):
+        p_ = os.path.join(root, ident, fname)
+        with open(p_) as f:
+            doc = json.load(f)
+        doc.pop("id", None)
+        with open(p_, "w") as f:
+            json.dump(doc, f)
+    return step
+
+
+r = app(world(), [("migrate", "app01", PLAIN), drop_state_id("app01", "server.json"), mark, ROLL, DRY])
+obj = dry_json(r, 2)
+src_calls = [c for c in after_mark(r.calls) if c.startswith("src\t") and " show " in c]
+ok("A20 server.json without 'id': the rollback dies 'has no source id in server.json: nothing was deleted' before any "
+   "probe; nothing deleted at the destination",
+   r.rc[:2] == [0, 1] and "state %s has no source id in server.json: nothing was deleted" % os.path.join(r.state, "app01")
+   in r.err and not dst_deletes(r.calls) and "srv-dst-0001" in r.world["dst"]["servers"]
+   and not [c for c in src_calls if "-c id -c status" in c] and "Traceback" not in r.err, (r.rc, r.err[-500:], src_calls))
+ok("A20 server.json without 'id': --dry-run --json exits 0, source_id null, source_status null, source_error "
+   "'no source id in state' (no 'null' string probed)",
+   r.rc[2] == 0 and "source_id" in obj and obj["source_id"] is None and obj.get("source_status") is None
+   and obj.get("source_error") == "no source id in state" and not [c for c in src_calls if " null " in c or " None " in c],
+   (r.rc, obj, src_calls))
+r = app(VW, [("volume", "data", []), drop_state_id("vol-vol-src-data", "volume.json"), mark, VROLL,
+             ("cli", ["rollback", "vol-vol-src-data", "--dry-run", "--json"])])
+obj = dry_json(r, 2)
+ok("A20 volume.json without 'id': the rollback dies before any probe, the copy kept; dry-run source_status null",
+   r.rc == [0, 1, 0] and "has no source id in volume.json: nothing was deleted" in r.err
+   and "vol-dst-0001" in r.world["dst"]["volumes"] and not dst_deletes(r.calls)
+   and not [c for c in after_mark(r.calls) if c.endswith("-f json -c id -c status")]
+   and obj.get("source_status") is None and obj.get("source_error") == "no source id in state", (r.rc, r.err[-400:], obj))
+
 # ================================ parity: v11_rule drops the A20 probe, nothing else ================================
 import parity  # noqa: E402  (already imported by inproc)
 

@@ -13,7 +13,7 @@ import sys
 from . import config, proc, progress, record
 from .copyvol import brick, cleanup_attach, copy_volume_cold, copy_volume_props
 from .preflight import Checker, iscsid_preflight, quota_preflight, systemctl_ok
-from .rollback import drop_volume, require_source
+from .rollback import drop_volume, no_source_id, recorded_source_id, require_source
 from .state import StateDir
 from .util import UUID_RE, Die, Exit, jq_alt, jqs, lines, log, out, prog
 
@@ -107,7 +107,9 @@ def volume_preflight(r, st):
 def create_volume_copy(r, st):
     """Creates the destination volume for volume.json, sets r.dvid."""
     vj = st.json("volume.json")
-    vid = jqs(vj.get("id"))
+    vid = recorded_source_id(vj)
+    if vid is None:
+        raise no_source_id(st, "volume.json")
     name = jq_alt(vj.get("name"))
     name = "" if name is None else jqs(name)
     args = ["--size", jqs(vj.get("size")), "--description", "migrated from " + vid, "-f", "value", "-c", "id"]
@@ -213,7 +215,9 @@ def find_volume_state(r, arg):
 
 def rollback_volume(r, st):
     vj = st.json("volume.json")
-    vid = jqs(vj.get("id"))
+    vid = recorded_source_id(vj)
+    if vid is None:
+        raise no_source_id(st, "volume.json")
     # A20: the source volume answers before its copy is deleted.
     require_source(r, "volume", vid, "volume " + (jqs(vj.get("name")) if vj.get("name") else ""), st)
     if st.exists("volume-map"):
