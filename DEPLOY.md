@@ -30,7 +30,7 @@ Chọn repository hệ điều hành/Ceph phù hợp Ceph 19 đã được độ
 
 ## 2. Artifact và venv
 
-Trên máy build từ commit đã review:
+Checkout lấy bằng `git clone --branch v<version> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git` (xem [README.md](README.md#lấy-mã-và-build-wheel)). Trên máy build từ commit đã review:
 
 ```bash
 ./release.sh

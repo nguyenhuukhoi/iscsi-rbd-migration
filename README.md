@@ -15,6 +15,18 @@ cutover -------------------------> stop nguồn, tháo port, lock, copy cuối
 Nova đích <----------------------- volume + port mới; state giữ để rollback
 ```
 
+## Lấy mã và build wheel
+
+Trên máy build (git, python3, pip; không cần là host convert):
+
+```bash
+git clone --branch v1.0.1 --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
+cd iscsi-rbd-migration
+./release.sh        # tạo dist/migratetool-1.0.1-py3-none-any.whl và .sha256
+```
+
+`--branch` nhận tên tag: checkout đúng bản phát hành (bỏ cờ này để lấy `main`). Chép `dist/*.whl`, `dist/*.sha256`, `requirements-host.txt` và cả checkout (UI cài từ `migui/deploy/install.sh`) sang host convert, rồi làm theo mục dưới.
+
 ## Cài và chạy thử
 
 Trên host đã chuẩn bị theo [DEPLOY.md](DEPLOY.md), dùng wheel được reviewer xác minh SHA256 và file pin cùng release:
