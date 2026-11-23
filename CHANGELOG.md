@@ -16,8 +16,8 @@ Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu l
 ## [1.1.0] — 2026-11-23 · branch `rollback-source-check` · rollback checks the source exists before it deletes anything (no data-path change)
 
 Thiết kế: `ISCSI-RBD-MIGRATION-ROLLBACK-SOURCE-CHECK-DESIGN.md` (Lab). Test: `bash tests/unit/run.sh --parity` (bộ mới
-`tests/unit/v11unit.py`, `tests/ui/v11ui.py`): trên mig-host `ALL pass=925 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63,
-v72unit 84, v73unit 106, v1unit 144, v11unit 27, ui 183, parity 205); UI guards 122/0. Báo cáo: `TEST-REPORT-rollback-source-check.md` (labkit).
+`tests/unit/v11unit.py`, `tests/ui/v11ui.py`): trên mig-host `ALL pass=934 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63,
+v72unit 84, v73unit 106, v1unit 144, v11unit 36, ui 183, parity 205); UI guards 122/0. Báo cáo: `TEST-REPORT-rollback-source-check.md` (labkit).
 
 ### Thêm
 
