@@ -9,6 +9,8 @@
   const STATE_LABEL = { PLANNED: 'đã plan', QUEUED: 'chờ', RUNNING: 'đang chạy', OK: 'OK', FAIL: 'FAIL',
     CANCELLED: 'đã hủy', SKIPPED: 'bỏ qua (đợt dừng)', LOST: 'mất dấu (runner khởi động lại)',
     DETACHED: 'đang chạy ngoài UI (runner khởi động lại)' };
+  // Review 23/11 #2: a cancel that reached a job after migrate had finished it (result rc 0): the job stays OK
+  const LATE_CANCEL = 'Hủy đến sau khi job đã xong';
   const S = {
     session: null, doctorOk: false, inv: null, help: {},
     // src (21): the source hosts / projects ticked in the multi-selects, kept for the whole session
@@ -1338,7 +1340,7 @@
       $('st-res').textContent = j.state;
       $('st-res').className = 'v ' + (j.state === 'OK' ? 'dot-ok' : 'red');
       const exitText = {3:'lỗi trước cutover — nguồn vẫn chạy',4:'lỗi sau cutover — nguồn đang tắt, cần rollback',5:'đợt có job FAIL'}[j.exit_class];
-      $('st-res-note').textContent = (exitText || '') + (j.rc != null ? (exitText ? ' · ' : '') + 'exit ' + j.rc : '') + (j.dst_server_id ? ' · server đích ' + short(j.dst_server_id) : '');
+      $('st-res-note').textContent = (exitText || '') + (j.rc != null ? (exitText ? ' · ' : '') + 'exit ' + j.rc : '') + (j.dst_server_id ? ' · server đích ' + short(j.dst_server_id) : '') + (j.cancel?.late ? ' · ' + LATE_CANCEL : '');
     } else {
       $('st-res').textContent = '…';
       $('st-res').className = 'v';
@@ -1607,7 +1609,7 @@
     res.push('operator ' + (j.operator || 'không ghi nhận (job chạy trước khi có tài khoản)') + (j.session ? ' · phiên ' + j.session : ''));
     if (j.downtime) res.push('downtime breakdown: total ' + j.downtime.total + 's, copy ' + (j.downtime.copy ?? '—') + 's, verify ' + (j.downtime.verify ?? '—') + 's, control-plane ' + (j.downtime.control_plane ?? '—') + 's');
     if (j.dst_server_id) res.push('dst server ' + j.dst_server_id);
-    if (j.cancel && j.cancel.sigint_at) res.push('hủy: SIGINT ' + j.cancel.sigint_at + (j.cancel.sigkill_at ? ', SIGKILL ' + j.cancel.sigkill_at : ''));
+    if (j.cancel && j.cancel.sigint_at) res.push('hủy: SIGINT ' + j.cancel.sigint_at + (j.cancel.sigkill_at ? ', SIGKILL ' + j.cancel.sigkill_at : '') + (j.cancel.late ? ' — ' + LATE_CANCEL + ' (migrate thoát ' + j.cancel.exit + ')' : ''));
     if (j.state_dir) res.push('State: ' + j.state_dir + (sid && live.has(sid) ? ' (sống)' : ''));
     if (j.batch_log) res.push('log batch: ' + j.batch_log);
     const right = el('div', { class: 'card side' }, el('h3', { text: 'Kết quả' }), el('pre', { class: 'mono', text: res.join('\n') }));

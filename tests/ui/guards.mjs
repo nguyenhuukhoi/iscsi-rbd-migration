@@ -999,6 +999,28 @@ ok('FOCUS-1 a disabled dialog opener is waited for only while the focus stays on
   let error=null; try { await t.$("run-stop-after").fire("click"); await sleep(20); } catch (e) { error=String(e); }
   ok("STOP-4 batch B became active while the stop request for A was in flight: B is not marked stopping", error===null && posted===1 && !batchB.stop, {error, posted, batchB});
 }
+// fix-1.0.1 (Review 23/11 #2): a cancel that reached a job after migrate had finished it: the job is OK (green), with a note
+{
+  const LATE = 'Hủy đến sau khi job đã xong';
+  const late = { id: 'e'.repeat(16), name: 'app01', kind: 'vm', ident: 'vm-1', state: 'OK', rc: 0, batch: 'b9',
+    argv: ['migrate', 'migrate', 'vm-1'], effective: {}, conf: {}, projects: { src: 'admin', dst: 'admin' },
+    t_start: '2026-11-23T00:00:00Z', t_end: '2026-11-23T00:05:00Z', dst_server_id: 'srv-dst-fake',
+    cancel: { sigint_at: '2026-11-23T00:04:59Z', late: true, exit: 130 } };
+  const t = boot(true, { '/api/status': { jobs: [late], active: null, cli: { live: [] } } }); await sleep(50); const h = t.win.miguiTest;
+  h.state.jobs = [late]; h.state.watch = late.id; h.renderRunning();
+  ok('LATE-1 Chạy: a job cancelled after it finished stays OK (green) with the note "' + LATE + '"',
+    t.$('st-res').textContent === 'OK' && t.$('st-res').className === 'v dot-ok' && t.$('st-res-note').textContent.includes(LATE)
+    && t.$('st-res-note').textContent.includes('exit 0'), { res: t.$('st-res').textContent, note: t.$('st-res-note').textContent });
+  h.state.jobs = [{ ...late, cancel: { sigint_at: '2026-11-23T00:04:59Z' }, state: 'CANCELLED', rc: 130 }]; h.renderRunning();
+  ok('LATE-2 an ordinary cancel has no such note', !t.$('st-res-note').textContent.includes(LATE), t.$('st-res-note').textContent);
+  await t.$('hist-refresh').fire('click');
+  const tg = find(t.$('hist-rows'), (e) => e.tagName === 'button' && e.textContent === 'chi tiết ▾');
+  if (tg) await tg.fire('click');
+  const pre = find(t.$('hist-rows'), (e) => e.tagName === 'pre');
+  ok('LATE-3 Lịch sử: the detail says the cancel came after the job had finished, with the exit migrate gave',
+    !!pre && pre.textContent.includes('state OK · exit 0') && pre.textContent.includes(LATE + ' (migrate thoát 130)'),
+    pre && pre.textContent);
+}
 // Static CSP, unique IDs, local assets and computed contrast form a release guard too.
 {
   const html=fs.readFileSync(path.join(repo,'migui/static/index.html'),'utf8');

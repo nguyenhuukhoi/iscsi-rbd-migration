@@ -1084,7 +1084,16 @@ class Runner:
                 time.sleep(0.1)
         rc = p.wait()
         j.rc = rc
-        if j.cancel.get("sigint_at"):
+        result = j.progress.get("result")
+        if j.cancel.get("sigint_at") and isinstance(result, dict) and result.get("rc") == 0:
+            # Review 23/11 #2: the cancel came after migrate had printed its result rc 0 (the VM is migrated; the
+            # selector was still finishing and exited 130 on the SIGINT): the job is OK. sigint_at stays for the
+            # audit, the batch still stops (b.stop), the exit code migrate really gave stays in cancel.exit.
+            j.state = "OK"
+            j.cancel["late"] = True
+            j.cancel["exit"] = rc
+            j.rc = rc = 0
+        elif j.cancel.get("sigint_at"):
             j.state = "CANCELLED"
         else:
             j.state = "OK" if rc == 0 else "FAIL"

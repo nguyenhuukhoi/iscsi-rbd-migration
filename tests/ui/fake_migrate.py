@@ -9,7 +9,8 @@ VMs on host cmp1 including one named with HTML markup, an available volume). The
 migrate/volume --progress-json: by default the real run (inproc, real '@@' events); <dir>/control.json can pick per
 ident another behaviour: "slow" (a scripted run that takes a while and stops cleanly on SIGINT, rc 130), "stubborn"
 (ignores SIGINT: only SIGKILL ends it), "fail" (rc 1 after its t_stop), "leaky" (prints credential-looking lines,
-then OK: the runner must scrub them). "plan_checks": a list of {level, text} that replaces the checks (and counts)
+then OK: the runner must scrub them), "late" (a slow run that prints its result rc 0, then stays "late_secs" more:
+a SIGINT then exits 130, fix-1.0.1 #2). "plan_checks": a list of {level, text} that replaces the checks (and counts)
 of every plan row that has checks, the result left as the CLI said (DESIGN-UI 17). "plan_lines": the stderr of a
 plan is scripted lines printed one by one with a delay (DESIGN-UI 20, see plan_lines()). status --json: built from
 <dir>/state.json (what earlier runs left live) in the schema of migratetool/status.py; the state root is
@@ -298,6 +299,15 @@ def scripted(ident, mode, kind):
     event("result", rc=0, dst_server_id="srv-dst-fake")
     remember(ident if kind == "vm" else "vol-" + ident, kind, None, t_stop, "srv-dst-fake")
     out("Migrated.")
+    if mode == "late":
+        # fix-1.0.1 (Review 23/11 #2): the VM is migrated (result rc 0 printed), the selector still finishes its
+        # Summary and lock for "late_secs"; a SIGINT that lands there makes it exit 130 as the real one does.
+        signal.signal(signal.SIGINT, signal.default_int_handler)  # the runner may have been started with SIGINT ignored
+        try:
+            REAL_SLEEP(float(CONTROL.get("late_secs", 3)))
+        except KeyboardInterrupt:
+            out("interrupted after the result: exit 130")
+            return 130
     return 0
 
 

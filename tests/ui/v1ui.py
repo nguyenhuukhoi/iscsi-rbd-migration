@@ -179,4 +179,34 @@ finally:
     for k in ("MIG_CONF", "SRC_RC", "MIGUI_NOTIFY_CMD", "FAKE_LEAK_LINE"):
         os.environ.pop(k, None)
 
+# fix-1.0.1 (Review 23/11 #2): a cancel that lands after migrate printed its result rc 0 (the VM is migrated, the
+# selector still finishing) leaves the job OK, flagged cancel.late; the batch still stops (the next job SKIPPED).
+s = H.Stack(control={"modes": {VM1: "late", VM2: "slow"}, "steps": 4, "step_secs": 0.05, "late_secs": 3})
+try:
+    s.ready()
+    p = s.plan([VM1, VM2], {"az": "AZ1"})
+    r = s.run_batch(p.json["batch"], "2")
+    jobs = r.json.get("jobs") or []
+    t0 = time.time()
+    seen = None
+    while time.time() - t0 < 30:
+        jr = (s.get("/api/jobs/" + jobs[0]).json or {}).get("job") or {}
+        seen = (jr.get("progress") or {}).get("result")
+        if seen:
+            break
+        time.sleep(0.1)
+    c = s.post("/api/jobs/%s/cancel" % jobs[0], {"force": False})
+    j1 = s.wait_job(jobs[0])
+    s.wait_idle()
+    j2 = s.get("/api/jobs/" + jobs[1]).json["job"]
+    log1 = s.get("/api/jobs/%s/log" % jobs[0]).raw.decode()
+    ok("fix-1.0.1 #2 cancel after the result rc 0 (migrate exits 130 while finishing): job OK, rc 0, cancel.late, "
+       "sigint_at kept; the next job SKIPPED",
+       seen and seen.get("rc") == 0 and c.status == 200 and "interrupted after the result" in log1
+       and j1.get("state") == "OK" and j1.get("rc") == 0 and (j1.get("cancel") or {}).get("late") is True
+       and (j1.get("cancel") or {}).get("sigint_at") and j2.get("state") == "SKIPPED",
+       (seen, c, j1.get("state"), j1.get("rc"), j1.get("cancel"), j2.get("state"), log1[-300:]))
+finally:
+    s.stop()
+
 sys.exit(H.total())
