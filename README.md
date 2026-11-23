@@ -20,12 +20,12 @@ Nova đích <----------------------- volume + port mới; state giữ để roll
 Trên máy build (Ubuntu 24.04, không cần là host convert): `apt-get install -y git python3-pip python3-setuptools`, rồi:
 
 ```bash
-git clone --branch v1.0.1 --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
+git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
 cd iscsi-rbd-migration
-./release.sh        # in SHA256, tạo dist/migratetool-1.0.1-py3-none-any.whl và .sha256
+./release.sh        # in SHA256, tạo dist/migratetool-<version>-py3-none-any.whl và .sha256
 ```
 
-`--branch` nhận tên tag: checkout đúng bản phát hành (bỏ cờ này để lấy `main`). `release.sh` gọi `python3 -m pip`; muốn dùng python khác (ví dụ của một venv đã có pip) thì đặt `PYTHON=/đường/dẫn/python`. Chép `dist/*.whl`, `dist/*.sha256`, `requirements-host.txt` và cả checkout (UI cài từ `migui/deploy/install.sh`) sang host convert.
+`<tag>` là bản phát hành muốn cài, ví dụ `v1.0.1`; danh sách tag: `git ls-remote --tags https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git` hoặc trang Tags trên GitHub (bỏ `--branch` để lấy `main`). `release.sh` gọi `python3 -m pip`; muốn dùng python khác (ví dụ của một venv đã có pip) thì đặt `PYTHON=/đường/dẫn/python`. Chép `dist/*.whl`, `dist/*.sha256`, `requirements-host.txt` và cả checkout (UI cài từ `migui/deploy/install.sh`) sang host convert.
 
 ## Cài và chạy thử
 
@@ -74,7 +74,7 @@ printf '%s\n' 'd /run/mig 0700 root root -' > /etc/tmpfiles.d/migrate.conf
 
 ```bash
 python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-1.0.1-py3-none-any.whl
+/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-<version>-py3-none-any.whl
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
 migrate --version
 ```
