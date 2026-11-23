@@ -29,6 +29,10 @@ v72unit 84, v73unit 106, v1unit 144, v11unit 27, ui 183, parity 205); UI guards 
 
 - Rollback từ chối khi VM/volume nguồn không tìm thấy (đã xóa, hoặc credentials/scope/endpoint nguồn không thấy) hoặc không đọc được. Trước đây (1.0.1) nó xóa server, port, volume, image đích rồi mới lỗi ở bước trả nguồn: bản sao có thể là duy nhất còn lại đã mất.
 
+### Biết trước
+
+- Rollback chuẩn bị trong UI chạy với scope hiện hành của runner, không lấy `SRC_PROJECT`/`DST_PROJECT` từ record của job gốc (như CLI). VM/volume nguồn nằm ở project khác có thể trả 404: A20 coi là không tìm thấy, rollback từ chối, không xóa gì.
+
 ## [1.0.1] — 2026-11-23 · branch `fix-1.0.1` · bug fixes from the review of 23/11 (no data-path change)
 
 - Selector: Ctrl-C / `kill -INT` during the migrate loop of a selection (`migrate migrate|volume`; a SIGINT earlier — listing, plan, prompt — exits 130 as before) still prints Summary, the rollback hint of the interrupted row (`FAIL(interrupted)`, later rows `SKIP(not-run)`) and Totals, then exits 130. A row whose child had already returned keeps the result of its exit code (a row whose child had exited but whose exit code was not yet recorded is still `FAIL(interrupted)`).
