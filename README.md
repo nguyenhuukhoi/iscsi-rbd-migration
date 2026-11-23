@@ -17,33 +17,78 @@ Nova đích <----------------------- volume + port mới; state giữ để roll
 
 ## Lấy mã và build wheel
 
-Trên máy build (git, python3, pip; không cần là host convert):
+Trên máy build (Ubuntu 24.04, không cần là host convert): `apt-get install -y git python3-pip python3-setuptools`, rồi:
 
 ```bash
 git clone --branch v1.0.1 --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git
 cd iscsi-rbd-migration
-./release.sh        # tạo dist/migratetool-1.0.1-py3-none-any.whl và .sha256
+./release.sh        # in SHA256, tạo dist/migratetool-1.0.1-py3-none-any.whl và .sha256
 ```
 
-`--branch` nhận tên tag: checkout đúng bản phát hành (bỏ cờ này để lấy `main`). Chép `dist/*.whl`, `dist/*.sha256`, `requirements-host.txt` và cả checkout (UI cài từ `migui/deploy/install.sh`) sang host convert, rồi làm theo mục dưới.
+`--branch` nhận tên tag: checkout đúng bản phát hành (bỏ cờ này để lấy `main`). `release.sh` gọi `python3 -m pip`; muốn dùng python khác (ví dụ của một venv đã có pip) thì đặt `PYTHON=/đường/dẫn/python`. Chép `dist/*.whl`, `dist/*.sha256`, `requirements-host.txt` và cả checkout (UI cài từ `migui/deploy/install.sh`) sang host convert.
 
 ## Cài và chạy thử
 
-Trên host đã chuẩn bị theo [DEPLOY.md](DEPLOY.md), dùng wheel được reviewer xác minh SHA256 và file pin cùng release:
+Chạy bằng root trên host convert Ubuntu 24.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (bản 1.0.1, 23/11/2026).
+
+1. Gói hệ thống. Client Ceph lấy từ repo Ceph Tentacle: `ceph-common` 19.x của Ubuntu không đọc được key `aes256k` của cụm Tentacle ≥ 20.2.4.
+
+```bash
+curl -fsSL https://download.ceph.com/keys/release.asc -o /usr/share/keyrings/ceph-release.asc
+echo "deb [signed-by=/usr/share/keyrings/ceph-release.asc] https://download.ceph.com/debian-tentacle noble main" \
+  > /etc/apt/sources.list.d/ceph-tentacle.list
+apt-get update
+apt-get install -y open-iscsi qemu-utils qemu-block-extra ceph-common python3-rbd jq \
+  python3-venv python3-dev gcc libffi-dev libssl-dev e2fsprogs
+systemctl enable --now iscsid
+```
+
+2. Openrc hai cloud, file root 0600, chỉ gồm các dòng `export OS_*` (không `read`, không prompt; mẫu password và application credential: [DEPLOY.md mục 3](DEPLOY.md#3-openrc-hai-cloud)):
+
+```bash
+install -d -m 0700 /opt/mig/src /opt/mig/dst
+install -m 0600 /dev/null /opt/mig/src/admin-openrc.sh   # cloud nguồn (iSCSI)
+install -m 0600 /dev/null /opt/mig/dst/admin-openrc.sh   # cloud đích (Ceph)
+```
+
+3. Ceph client của cụm đích: `/etc/ceph/ceph.conf` và keyring của user có quyền ghi pool đích (tạo user: [DEPLOY.md mục 4](DEPLOY.md#4-ceph-và-iscsi-powerstore)), kiểm bằng `rbd --id mig-xfer -p <pool> ls`.
+
+4. Conf `/opt/mig/migrate.conf` (root 0600) và thư mục làm việc. `RBD_POOL_MAP` map **tên volume type đích** sang pool RBD; toàn bộ khóa trong [migrate.conf.example](migrate.conf.example) và [GUIDE.md mục 4](GUIDE.md#4-cấu-hình-và-map).
+
+```bash
+cat > /opt/mig/migrate.conf <<'EOF'
+RBD_USER=mig-xfer
+RBD_POOL=volumes
+RBD_POOL_MAP="__DEFAULT__:volumes"
+MIG_ISCSI_IP=192.0.2.20
+MIG_DEFAULT_OPTS="--verify full"
+EOF
+chmod 0600 /opt/mig/migrate.conf
+install -d -m 0700 /run/mig /var/lib/mig-migrate /var/log/mig-batch
+printf '%s\n' 'd /run/mig 0700 root root -' > /etc/tmpfiles.d/migrate.conf
+```
+
+`MIG_ISCSI_IP` là IP của host này trên mạng iSCSI.
+
+5. Cài tool vào venv (wheel và `requirements-host.txt` từ bước build; lệnh cài luôn OpenStack CLI và SDK đúng bộ đã test, chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)):
 
 ```bash
 python3 -m venv /opt/mig-venv
 /opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-1.0.1-py3-none-any.whl
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
 migrate --version
-migrate doctor --write-check
-MIG_DEFAULT_OPTS= migrate plan canary-vm --mode cold --ip same --verify full
-MIG_DEFAULT_OPTS= migrate migrate canary-vm --mode cold --ip same --verify full
 ```
 
-Lệnh `pip install` trên cài luôn OpenStack CLI (`openstack`) và SDK vào `/opt/mig-venv`, đúng bộ bản đã test. Muốn tự chọn bản theo release OpenStack, xem [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk).
+6. Kiểm tra rồi chạy canary (đọc plan, gõ `yes` khi CLI hỏi; `--yes` cho script):
 
-Chạy bằng root. Đọc plan rồi gõ `yes` khi CLI hỏi. Ví dụ giữ verify và tháo port nguồn. `doctor --write-check` tạo rồi dọn image RBD thử nghiệm. Plan ghi export/log cục bộ, không sửa cloud.
+```bash
+migrate doctor --write-check
+migrate plan canary-vm --mode cold --ip same
+migrate migrate canary-vm --mode cold --ip same
+migrate rollback canary-vm        # trả VM về nguồn khi cần
+```
+
+Trên lab: doctor 21 mục OK; VM 10 GB + 2 GB cold mất 8 phút kể cả `--verify full`, rollback 1,5 phút. `doctor --write-check` tạo rồi dọn image RBD thử nghiệm; plan ghi export/log cục bộ, không sửa cloud. Chi tiết (PowerStore/multipath, host không Internet, nâng cấp): [DEPLOY.md](DEPLOY.md).
 
 UI được cài riêng từ checkout cùng release, không nằm trong wheel:
 
