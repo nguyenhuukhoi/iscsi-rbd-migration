@@ -101,15 +101,28 @@ def peer_uid(sock):
     return uid
 
 
+def _verb_index(argv):
+    """Where the migrate verb is in a /proc cmdline (see verb_of), -1 when there is none."""
+    for i, a in enumerate(argv):
+        if a == "-m" and i + 2 < len(argv) and argv[i + 1].startswith("migratetool"):
+            return i + 2
+        if os.path.basename(a) == "migrate" and i + 1 < len(argv) and i <= 1:
+            return i + 1
+    return -1
+
+
 def verb_of(argv):
     """The migrate verb of a /proc cmdline from 'migrate status --json' (python -m migratetool.x VERB, or the
     'migrate' entry point VERB)."""
-    for i, a in enumerate(argv):
-        if a == "-m" and i + 2 < len(argv) and argv[i + 1].startswith("migratetool"):
-            return argv[i + 2]
-        if os.path.basename(a) == "migrate" and i + 1 < len(argv) and i <= 1:
-            return argv[i + 1]
-    return ""
+    i = _verb_index(argv)
+    return argv[i] if i >= 0 else ""
+
+
+def args_after_verb(argv):
+    """The arguments of the migrate verb in a /proc cmdline: what follows it (an interpreter option before it, or an
+    argv[0] a launcher set, is not one of them)."""
+    i = _verb_index(argv)
+    return argv[i + 1:] if i >= 0 else []
 
 
 def batch_state(states, stop_reason):
@@ -1023,11 +1036,11 @@ class Runner:
     def outside_runs(self):
         """pids of migrate/volume/rollback processes 'migrate status --json' sees (8: runs outside the UI). Review 23/11
         #4: a --dry-run (rollback --dry-run, which the UI itself runs to prepare a rollback) reads only and takes no
-        lock: not counted."""
+        lock: not counted. Round 2: only a --dry-run among the verb's own arguments counts."""
         rc, data, _tail = self.cli_json(["status", "--json"], TIMEOUTS["status"])
         return [p.get("pid") for p in (data or {}).get("running") or []
                 if isinstance(p, dict) and verb_of(p.get("cmdline") or []) in RUN_VERBS
-                and "--dry-run" not in (p.get("cmdline") or [])]
+                and "--dry-run" not in args_after_verb(p.get("cmdline") or [])]
 
     def run_batch(self, b, lockfd):
         b.lockfd = lockfd

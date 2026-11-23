@@ -1464,6 +1464,13 @@ orun.cli_json = lambda args, timeout, on_line=None: (0, {"running": [
     {"pid": 104, "cmdline": ["/opt/mig-venv/bin/migrate", "status", "--json"]}]}, "")
 ok("fix-1.0.1 #4 outside_runs(): 'migrate rollback x --dry-run --json' is not a run outside the UI; 'rollback x --yes' "
    "and 'migrate app01' still are", orun.outside_runs() == [102, 103], orun.outside_runs())
+orun.cli_json = lambda args, timeout, on_line=None: (0, {"running": [
+    {"pid": 201, "cmdline": ["--dry-run", "-m", "migratetool.cli", "rollback", "x", "--yes"]},
+    {"pid": 202, "cmdline": ["/opt/mig-venv/bin/migrate", "rollback", "x", "--dry-run", "--json"]},
+    {"pid": 203, "cmdline": ["/usr/bin/python3", "-I", "-m", "migratetool.cli", "rollback", "x", "--dry-run"]}]}, "")
+ok("fix-1.0.1 #4 round 2 outside_runs() looks for --dry-run after the verb only: '--dry-run -m migratetool.cli rollback x "
+   "--yes' (argv[0] set by a launcher) IS a run; '.../migrate rollback x --dry-run --json' and 'python3 -I -m "
+   "migratetool.cli rollback x --dry-run' are not", orun.outside_runs() == [201], orun.outside_runs())
 
 # ================================ fix-1.0.1 #2 round 2: the batch notification after a late cancel ================================
 bcases = [(["OK", "OK"], ""), (["OK", "OK"], "cancelled"), (["OK", "SKIPPED"], "cancelled"),
