@@ -103,11 +103,11 @@ Mở `http://127.0.0.1:8787/`. Đăng nhập → Doctor → Chọn → Tùy ch�
 | [UI.md](UI.md) | Thao tác từng màn hình web |
 | [DEVELOPING.md](DEVELOPING.md) | Code, test, release và chống leak |
 | [CHANGELOG.md](CHANGELOG.md) | Lịch sử sản phẩm |
-| [RELEASE-1.0.0.md](RELEASE-1.0.0.md) | Bằng chứng kiểm thử và gate chưa hoàn tất |
+| [RELEASE-1.0.0.md](RELEASE-1.0.0.md) | Bằng chứng gate lab 22/11 và danh sách gate chưa chạy |
 | [archive/README.md](archive/README.md) | Bản đồ tài liệu lưu trữ |
 
 ## Tương thích và trạng thái production
 
 Mục tiêu triển khai: nguồn OpenStack **2023.1 + PowerStore iSCSI**, đích **2026.1 + Ceph 19**. Lab dùng LVM/LIO iSCSI. Convert host Linux có systemd, Python **≥ 3.10**, quyền root, IQN riêng, đường tới API hai cloud, iSCSI nguồn và Ceph đích. Ubuntu 24.04/Python 3.12 là môi trường pin dependency. Cần `qemu-img` có RBD, os-brick trong venv và `python3-rbd` của Python hệ thống. PowerStore dùng single-path có chủ đích; phải đối chiếu WWN ở canary.
 
-**Chưa tuyên bố đã đạt gate production v1.** Báo cáo đã có: `ALL pass=836 fail=0`, UI guards `101/0`, CDP smoke `38/0`. Gate lab v1 và canary PowerStore còn phải ghi nhận trong [RELEASE-1.0.0.md](RELEASE-1.0.0.md). Rollback xóa bản đích và quay về nguồn; mọi ghi mới ở đích sau cutover không được đồng bộ ngược. Duyệt RPO trước chiến dịch.
+Gate lab 1.0.0 chạy ngày 22/11/2026 trên hai cloud lab 2026.1 (nguồn LVM/LIO iSCSI, đích Ceph RBD) đạt toàn bộ; chi tiết và các gate chưa chạy ở [RELEASE-1.0.0.md](RELEASE-1.0.0.md) mục 5, số liệu từng bản ở [CHANGELOG.md](CHANGELOG.md). Lab không phải PowerStore: canary trên đúng hạ tầng 2023.1 + PowerStore chưa chạy, chưa tuyên bố đạt production. Rollback xóa bản đích và quay về nguồn; mọi ghi mới ở đích sau cutover không được đồng bộ ngược. Duyệt RPO trước chiến dịch.
