@@ -163,6 +163,61 @@ ok("A20 a rollback that failed half-way (destination server already deleted, the
    and r.world["src"]["servers"][SID]["status"] == "ACTIVE" and retired(r, "app01")
    and after_mark(r.calls).count(probe) == 1, (r.rc, r.err[-500:]))
 
+# ================================ case 5/6: rollback --dry-run shows source_status ================================
+DRY = ("cli", ["rollback", "app01", "--dry-run", "--json"])
+TEXT = ("cli", ["rollback", "app01", "--dry-run"])
+
+
+def dry_json(r, i):
+    try:
+        return json.loads(r.outs[i])
+    except ValueError:
+        return {}
+
+
+r = app(world(), [("migrate", "app01", PLAIN), edit(drop_source_vm), mark, DRY, TEXT, ("cli", ["rollback", "app01"])])
+obj = dry_json(r, 1)
+ok("A20 --dry-run --json, the source VM gone: source_status GONE, source_error null, exit 0, the rest as before",
+   r.rc[:3] == [0, 0, 0] and obj.get("source_status") == "GONE" and "source_error" in obj
+   and obj.get("source_error") is None and obj.get("source_power") == "ACTIVE"
+   and obj.get("delete", {}).get("server") == "srv-dst-0001", (r.rc, obj))
+ok("A20 --dry-run (text), the source VM gone: an ERROR line 'this rollback is refused', no 'then the source VM is' line",
+   "  ERROR the source VM no longer exists: the destination is the only copy; this rollback is refused" in r.outs[2]
+   and "then the source VM is" not in r.outs[2] and "now GONE" not in r.outs[2], r.outs[2])
+ok("A20 'rollback' without --yes and no terminal, the source VM gone: the summary on stderr has the ERROR line; exit 2",
+   r.rc[3] == 2 and "ERROR the source VM no longer exists" in r.errs[3], (r.rc, r.errs[3][-500:]))
+ok("A20 the dry-runs and the refused prompt deleted nothing; the dry-run probe is read-only 'server show'",
+   not dst_deletes(r.calls) and "srv-dst-0001" in r.world["dst"]["servers"]
+   and after_mark(r.calls).count("src\tserver show %s -f json -c id -c status" % SID) == 3, after_mark(r.calls))
+r = app(world(), [("migrate", "app01", PLAIN), DRY, TEXT])
+obj = dry_json(r, 1)
+ok("A20 --dry-run --json, the source VM there: source_status is its status now (SHUTOFF after the cutover), "
+   "source_power the one at export (ACTIVE); the text says 'now SHUTOFF', no ERROR/WARN",
+   r.rc == [0, 0, 0] and obj.get("source_status") == "SHUTOFF" and obj.get("source_power") == "ACTIVE"
+   and obj.get("source_error") is None
+   and r.outs[2].startswith("Rollback of app01 (source VM app01 %s, now SHUTOFF):" % SID)
+   and "then the source VM is unlocked, its ports given back, started" in r.outs[2]
+   and "ERROR" not in r.outs[2] and "WARN" not in r.outs[2], (r.rc, obj, r.outs[2]))
+r = app(world(), [("migrate", "app01", PLAIN),
+                  edit(lambda x: x["src"].update(fail={"server show %s" % SID: "Internal Server Error (HTTP 500)"})),
+                  DRY, TEXT])
+obj = dry_json(r, 1)
+ok("A20 --dry-run, the source cannot be read: source_status null, source_error the reason, a WARN line",
+   r.rc == [0, 0, 0] and "source_status" in obj and obj["source_status"] is None
+   and obj.get("source_error") == "Internal Server Error (HTTP 500)"
+   and "  WARN the source VM could not be read (Internal Server Error (HTTP 500)): the rollback refuses until it can"
+   in r.outs[2], (r.rc, obj, r.outs[2]))
+r = app(VW, [("volume", "data", []), ("cli", ["rollback", "vol-vol-src-data", "--dry-run", "--json"]),
+             edit(lambda x: x["src"]["volumes"].pop("vol-src-data")),
+             ("cli", ["rollback", "vol-vol-src-data", "--dry-run", "--json"]),
+             ("cli", ["rollback", "vol-vol-src-data", "--dry-run"])])
+a_, b_ = dry_json(r, 1), dry_json(r, 2)
+ok("A20 volume --dry-run: source_status available while it is there, GONE once deleted; the text has the ERROR line",
+   r.rc == [0, 0, 0, 0] and a_.get("kind") == "vol" and a_.get("source_status") == "available"
+   and b_.get("source_status") == "GONE"
+   and "  ERROR the source volume no longer exists: the destination is the only copy; this rollback is refused"
+   in r.outs[3] and "vol-dst-0001" in r.world["dst"]["volumes"], (r.rc, a_, b_, r.outs[3]))
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

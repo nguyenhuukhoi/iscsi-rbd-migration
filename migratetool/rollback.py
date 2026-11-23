@@ -429,14 +429,17 @@ def _age(seconds):
 
 def summary(r, st, kind):
     """A5: what a rollback of st would delete, read-only. kind vm|vol. dst_server_status: 'server show' at the
-    destination (None when there is no server ID, 'GONE' when Nova no longer has it)."""
+    destination (None when there is no server ID, 'GONE' when Nova no longer has it). A20 (1.1.0): source_status is
+    the source object's status now, by the same probe the rollback makes ('GONE' when not found, None when it could
+    not be read; source_error then says why), next to source_power, its status when migrate exported it."""
     now = int(time.time())
     try:
         t_stop = int(st.read("t-stop").strip())
     except ValueError:
         t_stop = None
     d = {"ident": st.arg, "kind": kind, "dir": st.path, "t_stop": None, "age_seconds": None,
-         "dst_server_id": None, "dst_server_status": None, "source_power": None,
+         "dst_server_id": None, "dst_server_status": None, "source_power": None, "source_status": None,
+         "source_error": None,
          "delete": {"server": None, "ports": [], "volumes": [dv for _s, dv in st.volume_map()], "images": []}}
     if t_stop is not None:
         d["t_stop"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t_stop))
@@ -444,10 +447,14 @@ def summary(r, st, kind):
     if kind == "vol":
         vj = st.json("volume.json") if st.exists("volume.json") else {}
         d["name"], d["source_id"] = jqs(vj.get("name")) if vj.get("name") else "", jqs(vj.get("id"))
+        d["source_status"], d["source_error"] = source_status(r, "volume", d["source_id"])
+        d["source_error"] = d["source_error"] or None
         return d
     server = st.json("server.json")
     d["name"], d["source_id"] = jqs(server.get("name")), jqs(server.get("id"))
     d["source_power"] = server.get("status") if isinstance(server.get("status"), str) else None
+    d["source_status"], d["source_error"] = source_status(r, "server", d["source_id"])
+    d["source_error"] = d["source_error"] or None
     dsid = st.read("dst-server-id").strip()
     if dsid:
         d["dst_server_id"] = d["delete"]["server"] = dsid
@@ -465,13 +472,24 @@ def summary(r, st, kind):
 
 
 def summary_lines(d):
-    """The text of summary() shown before the prompt (one string per line)."""
-    out = ["Rollback of %s (%s %s %s):" % (d["ident"], "source VM" if d["kind"] == "vm" else "source volume",
-                                            d.get("name") or "(no name)", d.get("source_id"))]
+    """The text of summary() shown before the prompt (one string per line). A20: the source's status now on the
+    first line; an ERROR line when it is gone (the rollback refuses), a WARN line when it could not be read."""
+    noun = "VM" if d["kind"] == "vm" else "volume"
+    src = d.get("source_status")
+    now = ", now %s" % src if src and src != "GONE" else ""
+    out = ["Rollback of %s (source %s %s %s%s):" % (d["ident"], noun, d.get("name") or "(no name)", d.get("source_id"),
+                                                   now)]
+    tail = []
+    if src == "GONE":
+        tail.append("  ERROR the source %s no longer exists: the destination is the only copy; this rollback is refused"
+                    % noun)
+    elif "source_status" in d and src is None:
+        tail.append("  WARN the source %s could not be read (%s): the rollback refuses until it can"
+                    % (noun, d.get("source_error") or "no answer"))
     if d["kind"] == "vol":
         out.append("  destination volume(s) deleted: %s; the source volume was never modified"
                    % (" ".join(d["delete"]["volumes"]) or "none recorded"))
-        return out
+        return out + tail
     if d["t_stop"]:
         out.append("  the source was stopped at %s (%s ago)" % (d["t_stop"], _age(d["age_seconds"])))
     else:
@@ -487,6 +505,7 @@ def summary_lines(d):
     if d["dst_server_status"] == "ACTIVE" and (d["age_seconds"] or 0) > ACTIVE_WARN:
         out.append("  WARN the destination VM has run for %s: whatever was written on it since %s is lost"
                    % (_age(d["age_seconds"]), d["t_stop"]))
-    after = "kept SHUTOFF" if d["source_power"] == "SHUTOFF" else "unlocked, its ports given back, started"
-    out.append("  then the source VM is %s" % after)
-    return out
+    if src != "GONE":
+        after = "kept SHUTOFF" if d["source_power"] == "SHUTOFF" else "unlocked, its ports given back, started"
+        out.append("  then the source VM is %s" % after)
+    return out + tail
