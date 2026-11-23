@@ -348,10 +348,12 @@ def rollback():
         return 1
     if "--dry-run" in ARGS:  # 1.0.0 (A5): the summary migui-runner shows with a rollback; nothing changes
         e = st["live"][target]
+        # 1.1.0 (A20): control.json "source_status": {ident: "GONE" | null | status} (default ACTIVE)
+        src = CONTROL.get("source_status") or {}
         out(json.dumps({"ident": target, "kind": e.get("kind", "vm"), "t_stop": e.get("t_stop"), "age_seconds": 60,
                         "dst_server_id": e.get("dst"), "dst_server_status": "ACTIVE" if e.get("dst") else None,
-                        "source_power": "ACTIVE", "delete": {"server": e.get("dst"), "ports": [], "volumes": [],
-                                                             "images": []}}, sort_keys=True))
+                        "source_power": "ACTIVE", "source_status": src[target] if target in src else "ACTIVE",
+                        "delete": {"server": e.get("dst"), "ports": [], "volumes": [], "images": []}}, sort_keys=True))
         return 0
     e = st["live"].pop(target)
     retired = "%s/%s.rolled-back.%d" % (STATE_ROOT, target, time.time())

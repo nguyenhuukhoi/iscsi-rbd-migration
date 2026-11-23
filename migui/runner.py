@@ -782,15 +782,17 @@ class Runner:
 
     def rollback_facts(self, ident, entry):
         """A5 / section 3: t_stop, dst_server_status, age_seconds and what the rollback deletes, from 'migrate rollback
-        <ident> --dry-run --json' (read-only: one 'server show' of the destination server); the status entry when
-        that fails."""
+        <ident> --dry-run --json' (read-only: one 'server show' of the destination server, and since 1.1.0 (A20) one
+        of the source object: source_status, "GONE" when it no longer exists, None when it could not be read); the
+        status entry when that fails (source_status None: not read)."""
         rc, data, _tail = self.cli_json(["rollback", ident, "--dry-run", "--json"], TIMEOUTS["status"])
         if rc == 0 and isinstance(data, dict):
-            return {k: data.get(k) for k in ("t_stop", "dst_server_status", "age_seconds", "delete", "source_power")}
+            return {k: data.get(k) for k in ("t_stop", "dst_server_status", "age_seconds", "delete", "source_power",
+                                             "source_status")}
         vm = [x[1] for x in entry.get("volume_map") or [] if isinstance(x, list) and len(x) == 2]
         return {"t_stop": entry.get("t_stop"), "dst_server_status": None, "age_seconds": None,
                 "delete": {"server": entry.get("dst_server_id"), "ports": [], "volumes": vm, "images": []},
-                "source_power": entry.get("source_power")}
+                "source_power": entry.get("source_power"), "source_status": None}
 
     def notify_event(self, event, ident, state, **extra):
         """C14: MIGUI_NOTIFY_CMD (a JSON list, never a shell) at the end of a job or a batch, with MIG_EVENT, MIG_JOB,
@@ -896,6 +898,11 @@ class Runner:
         eff = (opts or {}).get("effective")
         orig = dict(opts) if opts else {}
         orig.update(self.rollback_facts(ident, entry))
+        # A20 (1.1.0): the source is gone: refused before a batch exists (the engine would refuse it too). Not read
+        # (None): prepared, original.source_status shows it; the engine refuses at run time if it still cannot read it.
+        if orig.get("source_status") == "GONE":
+            raise Reject(409, "%s: the source %s no longer exists at the source; the destination is the only copy, a "
+                         "rollback would delete it" % (ident, "volume" if entry.get("kind") == "vol" else "VM"))
         job = Job(id=secrets.token_hex(8), kind="rollback", ident=ident, name=name, argv=["migrate"] + args,
                   exec_argv=list(self.cfg.migrate) + args, effective=eff, conf=(opts or {}).get("conf"),
                   projects=(eff or {}).get("projects", {}).get("value") if isinstance(eff, dict) else None,

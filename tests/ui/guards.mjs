@@ -859,6 +859,13 @@ const invWith = (hosts, projects) => ({ data: { source: { hosts, projects }, des
   ok('R2-9 closing rollback preserves origin and discards token',t.location.hash===origin && !t.$('action-dialog').open && h.state.confirm===null && !find(t.$('dialog-body'),e=>e.id==='screen-confirm'));
   h.openConfirm({...RB,at:Date.now(),original:{source_power:'ACTIVE',delete:null}},'instance');
   ok('R2-9 ACTIVE source will restart and null deletion scope is safe',texts(t.$('dialog-body')).some(x=>x.includes('nguồn sẽ được bật lại')));
+  ok('A20 rollback dialog: no source_status (not read) shows "Nguồn hiện tại: không đọc được"',texts(t.$('dialog-body')).includes('Nguồn hiện tại: không đọc được'));
+  await t.$('dialog-close').fire('click');
+  for (const [st,want] of [['SHUTOFF','Nguồn hiện tại: SHUTOFF'],['GONE','Nguồn hiện tại: không còn tồn tại'],[null,'Nguồn hiện tại: không đọc được']]) {
+    h.openConfirm({...RB,at:Date.now(),original:{source_power:'ACTIVE',source_status:st,delete:null}},'instance');
+    ok('A20 rollback dialog: source_status '+st+' shows "'+want+'", once',texts(t.$('dialog-body')).filter(x=>x.startsWith('Nguồn hiện tại: ')).length===1 && texts(t.$('dialog-body')).includes(want),texts(t.$('dialog-body')));
+    await t.$('dialog-close').fire('click');
+  }
   await t.$('dialog-close').fire('click');h.state.session.features={write_check:true};await t.$('doctor-write').fire('click');
   ok('R2-2 write-check button names the action',t.$('dialog-accept').textContent==='Kiểm tra ghi RBD');
   await t.$('dialog-close').fire('click');await t.$('vm-paste').fire('click');
