@@ -1,6 +1,6 @@
-# Thiết kế chuẩn migrate 1.0.0
+# Thiết kế chuẩn migrate
 
-Tài liệu mô tả code tại release 1.0.0. Tên hàm trong ngoặc là điểm truy vết khi hành vi không hiển nhiên. [GUIDE.md](GUIDE.md) định nghĩa cú pháp vận hành; [DEPLOY.md](DEPLOY.md) định nghĩa cách dựng host; [RUNBOOK.md](RUNBOOK.md) định nghĩa các bước nghiệm thu. Lịch sử chỉ nằm trong [CHANGELOG.md](CHANGELOG.md).
+Tài liệu mô tả code của bản phát hành hiện tại (số bản: `migrate --version`). Tên hàm trong ngoặc là điểm truy vết khi hành vi không hiển nhiên. [GUIDE.md](GUIDE.md) định nghĩa cú pháp vận hành; [DEPLOY.md](DEPLOY.md) định nghĩa cách dựng host; [RUNBOOK.md](RUNBOOK.md) định nghĩa các bước nghiệm thu. Lịch sử chỉ nằm trong [CHANGELOG.md](CHANGELOG.md).
 
 ## 1. Kiến trúc và tiến trình
 

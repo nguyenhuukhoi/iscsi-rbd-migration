@@ -1,4 +1,4 @@
-# Hướng dẫn vận hành migrate 1.0.1
+# Hướng dẫn vận hành migrate
 
 CLI và UI dùng chung engine, cấu hình và khóa host. Chạy từng VM tuần tự. Đọc [RUNBOOK.md](RUNBOOK.md) trước chiến dịch; dựng host theo [DEPLOY.md](DEPLOY.md). Tên và địa chỉ trong ví dụ là dữ liệu tài liệu.
 
@@ -6,7 +6,7 @@ CLI và UI dùng chung engine, cấu hình và khóa host. Chạy từng VM tu�
 
 | Lệnh | Tác dụng | Xác nhận / tác động |
 |---|---|---|
-| `migrate --version` | In `migrate 1.0.1` | Không |
+| `migrate --version` | In `migrate <version>` | Không |
 | `migrate --help`, `migrate <command> --help` | In usage | Không |
 | `migrate list <selectors> [--json]` | Liệt kê VM và state | Không export, không preflight |
 | `migrate list --volumes <selectors> [--json]` | Liệt kê volume | Không copy |

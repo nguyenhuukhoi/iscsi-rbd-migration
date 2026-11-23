@@ -1,4 +1,4 @@
-# Triển khai migrate 1.0.1
+# Triển khai migrate
 
 Mục tiêu: convert host Linux giữa OpenStack 2023.1/PowerStore iSCSI và OpenStack 2026.1/Ceph 19. Bộ pin được lấy từ Ubuntu 24.04, Python 3.12.3. Package yêu cầu Python ≥ 3.10; pin dependency trên Python/OS khác vẫn cần nghiệm thu. UI cần systemd hỗ trợ các directive trong units, hướng triển khai là systemd ≥ 250.
 

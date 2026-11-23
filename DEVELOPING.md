@@ -1,4 +1,4 @@
-# Phát triển migrate 1.0.1
+# Phát triển migrate
 
 [DESIGN.md](DESIGN.md) là chuẩn hành vi hiện hành. [REVIEW-20261121.md](REVIEW-20261121.md) giữ ID review và phạm vi việc còn thiếu. Khi code và đề xuất review khác nhau, tài liệu mô tả code, đồng thời ghi gap trong [RELEASE-1.0.0.md](RELEASE-1.0.0.md).
 

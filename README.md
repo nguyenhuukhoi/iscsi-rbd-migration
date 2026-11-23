@@ -1,4 +1,4 @@
-# migrate 1.0.1
+# migrate
 
 Chuyển VM giữa hai cloud OpenStack độc lập: Cinder iSCSI trên LVM hoặc Dell PowerStore ở nguồn → Cinder trên Ceph RBD ở đích. Package `migratetool/` cung cấp CLI `migrate`. Web UI `migui/` gọi cùng CLI trên host convert. `live` giảm downtime bằng pre-sync; vẫn phải tắt VM để cutover. Không chuyển RAM hoặc kết nối đang mở.
 
@@ -17,7 +17,7 @@ Nova đích <----------------------- volume + port mới; state giữ để roll
 
 ## Cài và chạy thử
 
-Chạy bằng root trên host convert Ubuntu 24.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (bản 1.0.1, 23/11/2026).
+Chạy bằng root trên host convert Ubuntu 24.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (23/11/2026).
 
 1. Gói hệ thống. Client Ceph lấy từ repo Ceph Tentacle: `ceph-common` 19.x của Ubuntu không đọc được key `aes256k` của cụm Tentacle ≥ 20.2.4.
 
