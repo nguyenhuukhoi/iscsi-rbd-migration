@@ -1386,6 +1386,21 @@ orun.cli_json = lambda args, timeout, on_line=None: (0, {"running": [
 ok("fix-1.0.1 #4 outside_runs(): 'migrate rollback x --dry-run --json' is not a run outside the UI; 'rollback x --yes' "
    "and 'migrate app01' still are", orun.outside_runs() == [102, 103], orun.outside_runs())
 
+# ================================ fix-1.0.1 #5 (Review 23/11): the runner writes its pid into the lock file ================================
+lrun = mrunner.Runner.__new__(mrunner.Runner)
+lrun.lock_path = os.path.join(WORK, "lock5", "migrate.lock")
+os.makedirs(os.path.dirname(lrun.lock_path))
+set_file(lrun.lock_path, "pid 1 (an older holder)\nmore text\n")
+lfd = lrun.try_lock()
+second = lrun.try_lock()
+held5 = open(lrun.lock_path).read()
+ok("fix-1.0.1 #5 try_lock(): the lock file says 'pid <runner pid> (migui-runner)' (the old text replaced), which the CLI "
+   "shows as 'held by ...'; a second try_lock() is refused",
+   lfd is not None and second is None and held5 == "pid %d (migui-runner)\n" % os.getpid()
+   and locking._holder(lrun.lock_path) == "pid %d (migui-runner)" % os.getpid(), (lfd, second, held5))
+if lfd is not None:
+    os.close(lfd)
+
 # ================================ version ================================
 ok("1.0.0 version: migratetool, migui and pyproject agree",
    migratetool.__version__ == "1.0.0" and __import__("migui").__version__ == "1.0.0"

@@ -1002,6 +1002,11 @@ class Runner:
         except OSError:
             os.close(fd)
             return None
+        try:  # Review 23/11 #5: who holds it, for the CLI's "held by ..." message (best effort, as locking.host())
+            os.ftruncate(fd, 0)
+            os.write(fd, ("pid %d (migui-runner)\n" % os.getpid()).encode())
+        except OSError:
+            pass
         return fd
 
     def outside_runs(self):
