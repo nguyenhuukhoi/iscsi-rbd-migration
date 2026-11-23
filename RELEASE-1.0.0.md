@@ -1,6 +1,6 @@
 # Bằng chứng release 1.0.0
 
-Trạng thái: engine, UI và tài liệu đã gộp trên `v1` (chưa merge vào main, chưa push). **Gate lab v1 chạy ngày 22/11/2026** trên hai cloud lab 2026.1: nguồn LVM/LIO iSCSI, đích Ceph RBD. Kết quả từng suite ở mục 5. Lab không phải PowerStore. Không dùng kết quả này để tuyên bố PowerStore production đã đạt.
+Trạng thái: phát hành 1.0.0 (tag `v1.0.0`), 1.0.1 là bản sửa lỗi (CHANGELOG). **Gate lab v1 chạy ngày 22/11/2026** trên hai cloud lab 2026.1: nguồn LVM/LIO iSCSI, đích Ceph RBD. Kết quả từng suite ở mục 5. Lab không phải PowerStore. Không dùng kết quả này để tuyên bố PowerStore production đã đạt.
 
 ## 1. Commit index
 
