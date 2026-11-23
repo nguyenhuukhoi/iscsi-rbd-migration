@@ -26,7 +26,7 @@ curl -fsSL https://download.ceph.com/keys/release.asc -o /usr/share/keyrings/cep
 echo "deb [signed-by=/usr/share/keyrings/ceph-release.asc] https://download.ceph.com/debian-tentacle noble main" \
   > /etc/apt/sources.list.d/ceph-tentacle.list
 apt-get update
-apt-get install -y open-iscsi qemu-utils qemu-block-extra ceph-common python3-rbd jq \
+apt-get install -y git open-iscsi qemu-utils qemu-block-extra ceph-common python3-rbd jq \
   python3-venv python3-dev gcc libffi-dev libssl-dev e2fsprogs
 systemctl enable --now iscsid
 ```
