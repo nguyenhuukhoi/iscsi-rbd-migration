@@ -256,6 +256,36 @@ ok("A20 volume.json without 'id': the rollback dies before any probe, the copy k
    and not [c for c in after_mark(r.calls) if c.endswith("-f json -c id -c status")]
    and obj.get("source_status") is None and obj.get("source_error") == "no source id in state", (r.rc, r.err[-400:], obj))
 
+# ================================ exit 0 with another answer (Astra review) ================================
+PROBE_PREFIX = "server show %s -f json -c id -c status" % SID
+
+
+def answer(text):
+    return edit(lambda x: x["src"].update(answer={PROBE_PREFIX: text}))
+
+
+for label, text in (("'{}'", "{}"), ("another server's id", '{"id": "srv-other", "status": "ACTIVE"}'),
+                    ("no JSON", "Welcome to the proxy\n"), ("a JSON list", "[]")):
+    r = app(world(), [("migrate", "app01", PLAIN), answer(text), mark, ROLL, DRY])
+    obj = dry_json(r, 2)
+    ok("A20 'server show' of the source exits 0 with %s: not proof it exists; 'cannot read source VM (unexpected answer "
+       "from server show)', nothing deleted; dry-run source_status null with that reason" % label,
+       r.rc == [0, 1, 0] and "cannot read source VM %s (unexpected answer from server show)" % SID in r.err
+       and not dst_deletes(r.calls) and "srv-dst-0001" in r.world["dst"]["servers"]
+       and obj.get("source_status") is None and obj.get("source_error") == "unexpected answer from server show",
+       (r.rc, r.err[-400:], obj))
+r = app(world(), [("migrate", "app01", PLAIN), answer('{"id": "%s"}' % SID), DRY, mark, ROLL])
+obj = dry_json(r, 1)
+ok("A20 the right id but no status: source_status UNKNOWN (it exists), the rollback goes on as in 1.0.1",
+   r.rc == [0, 0, 0] and obj.get("source_status") == "UNKNOWN" and obj.get("source_error") is None
+   and "srv-dst-0001" not in r.world["dst"]["servers"] and retired(r, "app01"), (r.rc, obj, r.err[-400:]))
+r = app(VW, [("volume", "data", []),
+             edit(lambda x: x["src"].update(answer={"volume show vol-src-data -f json": '{"id": "vol-x", "status": "available"}'})),
+             mark, VROLL])
+ok("A20 volume: 'volume show' answers another volume's id: 'cannot read source volume', the copy kept",
+   r.rc == [0, 1] and "cannot read source volume vol-src-data (unexpected answer from volume show)" in r.err
+   and "vol-dst-0001" in r.world["dst"]["volumes"] and not dst_deletes(r.calls), (r.rc, r.err[-400:]))
+
 # ================================ parity: v11_rule drops the A20 probe, nothing else ================================
 import parity  # noqa: E402  (already imported by inproc)
 

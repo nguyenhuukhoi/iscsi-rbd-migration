@@ -103,6 +103,12 @@ pos = [x for x in a]
 for _prefix, _msg in c.get("fail", {}).items():
     if " ".join(a).startswith(_prefix):
         fail(_msg)
+# 1.1.0: world[side]["answer"] = {"<argv prefix>": "<stdout>"}: that command exits 0 printing exactly this (a proxy or
+# client that answers something else than the object asked for)
+for _prefix, _out in c.get("answer", {}).items():
+    if " ".join(a).startswith(_prefix):
+        sys.stdout.write(_out)
+        sys.exit(0)
 if a[:2] == ["port", "show"] and "device_id" in a and a[2] in c.get("port_show_fail", {}):
     # 7.2 (B1): a transient failure ([count, message]) before the port answers again
     n, msg = c["port_show_fail"][a[2]]

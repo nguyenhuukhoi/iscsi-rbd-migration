@@ -299,13 +299,18 @@ def no_source_id(st, fname):
 
 def source_status(r, kind, oid):
     """A20: (status, why) of the source object, read-only ('<kind> show <id> -f json -c id -c status'): its Nova or
-    Cinder status when it answers, "GONE" when the API says not found, None (why: the last stderr line) otherwise."""
+    Cinder status when it answers with that object ("UNKNOWN" when the answer has the right id but no status),
+    "GONE" when the API says not found, None otherwise (why: the last stderr line, or "unexpected answer from <kind>
+    show" when exit 0 printed something else than an object with that id: never taken as proof that it exists)."""
     res = r.src.run(kind, "show", oid, "-f", "json", "-c", "id", "-c", "status", stderr=proc.CAPTURE)
     if res.rc == 0:
         try:
-            status = json.loads(res.stdout or "{}").get("status")
-        except (ValueError, AttributeError):
-            status = None
+            doc = json.loads(res.stdout or "")
+        except ValueError:
+            doc = None
+        if not isinstance(doc, dict) or doc.get("id") != oid:
+            return None, "unexpected answer from %s show" % kind
+        status = doc.get("status")
         return (status if isinstance(status, str) and status else "UNKNOWN"), ""
     if GONE_RE.search(res.stderr):
         return "GONE", ""
