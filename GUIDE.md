@@ -104,6 +104,8 @@ Giá trị thực tế và nguồn nằm trong `effective` của plan và `optio
 
 Volume rời chỉ dùng nhóm lưu trữ `--volume-type`, `--az`, `--volume-az`, `--verify` và `--in-use` theo điều kiện. Không có live pre-sync cho volume rời. Volume attached theo selector chạy VM cold `--volumes-only`, có downtime. Giới hạn xem [DESIGN.md](DESIGN.md#3-các-luồng-dữ-liệu).
 
+Với `--plan-jobs` lớn hơn 1, mỗi plan child chạy trong session riêng, không có controlling terminal, nên credentials phải không tương tác: openrc không được `read` từ `/dev/tty` hay hỏi mật khẩu kiểu `getpass`, nếu không plan song song sẽ lỗi; cần nhập tay thì dùng `--plan-jobs 1`.
+
 ## 4. Cấu hình và map
 
 File `/opt/mig/migrate.conf`, hoặc env `MIG_CONF`, chỉ là dữ liệu `KEY=VALUE`, có thể có `export`, nháy, comment. Không chạy `source`, `if` hoặc mở rộng `$VAR`. Openrc là shell tin cậy, xem [DEPLOY.md](DEPLOY.md#3-openrc-hai-cloud).
