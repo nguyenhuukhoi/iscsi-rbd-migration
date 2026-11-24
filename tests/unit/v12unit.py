@@ -496,6 +496,75 @@ ok("P2-a ... a token that may not list every project (403): asked again without 
                                 "dst\tserver list --name ^app01$ -f json"]
    and DSID in r.world["dst"]["servers"], (r.rc, lists, r.err[-400:]))
 
+# ================================ parity: v12_rule drops what 1.1.1 adds, nothing else ================================
+import parity  # noqa: E402  (already imported by inproc)
+
+
+def ruled(raw, args, impls, out=""):
+    p = {"rawcalls": list(raw), "calls": [c for c in raw if not c.startswith("#step\t")], "args": args, "impls": impls,
+         "out": out, "err": out, "files": {"log/x.log": out, "app01/options": out}}
+    parity.v12_rule(p)
+    return p
+
+
+DPROBE = "dst\tserver show d1 -f json -c id -c status"
+A6 = "src\tserver show srv-a -f json -c id -c status"
+LIST = "dst\tserver list --name ^app01$ --all-projects -f json"
+RAW = ["#step\t0", A6, "dst\tvolume show v1 -f value -c status", "dst\tvolume delete v1", "#step\t1",
+       "src\tserver show srv-a -f json -c id -c status", DPROBE, "dst\tserver delete d1 --wait", DPROBE, LIST,
+       "src\tvolume show c1 -f json -c id -c status"]
+p = ruled(RAW, [["migrate", "app01"], ["rollback", "app01"]], ["py", "py"])
+ok("v12_rule: an app rollback step loses its first destination probe only (the gone poll after the delete stays, the "
+   "source probe is v11_rule's); an app migrate step loses its A6 source probe; '--all-projects' leaves the listing",
+   p["rawcalls"] == ["#step\t0", RAW[2], RAW[3], "#step\t1", RAW[5], RAW[7], DPROBE,
+                     "dst\tserver list --name ^app01$ -f json", RAW[10]]
+   and p["calls"] == [c for c in p["rawcalls"] if not c.startswith("#")], p["rawcalls"])
+p = ruled(RAW, [["migrate", "app01"], ["rollback", "app01"]], ["bash", "bash"])
+ok("v12_rule: the reference's own steps (bash) are left as they are", p["rawcalls"] == RAW, p["rawcalls"])
+p = ruled(RAW, [["migrate", "app01"], ["rollback", "app01"]], ["bash", "py"])
+ok("v12_rule: a cross run (bash migrate -> app rollback) changes the app's rollback step only",
+   p["rawcalls"][:5] == RAW[:5] and DPROBE in p["rawcalls"] and p["rawcalls"].count(DPROBE) == 1, p["rawcalls"])
+VRAW = ["#step\t0", "#step\t1", "dst\tvolume show vd1 -f json -c id -c status", "dst\tvolume show vd1 -f value -c status",
+        "dst\tvolume delete vd1", "dst\tvolume show vd1 -f json -c id -c status"]
+p = ruled(VRAW, [["volume", "v1"], ["rollback", "vol-v1"]], ["app", "app"])
+ok("v12_rule: a volume rollback loses its probe of the first destination volume, not the gone poll after the delete",
+   p["rawcalls"] == ["#step\t0", "#step\t1", VRAW[3], VRAW[4], VRAW[5]], p["rawcalls"])
+TXT = ("[10:00:00] INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this environment\n"
+       "[10:00:00] INFO scope: data is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT of this "
+       "environment\n[10:00:00] INFO scope SRC_PROJECT=a DST_PROJECT=b (from the state's options.json)\nkept\n")
+p = ruled([], [], [], out=TXT)
+ok("v12_rule: the two 'INFO scope:' lines of a rollback without a record (out, err, log files) go; the restored-scope "
+   "line and the state files stay",
+   p["out"] == p["err"] == p["files"]["log/x.log"] == "[10:00:00] INFO scope SRC_PROJECT=a DST_PROJECT=b (from the "
+   "state's options.json)\nkept\n" and p["files"]["app01/options"] == TXT, p)
+
+
+def step_mark(n):
+    def f(_wf, _root):
+        with open(os.environ["HARNESS_CALLS"], "a") as fh:
+            fh.write("#step\t%d\n" % n)
+    return f
+
+
+r = app(world(), [step_mark(0), ("migrate", "app01", PLAIN), step_mark(1), ROLL])
+p = {"rawcalls": list(r.calls), "calls": [c for c in r.calls if not c.startswith("#")],
+     "args": [["migrate", "app01"], ["rollback", "app01"]], "impls": ["py", "py"], "out": "", "err": "", "files": {}}
+parity.v11_rule(p)
+parity.v12_rule(p)
+gone_ = [c for c in r.calls if c not in p["rawcalls"] or r.calls.count(c) != p["rawcalls"].count(c)]
+ok("v11_rule + v12_rule on a real migrate + rollback: exactly the A20 source probe and the A21 destination probe go",
+   r.rc == [0, 0] and sorted(set(gone_)) == ["dst\tserver show %s -f json -c id -c status" % DSID,
+                                             "src\tserver show %s -f json -c id -c status" % SID]
+   and len(p["rawcalls"]) == len(r.calls) - 2, gone_)
+r = app(FAILED, [step_mark(0), ("migrate", "app01", PLAIN), unfail, step_mark(1), ("migrate", "app01", PLAIN)])
+p = {"rawcalls": list(r.calls), "calls": [], "args": [["migrate", "app01"], ["migrate", "app01"]],
+     "impls": ["py", "py"], "out": "", "err": "", "files": {}}
+parity.v12_rule(p)
+ok("v12_rule on a real A6 re-run: exactly its one source probe goes",
+   r.rc == [3, 0] and len(p["rawcalls"]) == len(r.calls) - 1
+   and [c for c in r.calls if c not in p["rawcalls"]] == ["src\tserver show %s -f json -c id -c status" % SID],
+   [c for c in r.calls if c not in p["rawcalls"]])
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

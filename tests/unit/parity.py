@@ -588,6 +588,57 @@ def v11_rule(p):
     p["calls"] = [c for c in p["rawcalls"] if not c.startswith("#step\t")]
 
 
+# --- 1.1.1: the mechanical rule for every scenario (the reference trusts any 'not found' at the destination) ---------
+# Intended: v1.1.1 A21: before its first delete a rollback run by the app reads the destination object it is about to
+# delete ('server show <dst-server-id>', else 'volume show' of the first destination volume). That read-only call is
+# the first 'dst <kind> show <id> -f json -c id -c status' of the step (a summary read before a prompt makes the same
+# call, the remaining one is identical): dropped once from each app rollback step.
+V12_DEST_PROBE = re.compile(r"^dst\t(server|volume) show (\S+) -f json -c id -c status$")
+# Intended: v1.1.1 A6 asks the source (A20): a migrate step that cleans an earlier run's destination volumes (A6) first
+# reads the source VM. In a migrate step 'src server show <id> -f json -c id -c status' is made by that probe only
+# (the gone polls read destination servers and source clones, i.e. volumes): every such call of an app migrate step
+# is dropped. Fewer assumptions than reading the step's log for 'failed before the cutover'.
+V12_A6_PROBE = re.compile(r"^src\tserver show \S+ -f json -c id -c status$")
+# Intended: v1.1.1 P2-a: an unrecorded destination server is listed in every project ('--all-projects'; again without
+# it when that fails).
+V12_ARGS_DROP = ((re.compile(r"^(dst\tserver list --name \S+) --all-projects( -f json)$"), r"\1\2"),)
+# Intended: v1.1.1 P2-a: the rollback says where its scope comes from when it cannot restore it from the state
+# (no project record: a state of the bash build; a volume found by name through the source cloud).
+V12_APP_OUT_DROP = (re.compile(r"INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this "
+                               r"environment$"),
+                    re.compile(r"INFO scope: \S+ is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT "
+                               r"of this environment$"))
+
+
+def v12_rule(p):
+    """Apply the 1.1.1 rule to an app result p (in place): the A21 destination probe of each app rollback step, the A6
+    source probe of each app migrate step, '--all-projects' of the unrecorded-server listing, and the scope INFO lines
+    of the app (out, err, log files)."""
+    args, impls = p.get("args") or [], p.get("impls") or []
+    steps = _steps(p["rawcalls"])
+    for n, step in enumerate(steps):
+        i = n - 1  # steps[0] is the head before the first '#step' marker
+        if not (0 <= i < min(len(args), len(impls)) and impls[i] in ("py", "app")):
+            continue
+        verb = list(args[i][:1])
+        if verb == ["rollback"]:
+            first = next((k for k, c in enumerate(step) if V12_DEST_PROBE.match(c)), None)
+            if first is not None:
+                step = step[:first] + step[first + 1:]
+        elif verb == ["migrate"]:
+            step = [c for c in step if not V12_A6_PROBE.match(c)]
+        for rx, to in V12_ARGS_DROP:
+            step = [rx.sub(to, c) for c in step]
+        steps[n] = step
+    p["rawcalls"] = [c for step in steps for c in step]
+    p["calls"] = [c for c in p["rawcalls"] if not c.startswith("#step\t")]
+
+    def drop_lines(text):
+        return "".join(l for l in text.splitlines(True) if not any(x.search(l.rstrip("\n")) for x in V12_APP_OUT_DROP))
+    p["out"], p["err"] = drop_lines(p["out"]), drop_lines(p["err"])
+    p["files"] = {k: (drop_lines(v) if k.startswith("log/") else v) for k, v in p["files"].items()}
+
+
 def compare(name, args, world=None, env=None, conf=None, expect_diff=(), pre_state=None, show=False,
             impls=("bash", "py"), py_args=None, bash_subs=(), out_subseq=False, tty=None, check=None,
             p6=False, subs_all=(), app_calls_ignore=(), v72=False, ref_calls_subs=(), v1=False):
@@ -610,6 +661,7 @@ def compare(name, args, world=None, env=None, conf=None, expect_diff=(), pre_sta
     p = run(impls[1], pworld, py_args or args, env, conf, pre_state, tty,
             optouts=not p6 and not os.environ.get("HARNESS_NO_OPTOUTS"))
     v11_rule(p)  # 1.1.0: before the other rules, while each step's calls are still marked
+    v12_rule(p)  # 1.1.1: the same, right after it
     if not v72:
         nsteps = len(args) if args and isinstance(args[0], list) else 1
         v72_rule(b, p, impls[1].split("+") if "+" in impls[1] else [impls[1]] * nsteps)
