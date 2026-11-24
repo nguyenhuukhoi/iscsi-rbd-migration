@@ -602,9 +602,12 @@ V12_A6_PROBE = re.compile(r"^src\tserver show \S+ -f json -c id -c status$")
 # Intended: v1.1.1 P2-a: an unrecorded destination server is listed in every project ('--all-projects'; again without
 # it when that fails).
 V12_ARGS_DROP = ((re.compile(r"^(dst\tserver list --name \S+) --all-projects( -f json)$"), r"\1\2"),)
-# Intended: v1.1.1 P2-a: the rollback says where its scope comes from when it cannot restore it from the state
-# (no project record: a state of the bash build; a volume found by name through the source cloud).
-V12_APP_OUT_DROP = (re.compile(r"INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this "
+# Intended: v1.1.1 P2-a: the rollback says where its scope comes from: restored from the state (a selector run scopes
+# each child to its VM's project, e.g. admin/admin, and the record keeps it; the reference rollback ran unscoped, its
+# calls and world are the same), or not restored (no project record: a state of the bash build; a volume found by
+# name through the source cloud).
+V12_APP_OUT_DROP = (re.compile(r"INFO scope SRC_PROJECT=\S+ DST_PROJECT=\S+ \(from the state's options\.json\)$"),
+                    re.compile(r"INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this "
                                r"environment$"),
                     re.compile(r"INFO scope: \S+ is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT "
                                r"of this environment$"),

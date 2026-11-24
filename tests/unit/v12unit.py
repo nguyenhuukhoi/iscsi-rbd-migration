@@ -533,10 +533,9 @@ TXT = ("[10:00:00] INFO scope: the state has no project record; using SRC_PROJEC
        "[10:00:00] INFO scope: data is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT of this "
        "environment\n[10:00:00] INFO scope SRC_PROJECT=a DST_PROJECT=b (from the state's options.json)\nkept\n")
 p = ruled([], [], [], out=TXT)
-ok("v12_rule: the two 'INFO scope:' lines of a rollback without a record (out, err, log files) go; the restored-scope "
-   "line and the state files stay",
-   p["out"] == p["err"] == p["files"]["log/x.log"] == "[10:00:00] INFO scope SRC_PROJECT=a DST_PROJECT=b (from the "
-   "state's options.json)\nkept\n" and p["files"]["app01/options"] == TXT, p)
+ok("v12_rule: the three scope INFO lines of a rollback (restored from the record, no record, found by name) go from "
+   "out, err and log files; other lines and the state files stay",
+   p["out"] == p["err"] == p["files"]["log/x.log"] == "kept\n" and p["files"]["app01/options"] == TXT, p)
 
 
 def step_mark(n):

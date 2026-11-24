@@ -111,7 +111,7 @@ So stdout, stderr, rc, state files, chuỗi calls và world cuối. Chuẩn hóa
 | `v72_rule` | Quota/Ceph/FIP/breakdown/API calls và thứ tự precreate volume của kịch bản reference |
 | `v73_rule` | Bỏ JSON record mới khỏi so state khi reference không ghi chúng |
 | `v1_rule` | Bỏ các calls kiểm mới theo ID; bỏ owner mark khỏi world/calls khi so reference; chuẩn hóa suffix batch, text marker, C11 warning và exit 3/4/5→1 |
-| `v12_rule` (1.1.1) | Bỏ probe đích A21 đầu tiên của mỗi step rollback của app, probe nguồn A6 của step migrate, token `--all-projects` của listing server chưa ghi ID, dòng `INFO scope:` khi không khôi phục được scope và hai dòng preflight type/pool (P2-b); comment `Intended: v1.1.1 <ID>` |
+| `v12_rule` (1.1.1) | Bỏ probe đích A21 đầu tiên của mỗi step rollback của app, probe nguồn A6 của step migrate, token `--all-projects` của listing server chưa ghi ID, các dòng `INFO scope` (scope khôi phục từ record, không có record, volume tìm theo tên) và hai dòng preflight type/pool (P2-b); comment `Intended: v1.1.1 <ID>` |
 
 Mỗi normalization `v1_rule` có comment `Intended: v1 <ID>` như A2/A4/A5/A6/A11/A12/A15/C8/C11/C12. `compare(..., v1=True)` tắt normalization v1 cho case cần so hành vi mới. Kịch bản reference ephemeral thêm `--ephemeral-as-image` cho app; rollback app thêm `--yes`. Parity chứng minh phần tương đương đã định nghĩa, không chứng minh binary cũ xử lý an toàn mọi state mới.
 
