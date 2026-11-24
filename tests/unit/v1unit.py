@@ -998,13 +998,14 @@ ok("install.sh copies DEPLOY.md to the path the units name in Documentation=",
    and "Documentation=file:///opt/migui/DEPLOY.md" in units and inst.index("DEPLOY.md\" \"$PREFIX") < inst.index("# units"))
 
 # ================================ gate 2026-11-22: what openstackclient 10.x prints for a deleted object ================================
-real = ['No Server found for a03980c4-1faf-4ec6-b6de-a46947f50b25', 'No Volume found for nosuchvol',
-        'No Image found for nosuchimg', 'No Port found for nosuchport',
-        "No server with a name or ID of 'x' exists."]
-ok('A4/A15 GONE_RE: the not-found messages of openstackclient 10.5 (lab) and of older clients',
-   all(rollback.GONE_RE.search(m) for m in real)
-   and not rollback.GONE_RE.search('No valid host was found. There are not enough hosts available.'),
-   [m for m in real if not rollback.GONE_RE.search(m)])
+# 1.1.1 (A21): GONE_RE became rollback.gone(stderr, oid): the same messages, and they must name the object asked for.
+real = [('No Server found for a03980c4-1faf-4ec6-b6de-a46947f50b25', 'a03980c4-1faf-4ec6-b6de-a46947f50b25'),
+        ('No Volume found for nosuchvol', 'nosuchvol'), ('No Image found for nosuchimg', 'nosuchimg'),
+        ('No Port found for nosuchport', 'nosuchport'), ("No server with a name or ID of 'x' exists.", 'x')]
+ok('A4/A15 gone(): the not-found messages of openstackclient 10.5 (lab) and of older clients',
+   all(rollback.gone(m, o) for m, o in real)
+   and not rollback.gone('No valid host was found. There are not enough hosts available.', 'x'),
+   [m for m, o in real if not rollback.gone(m, o)])
 
 
 class _GoneCloud:
@@ -1030,7 +1031,9 @@ try:
     rollback.wait_gone(None, gc, 'server', 's1', 'destination server', limit=0)
     ok('A4 wait_gone: an API error is not "gone"', False, 'returned')
 except Die as err:
-    ok('A4 wait_gone: an API error is not "gone"', 'still there' in str(err), str(err))
+    # 1.1.1 (A21): every 'show' failed without naming the server: 'cannot read ... after its delete' (was 'still there')
+    ok('A4 wait_gone: an API error is not "gone"', 'cannot read destination server s1 after its delete' in str(err),
+       str(err))
 rollback.time.sleep = saved_sleep
 
 # ================================ click matrix 2026-11-22: inventory names as Cinder/Nova allow them ================================

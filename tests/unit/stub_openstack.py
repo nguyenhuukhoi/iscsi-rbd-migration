@@ -103,6 +103,15 @@ pos = [x for x in a]
 for _prefix, _msg in c.get("fail", {}).items():
     if " ".join(a).startswith(_prefix):
         fail(_msg)
+# 1.1.1: world[side]["fail_from"] = {"<argv prefix>": [n, "<message>"]}: the first n such commands answer as usual,
+# every later one fails with that message (an endpoint lost in the middle of a rollback)
+for _prefix, _spec in c.get("fail_from", {}).items():
+    if " ".join(a).startswith(_prefix):
+        if _spec[0] > 0:
+            _spec[0] -= 1
+            save()
+        else:
+            fail(_spec[1])
 # 1.1.0: world[side]["answer"] = {"<argv prefix>": "<stdout>"}: that command exits 0 printing exactly this (a proxy or
 # client that answers something else than the object asked for)
 for _prefix, _out in c.get("answer", {}).items():

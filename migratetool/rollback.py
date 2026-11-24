@@ -17,6 +17,11 @@ files). DESIGN.md, "rollback":
 - A20 (1.1.0): nothing is deleted at the destination before the source object (the VM, or the volume of a
   migrate-volume state) has answered 'show'. Not found: the destination may be the only remaining copy, the rollback
   refuses. Not readable (auth, network, scope, an unexpected answer): it refuses too, and says so.
+- A21 (1.1.1): a destination object (or a source port) counts as deleted only when the API says that this very object
+  is not found (gone(): the answer names its ID). 'public endpoint for compute service ... not found' (keystoneauth,
+  a catalog without that service or region), 'command not found' or the 404 of a wrong endpoint URL name no object and
+  prove nothing. Nothing is deleted at the destination before the destination API has answered one 'show' validly in
+  this run (require_destination): the recorded server, else the first recorded volume, there or not found.
 """
 import json
 import os
@@ -30,10 +35,15 @@ from .jsonout import read_json
 from .server import PORT_GONE_RE
 from .util import Die, jqs, lines, log, re_escape, words
 
-# "No Server found for <id>" is what openstackclient 10.x (openstacksdk) prints for a server, volume, image or port that
-# is gone; older clients said "No server with a name or ID of '<id>' exists." (found on the lab gate, 2026-11-22).
-GONE_RE = re.compile(r"no \w+ with a name or id|no \w+ found for|not found|could not be found|\(HTTP 404\)", re.I)
+# A21 (1.1.1): how an API says that the object asked for is gone, on a line that names that object. "No Server found
+# for <id>" is what openstackclient 10.x (openstacksdk) prints for a server, volume, image or port that is gone (lab
+# gate, 2026-11-22); older clients said "No server with a name or ID of '<id>' exists."; novaclient/cinderclient say
+# "Instance <id> could not be found. (HTTP 404)".
+_GONE_FORMS = (r"no \w+ found for '?{o}'?(?![\w-])", r"no \w+ with a name or id of '{o}' exists",
+               r"(?<![\w-]){o}'? could not be found")
+_ENDS_404 = re.compile(r"(?:\(HTTP 404\)|(?<![\w.])404)[.\s]*$")
 GONE_WAIT = 600       # seconds a deleted server or volume may take to disappear
+READ_ERRORS = 5       # A21: consecutive 'show' failures naming no object before wait_gone gives up (about 15 s)
 PORT_RETRIES = 60     # 'port show' answers that are neither the port nor "not found"
 ACTIVE_WARN = 3600    # A5: a destination VM older than this gets the red warning
 
@@ -42,18 +52,45 @@ def _last_line(text):
     return (text.strip().splitlines() or [""])[-1]
 
 
+def gone(stderr, oid):
+    """True only when the API says that object oid itself is not found (A21, 1.1.1): a line of stderr names oid (as
+    it is, any case) and says 'No <Kind> found for <oid>', "No <kind> with a name or ID of '<oid>' exists", '<oid>
+    could not be found', or ends in '(HTTP 404)' / '404'. Anything that names no object (keystoneauth's 'public
+    endpoint for compute service in RegionOne region not found', 'openstack: command not found', the 404 of a wrong
+    endpoint URL) is not proof that the object was deleted: False. oid empty or None: False."""
+    if not isinstance(oid, str) or not oid.strip():
+        return False
+    o = re.escape(oid)
+    named = re.compile(r"(?<![\w-])%s(?![\w-])" % o, re.I)
+    forms = [re.compile(f.format(o=o), re.I) for f in _GONE_FORMS]
+    for line in (stderr or "").splitlines():
+        if not named.search(line):
+            continue
+        if any(f.search(line) for f in forms) or _ENDS_404.search(line):
+            return True
+    return False
+
+
 def wait_gone(r, cloud, kind, oid, label, limit=None):
-    """A4/A15: '<kind> show <id> -f json -c id -c status' until it says not found. A volume in error_deleting stops
-    at once; anything still there after limit seconds stops too: the cleanup is not complete."""
+    """A4/A15: '<kind> show <id> -f json -c id -c status' until it says that object is not found (gone()). A volume in
+    error_deleting stops at once; anything still there after limit seconds stops too: the cleanup is not complete.
+    A21: a 'show' that fails without naming the object is a read error, not a delete; READ_ERRORS of them in a row (or
+    a read error as the last answer at limit) stop the rollback: 'cannot read', not a 600 s wait."""
     limit = GONE_WAIT if limit is None else limit
-    start, why = time.monotonic(), ""
+    start, why, unread = time.monotonic(), "", 0
+    side = getattr(cloud, "side", "destination")
     while True:
         res = cloud.run(kind, "show", oid, "-f", "json", "-c", "id", "-c", "status", stderr=proc.CAPTURE)
         if res.rc != 0:
-            if GONE_RE.search(res.stderr):
+            if gone(res.stderr, oid):
                 return
             why = _last_line(res.stderr) or "exit %d" % res.rc
+            unread += 1
+            if unread >= READ_ERRORS or time.monotonic() - start > limit:
+                raise Die("cannot read %s %s after its delete (%s): cleanup not complete; check the %s "
+                          "credentials/endpoint and run the rollback again" % (label, oid, why, side))
         else:
+            unread = 0
             try:
                 status = json.loads(res.stdout or "{}").get("status")
             except (ValueError, AttributeError):
@@ -74,8 +111,9 @@ def drop_volume(r, cloud, vid, label):
     res = cloud.run("volume", "show", vid, "-f", "value", "-c", "status", stderr=proc.CAPTURE)
     if res.rc != 0:
         text = res.stderr
-        if not GONE_RE.search(text):
-            raise Die("cannot read %s %s: %s" % (label, vid, (text.splitlines() or [""])[-1]))
+        if not gone(text, vid):
+            raise Die("cannot read %s %s: %s; nothing more was deleted"
+                      % (label, vid, _last_line(text) or "exit %d" % res.rc))
         log("%s %s already gone" % (label, vid))
         return
     s = res.stdout.rstrip("\n")
@@ -89,10 +127,12 @@ def drop_volume(r, cloud, vid, label):
 
 
 def delete_server(r, sid, label="destination server"):
-    """A4: 'server delete --wait', its exit code checked, then polled until Nova says not found."""
+    """A4: 'server delete --wait', its exit code checked, then polled until Nova says not found. A21: a failed delete
+    counts as done only when the answer says that server is not found (gone())."""
     res = r.dst.run("server", "delete", sid, "--wait", stderr=proc.CAPTURE)
-    if res.rc != 0 and not GONE_RE.search(res.stderr):
-        raise Die("%s %s: delete failed (%s): the source VM was not touched; run the rollback again"
+    if res.rc != 0 and not gone(res.stderr, sid):
+        raise Die("%s %s: delete failed (%s): the source VM was not touched; check the destination "
+                  "credentials/endpoint/DST_PROJECT and run the rollback again"
                   % (label, sid, _last_line(res.stderr) or "exit %d" % res.rc))
     wait_gone(r, r.dst, "server", sid, label)
 
@@ -297,12 +337,13 @@ def no_source_id(st, fname):
     return Die("state %s has no source id in %s: nothing was deleted" % (st.path, fname))
 
 
-def source_status(r, kind, oid):
-    """A20: (status, why) of the source object, read-only ('<kind> show <id> -f json -c id -c status'): its Nova or
+def object_status(cloud, kind, oid):
+    """A20/A21: (status, why) of one object, read-only ('<kind> show <id> -f json -c id -c status'): its Nova or
     Cinder status when it answers with that object ("UNKNOWN" when the answer has the right id but no status),
-    "GONE" when the API says not found, None otherwise (why: the last stderr line, or "unexpected answer from <kind>
-    show" when exit 0 printed something else than an object with that id: never taken as proof that it exists)."""
-    res = r.src.run(kind, "show", oid, "-f", "json", "-c", "id", "-c", "status", stderr=proc.CAPTURE)
+    "GONE" when the API says that object is not found (gone()), None otherwise (why: the last stderr line, or
+    "unexpected answer from <kind> show" when exit 0 printed something else than an object with that id: never taken
+    as proof that it exists)."""
+    res = cloud.run(kind, "show", oid, "-f", "json", "-c", "id", "-c", "status", stderr=proc.CAPTURE)
     if res.rc == 0:
         try:
             doc = json.loads(res.stdout or "")
@@ -312,9 +353,14 @@ def source_status(r, kind, oid):
             return None, "unexpected answer from %s show" % kind
         status = doc.get("status")
         return (status if isinstance(status, str) and status else "UNKNOWN"), ""
-    if GONE_RE.search(res.stderr):
+    if gone(res.stderr, oid):
         return "GONE", ""
     return None, _last_line(res.stderr) or "exit %d" % res.rc
+
+
+def source_status(r, kind, oid):
+    """A20: object_status of the source object."""
+    return object_status(r.src, kind, oid)
 
 
 def require_source(r, kind, oid, label, st):
@@ -343,6 +389,35 @@ def require_source(r, kind, oid, label, st):
     return status
 
 
+def destination_probe(st):
+    """A21: (kind, id) of the destination object the rollback reads before its first delete: the recorded server,
+    else the first destination volume of volume-map; None when the state recorded neither (nothing to delete at the
+    destination by ID)."""
+    dsid = st.read("dst-server-id").strip()
+    if dsid:
+        return "server", dsid
+    vmap = st.volume_map()
+    return ("volume", vmap[0][1]) if vmap else None
+
+
+def require_destination(r, st):
+    """A21: one valid answer of the destination API in this run before anything is deleted there: that object (any
+    status) or "not found" naming it (a rollback run again after one that deleted it). Anything else (an endpoint
+    missing from the catalog, a 404 naming nothing, auth, network, an unexpected answer) dies here, before the first
+    delete and before the source is touched. Returns the status read ("GONE" when gone), None when the state recorded
+    nothing to probe."""
+    probe = destination_probe(st)
+    if probe is None:
+        return None
+    kind, oid = probe
+    status, why = object_status(r.dst, kind, oid)
+    if status is None:
+        raise Die("cannot read destination %s %s (%s): nothing was deleted at the destination, the source was not "
+                  "touched; check the destination credentials/endpoint/DST_PROJECT and run the rollback again"
+                  % (kind, oid, why))
+    return status
+
+
 def rollback_vm(r, st):
     if not st.exists("server.json"):
         raise Die("no state for %s in %s" % (st.arg, st.path))
@@ -353,6 +428,8 @@ def rollback_vm(r, st):
     vm = st.arg
     # A20: the source VM answers before anything at the destination is deleted.
     require_source(r, "server", sid, "VM " + jqs(server.get("name")), st)
+    # A21: and the destination answers too, before its first delete.
+    require_destination(r, st)
 
     if st.nonempty("dst-server-id"):
         log("delete destination server")
@@ -492,7 +569,7 @@ def summary(r, st, kind):
                 d["dst_server_status"] = json.loads(res.stdout).get("status")
             except (ValueError, AttributeError):
                 d["dst_server_status"] = None
-        elif GONE_RE.search(res.stderr):
+        elif gone(res.stderr, dsid):
             d["dst_server_status"] = "GONE"
     d["delete"]["ports"] = [p for p in st.read("dst-ports").split("\n") if p]
     d["delete"]["images"] = words(st.read("dst-image-id"))

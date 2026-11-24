@@ -13,7 +13,7 @@ import sys
 from . import config, proc, progress, record
 from .copyvol import brick, cleanup_attach, copy_volume_cold, copy_volume_props
 from .preflight import Checker, iscsid_preflight, quota_preflight, systemctl_ok
-from .rollback import drop_volume, no_source_id, recorded_source_id, require_source
+from .rollback import drop_volume, no_source_id, recorded_source_id, require_destination, require_source
 from .state import StateDir
 from .util import UUID_RE, Die, Exit, jq_alt, jqs, lines, log, out, prog
 
@@ -220,6 +220,8 @@ def rollback_volume(r, st):
         raise no_source_id(st, "volume.json")
     # A20: the source volume answers before its copy is deleted.
     require_source(r, "volume", vid, "volume " + (jqs(vj.get("name")) if vj.get("name") else ""), st)
+    # A21: and the destination answers (its first recorded volume) before the copy is deleted.
+    require_destination(r, st)
     if st.exists("volume-map"):
         for _svid, dvid in st.volume_map():
             drop_volume(r, r.dst, dvid, "destination volume")

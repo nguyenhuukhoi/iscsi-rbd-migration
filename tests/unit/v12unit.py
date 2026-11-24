@@ -124,6 +124,139 @@ ok("A21 'server show' at the destination answers 'Not Found (HTTP 404)' naming n
    (r.rc, r.err[-600:]))
 untouched(r, "A21 destination bare 404")
 
+# ================================ gone(): only an answer that names the object ================================
+from migratetool import rollback  # noqa: E402
+from migratetool.proc import Result  # noqa: E402
+from migratetool.util import Die  # noqa: E402
+
+U = "a03980c4-1faf-4ec6-b6de-a46947f50b25"
+yes = [("No Server found for %s" % U, U), ("No Port found for port-src-1", "port-src-1"),
+       ("No volume with a name or ID of 'vol-dst-0001' exists.", "vol-dst-0001"),
+       ("ERROR (CommandError): No server with a name or ID of 'srv-dst-0001' exists.", "srv-dst-0001"),
+       ("Instance %s could not be found. (HTTP 404) (Request-ID: req-1)" % U, U),
+       ("Volume %s could not be found. (HTTP 404)" % U, U), ("Port %s not found (HTTP 404)" % U, U),
+       ("NO SERVER FOUND FOR %s" % U.upper(), U), ("some warning\nNo Server found for %s\n" % U, U)]
+no = [(MSG, DSID), (MSG_VOL, "vol-dst-0001"), ("openstack: command not found", DSID), ("Not Found (HTTP 404)", DSID),
+      ("404 Not Found: the resource could not be found.", DSID), ("No Server found for srv-dst-00012", DSID),
+      ("No Server found for %s" % U, ""), ("No Server found for %s" % U, None),
+      ("Internal Server Error (HTTP 500) for %s" % DSID, DSID), ("No Server found for xsrv-dst-0001", DSID),
+      ("Service Unavailable (HTTP 503)", DSID), ("", DSID)]
+ok("A21 gone(): 'No <Kind> found for <id>', \"No <kind> with a name or ID of '<id>' exists\", '<id> could not be "
+   "found', '<id> ... (HTTP 404)' are gone, any case, on any line",
+   all(rollback.gone(m, o) for m, o in yes), [m for m, o in yes if not rollback.gone(m, o)])
+ok("A21 gone(): 'endpoint ... not found', 'command not found', a 404 naming nothing, another id, an empty id, a 500 "
+   "or 503 naming the id are not gone",
+   not any(rollback.gone(m, o) for m, o in no), [m for m, o in no if rollback.gone(m, o)])
+ok("A21 GONE_RE no longer exists in the engine (gone() everywhere)", not hasattr(rollback, "GONE_RE"))
+
+
+class _Cloud:
+    """cloud.run answering from a list (the last answer repeats); counts the calls."""
+    def __init__(self, answers, side="destination"):
+        self.answers, self.calls, self.side = list(answers), 0, side
+
+    def run(self, *a, **k):
+        self.calls += 1
+        return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+
+
+gc = _Cloud([Result(1, "", MSG + "\n")])
+try:
+    rollback.wait_gone(None, gc, "server", DSID, "destination server")
+    ok("A21 wait_gone: every 'show' fails naming nothing: dies after READ_ERRORS (5) reads, not after 600 s", False,
+       "returned")
+except Die as err:
+    ok("A21 wait_gone: every 'show' fails naming nothing: dies after READ_ERRORS (5) reads, not after 600 s",
+       gc.calls == 5 and str(err) == "cannot read destination server %s after its delete (%s): cleanup not complete; "
+       "check the destination credentials/endpoint and run the rollback again" % (DSID, MSG), (gc.calls, str(err)))
+gc = _Cloud([Result(1, "", MSG)] * 4 + [Result(0, '{"id": "%s", "status": "DELETED"}' % DSID, "")]
+            + [Result(1, "", MSG)] * 4 + [Result(1, "", "No Server found for %s" % DSID)])
+try:
+    rollback.wait_gone(None, gc, "server", DSID, "destination server")
+    ok("A21 wait_gone: read errors that are not consecutive (an answer in between) go on; gone at the 10th read",
+       gc.calls == 10, gc.calls)
+except Die as err:
+    ok("A21 wait_gone: read errors that are not consecutive (an answer in between) go on; gone at the 10th read",
+       False, str(err))
+gc = _Cloud([Result(1, "", "Service Unavailable (HTTP 503)")], side="source")
+try:
+    rollback.wait_gone(None, gc, "volume", "c9", "leftover clone")
+except Die as err:
+    ok("A21 wait_gone on the source (a leftover clone) names the source credentials",
+       "cannot read leftover clone c9 after its delete (Service Unavailable (HTTP 503)): cleanup not complete; check "
+       "the source credentials/endpoint" in str(err), str(err))
+
+
+def server_gone(x):
+    """An earlier rollback deleted the destination server (its volumes are detached, available)."""
+    x["dst"]["servers"].pop(DSID)
+    for v in x["dst"]["volumes"].values():
+        v["status"] = "available"
+
+
+# ================================ case 4: the destination server is really gone (a rollback run again) ================================
+for label, fn in (("'No Server found for <id>' (openstackclient 10.x)",
+                   lambda x: (server_gone(x), x["dst"].update(fail={"server show %s" % DSID: "No Server found for " + DSID,
+                                                                     "server delete %s" % DSID: "No Server found for " + DSID}))),
+                  ("\"No server with a name or ID of '<id>' exists.\" (older client)", server_gone)):
+    r = app(world(), [("migrate", "app01", PLAIN), edit(fn), mark, ROLL])
+    ok("A21 the destination server is gone, %s: the probe takes it as a valid answer, the rollback goes on: volumes "
+       "deleted, the source ACTIVE with its port, the state retired (exit 0)" % label,
+       r.rc == [0, 0] and not r.world["dst"]["volumes"] and src_state(r) == ("ACTIVE", False) and retired(r, "app01")
+       and "src\tserver add port %s port-src-1" % SID in after_mark(r.calls), (r.rc, r.err[-500:]))
+
+# ================================ case 5: the server is deleted, then the volumes cannot be read ================================
+r = app(world(), [("migrate", "app01", PLAIN),
+                  edit(lambda x: x["dst"].update(fail={"volume show": MSG_VOL, "volume delete": MSG_VOL})), mark, ROLL,
+                  edit(lambda x: x["dst"].pop("fail")), ROLL])
+first = r.errs[1]
+ok("A21 the server deleted, then 'volume show' answers 'endpoint ... not found': exit 1 at the volume, 'cannot read "
+   "destination volume ... nothing more was deleted'",
+   r.rc[:2] == [0, 1] and "cannot read destination volume vol-dst-0001: %s; nothing more was deleted" % MSG_VOL in first,
+   (r.rc, first[-500:]))
+rb = after_mark(r.calls)
+cut = [i for i, c in enumerate(rb) if c == "src\tserver show %s -f json -c id -c status" % SID][1]
+ok("A21 ... the first rollback did not touch the source (no unlock, port or start before the second run), the state "
+   "stayed live",
+   not [c for c in rb[:cut] if c.startswith(SRC_GIVE_BACK)] and "dst\tvolume delete" not in rb[:cut]
+   and "nothing more was deleted" in first and "Traceback" not in first, rb[:cut])
+ok("A21 ... the rollback run again (endpoint back) finishes: its first destination call is the probe (the server, "
+   "now not found), volumes deleted, the source ACTIVE, the state retired",
+   r.rc == [0, 1, 0] and [c for c in rb[cut:] if c.startswith("dst\t")][:1]
+   == ["dst\tserver show %s -f json -c id -c status" % DSID]
+   and not r.world["dst"]["servers"] and not r.world["dst"]["volumes"]
+   and src_state(r) == ("ACTIVE", False) and retired(r, "app01"), (r.rc, r.errs[2][-500:]))
+
+# ================================ case 6: 'server delete' OK, then every 'server show' fails to read ================================
+r = app(world(), [("migrate", "app01", PLAIN),
+                  edit(lambda x: x["dst"].update(fail_from={"server show %s" % DSID: [1, MSG]})), mark, ROLL])
+shows = [c for c in after_mark(r.calls) if c.startswith("dst\tserver show %s" % DSID)]
+ok("A21 the server delete is accepted, then every 'server show' fails naming nothing: exit 1 'cannot read destination "
+   "server ... after its delete' within 6 'server show' (the probe + 5), not a 600 s wait",
+   r.rc == [0, 1] and "cannot read destination server %s after its delete (%s): cleanup not complete; check the "
+   "destination credentials/endpoint and run the rollback again" % (DSID, MSG) in r.err and len(shows) <= 6,
+   (r.rc, len(shows), r.err[-500:]))
+ok("A21 ... the source was not touched (no unlock, port or start), the state live",
+   not give_back(r.calls) and src_state(r) == ("SHUTOFF", True) and live(r), (give_back(r.calls), src_state(r)))
+
+# ================================ case 18: migrate-volume, the destination cannot be read ================================
+VW = world()
+VW["src"]["volumes"]["vol-src-data"]["status"] = "available"
+VROLL = ("rollback", "vol-vol-src-data")
+r = app(VW, [("volume", "data", []), edit(dst_catalog_broken), mark, VROLL])
+ok("A21 volume: the destination answers 'endpoint ... not found': exit 1 'cannot read destination volume', the copy "
+   "kept, no 'volume delete', the state live",
+   r.rc == [0, 1] and "cannot read destination volume vol-dst-0001 (%s): nothing was deleted at the destination, the "
+   "source was not touched" % MSG_VOL in r.err and "vol-dst-0001" in r.world["dst"]["volumes"]
+   and not dst_deletes(r.calls) and not retired(r, "vol-vol-src-data")
+   and os.path.isfile(os.path.join(r.state, "vol-vol-src-data", "volume.json")), (r.rc, r.err[-500:]))
+r = app(VW, [("volume", "data", []), mark, VROLL])
+ok("A21 volume: the destination readable: one probe of the copy, then the rollback as in 1.1.0",
+   r.rc == [0, 0] and after_mark(r.calls).count("dst\tvolume show vol-dst-0001 -f json -c id -c status") >= 1
+   and after_mark(r.calls).index("dst\tvolume show vol-dst-0001 -f json -c id -c status")
+   < after_mark(r.calls).index("dst\tvolume delete vol-dst-0001")
+   and "vol-dst-0001" not in r.world["dst"]["volumes"] and retired(r, "vol-vol-src-data"), (r.rc, r.err[-300:]))
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
