@@ -267,8 +267,9 @@ class Options:
         """(destination type, from) of one destination volume whose source volume type is src_type ('' when the
         source volume has none, and for the root disk of an ephemeral VM, which has no source volume):
         1. --volume-type typed on the command line, for every volume; 2. VOLUME_TYPE_MAP[src_type];
-        3. VOLUME_TYPE_MAP[__DEFAULT__]; 4. the run's type (AZ_TYPE_MAP, --volume-type of MIG_DEFAULT_OPTS, else ''
-        for the Cinder default). With an empty map every volume gets the run's type, as up to 1.1.1."""
+        3. VOLUME_TYPE_MAP['*'] (1.2.1; '__DEFAULT__' is matched in step 2 as a type name); 4. the run's type
+        (AZ_TYPE_MAP, --volume-type of MIG_DEFAULT_OPTS, else '' for the Cinder default). With an empty map every
+        volume gets the run's type, as up to 1.1.1."""
         if self.type_cli:
             return self.volume_type, "cli"
         tmap = type_map(cfg)

@@ -392,7 +392,7 @@ def volume_type_lines(r, vols):
     """P2-b (1.1.1): an INFO line per volume says which destination type and RBD pool it lands on. 1.2.0: each volume
     gets its own (Options.type_for: --volume-type typed, VOLUME_TYPE_MAP by its source type, else the run's type),
     and with VOLUME_TYPE_MAP set the line names where the type came from; a source type the map neither names nor
-    covers with __DEFAULT__ gets a WARN (it lands on the run's type). With VOLUME_TYPE_MAP empty every volume lands on
+    covers with its '*' entry gets a WARN (it lands on the run's type). With VOLUME_TYPE_MAP empty every volume lands on
     the run's type and pool, as in 1.1.1: the same lines, and a WARN when the source volumes have two types or more
     (they are flattened to one). Information only: never a FAIL, the exit code does not change."""
     o, cfg = r.opts, r.cfg
@@ -409,8 +409,8 @@ def volume_type_lines(r, vols):
         if mapped and not o.type_cli and not frm.startswith("VOLUME_TYPE_MAP") and (s or "unknown") not in unmapped:
             unmapped.append(s or "unknown")
     for s in unmapped:
-        out("  WARN  source type %s has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on %s"
-            % (s, o.volume_type or "default"))
+        out("  WARN  source type %s has no entry in VOLUME_TYPE_MAP and no '%s' entry: lands on %s"
+            % (s, config.DEFAULT_TYPE_KEY, o.volume_type or "default"))
     if not mapped and len(seen) >= 2:
         out("  WARN  %d source volume types (%s) all land on destination type %s: pass --volume-type per run if they "
             "must differ" % (len(seen), ", ".join(seen), o.volume_type or "default"))

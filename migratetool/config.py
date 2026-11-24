@@ -137,14 +137,18 @@ def load(environ=None):
     return cfg
 
 
-DEFAULT_TYPE_KEY = "__DEFAULT__"
+# 1.2.1: the fallback key of VOLUME_TYPE_MAP. It was "__DEFAULT__" in 1.2.0, which is also the name Cinder gives its
+# real default volume type: "__DEFAULT__" is now a source type name like any other (as RBD_POOL_MAP reads it).
+DEFAULT_TYPE_KEY = "*"
 
 
 def parse_type_map(text):
     """VOLUME_TYPE_MAP (1.2.0) as {source type name: destination type name}, in the order written; '' gives {}.
     Same shape as AZ_TYPE_MAP and RBD_POOL_MAP: "src:dst,src:dst", split on ',' then once on ':'. The source key
-    '__DEFAULT__' names the destination type of a source volume whose type has no entry (or that has no type). Every
-    entry must have a source, a ':' and a destination, and a source type is named once: anything else is a Die."""
+    '*' (1.2.1, DEFAULT_TYPE_KEY) names the destination type of a source volume whose type has no entry (or that has no
+    type); every other source key, '__DEFAULT__' included, is matched as the exact type name. Every entry must have a
+    source, a ':' and a destination, '*' is never a destination, and a source type is named once: anything else is a
+    Die."""
     found = {}
     for entry in ifs_split(text or "", ","):
         if ":" not in entry:
@@ -155,6 +159,8 @@ def parse_type_map(text):
             raise Die("VOLUME_TYPE_MAP: entry %r has no source type (write src_type:dst_type)" % entry)
         if not dst:
             raise Die("VOLUME_TYPE_MAP: entry %r has no destination type (write src_type:dst_type)" % entry)
+        if dst == DEFAULT_TYPE_KEY:
+            raise Die("VOLUME_TYPE_MAP: '%s' is only a source key" % DEFAULT_TYPE_KEY)
         if src in found:
             raise Die("VOLUME_TYPE_MAP: source type %r is mapped twice (%s:%s and %s)" % (src, src, found[src], entry))
         found[src] = dst

@@ -216,7 +216,7 @@ def root_volume_from_image(r, st, sid, dimg, size):
     the volume is available (rollback still deletes either)."""
     from .copyvol import check_in_pool, record_volume
     from .server import EPHEMERAL_ROOT
-    # 1.2.0: no source volume, so no source type: VOLUME_TYPE_MAP's __DEFAULT__ when it has one, else the run's type.
+    # 1.2.0: no source volume, so no source type: VOLUME_TYPE_MAP's '*' when it has one, else the run's type.
     vtype, pool, _frm = r.opts.target("", r.cfg)
     name = "%s-vda" % jqs(st.json("server.json").get("name"))
     args = ["volume", "create", name, "--image", dimg, "--size", str(size)]
