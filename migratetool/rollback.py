@@ -363,12 +363,13 @@ def source_status(r, kind, oid):
     return object_status(r.src, kind, oid)
 
 
-def require_source(r, kind, oid, label, st):
+def require_source(r, kind, oid, label, st, nothing="this rollback deleted nothing", again="run the rollback again"):
     """A20: the source object still exists, else Die before anything is deleted at the destination; its status.
     kind: server|volume (the openstack noun); label: "VM <name>" or "volume <name>". Not found (deleted,
     or not visible to the source credentials/SRC_PROJECT, or the wrong endpoint): the destination objects this state
     recorded may be the only remaining copy. 'migrate prune' never removes a live state directory (only
-    <ident>.rolled-back.<epoch> ones), so retiring the state is named as a step by hand, not as a command."""
+    <ident>.rolled-back.<epoch> ones), so retiring the state is named as a step by hand, not as a command. nothing /
+    again: the words for what this run did not do and what to run next (A6 asks too, as a re-run of migrate)."""
     noun, _sep, name = label.partition(" ")
     status, why = source_status(r, kind, oid)
     if status == "GONE":
@@ -378,14 +379,14 @@ def require_source(r, kind, oid, label, st):
         held.append("volumes %s" % (" ".join(dv for _s, dv in st.volume_map()) or "none recorded"))
         raise Die("source %s %s (%s) is not found at the source (deleted, not visible to the source "
                   "credentials/SRC_PROJECT, or the wrong source endpoint/region): the destination (%s) may be the only "
-                  "remaining copy; this rollback deleted nothing. Keep the destination. The state directory %s stays "
+                  "remaining copy; %s. Keep the destination. The state directory %s stays "
                   "live ('migrate prune' removes only rolled-back state directories, never a live one): check the "
                   "source scope and endpoint before removing it by hand, once you are sure the destination is the copy "
                   "to keep. A rollback cannot give back a %s that is gone."
-                  % (noun, oid, name or "no name", ", ".join(held), st.path, noun))
+                  % (noun, oid, name or "no name", ", ".join(held), nothing, st.path, noun))
     if status is None:
-        raise Die("cannot read source %s %s (%s): this rollback deleted nothing; check the source "
-                  "credentials/SRC_PROJECT and run the rollback again" % (noun, oid, why))
+        raise Die("cannot read source %s %s (%s): %s; check the source credentials/SRC_PROJECT and %s"
+                  % (noun, oid, why, nothing, again))
     return status
 
 
@@ -507,7 +508,16 @@ def rollback_vm(r, st):
 def clean_before_cutover(r, st):
     """A6: a re-run of 'migrate migrate' finds the state of a run that failed before it stopped the source (volume-map,
     no t-stop). The destination objects it recorded (volumes, clones left on this host) are deleted, the source is not
-    touched (it never stopped), the directory is retired like a rollback's. Security group copies stay (shared)."""
+    touched (it never stopped), the directory is retired like a rollback's. Security group copies stay (shared).
+    1.1.1 (A20 for A6): the source VM answers first, as in a rollback; not found or not readable, nothing is deleted and
+    the earlier state stays live. A state without a source id (written by a very old build, or an empty state) is
+    cleaned as before, without the probe. No destination probe here: before the cutover no server holds the
+    destination volumes, and drop_volume takes a volume as gone only when Cinder names it (gone())."""
+    server = st.json("server.json") if st.exists("server.json") else {}
+    sid = recorded_source_id(server)
+    if sid is not None:
+        require_source(r, "server", sid, "VM " + jqs(server.get("name")), st,
+                       nothing="this re-run deleted nothing; the earlier state stays live", again="run migrate again")
     log("an earlier run of %s failed before the cutover (state %s, no t-stop): deleting the destination objects it "
         "recorded; the source VM was never stopped" % (st.arg, st.path))
     if st.exists("volume-map"):

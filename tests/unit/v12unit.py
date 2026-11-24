@@ -319,6 +319,45 @@ ok("A21 --dry-run, the destination read: dst_server_status ACTIVE, dst_error nul
    and "WARN the destination server" not in r.outs[2] + r.outs[4]
    and "  destination server %s (GONE) is deleted" % DSID in r.outs[4], (r.rc, a_, b_, r.outs[4]))
 
+# ================================ case 11/12: A6 asks the source first ================================
+def drop_source_vm(x):
+    x["src"]["servers"].pop(SID)
+
+
+FAILED = world()
+FAILED["dst"]["create_status"] = "error"  # the first run dies before its cutover: exit 3, volume-map, no t-stop
+unfail = edit(lambda x: x["dst"].pop("create_status"))
+r = app(FAILED, [("migrate", "app01", PLAIN), unfail, edit(drop_source_vm), mark, ("migrate", "app01", PLAIN)])
+ok("A6+A20: an earlier run failed before the cutover and the source VM is gone: the re-run stops (exit 3) with the "
+   "A20 message, 'this re-run deleted nothing; the earlier state stays live'",
+   r.rc == [3, 3] and "source VM %s (app01) is not found at the source (deleted, not visible to the source "
+   "credentials/SRC_PROJECT, or the wrong source endpoint/region): the destination (server none recorded, volumes "
+   "vol-dst-0001) may be the only remaining copy; this re-run deleted nothing; the earlier state stays live." % SID
+   in r.err and "failed before the cutover" not in r.out, (r.rc, r.err[-700:]))
+ok("A6+A20: ... no 'volume delete' at the destination, the destination volume kept, the earlier state live (not "
+   "retired)",
+   not [c for c in after_mark(r.calls) if c.startswith("dst\tvolume delete")] and "vol-dst-0001" in r.world["dst"]["volumes"]
+   and os.path.isfile(os.path.join(r.state, "app01", "volume-map")) and not retired(r, "app01"),
+   (after_mark(r.calls), os.listdir(r.state)))
+r = app(FAILED, [("migrate", "app01", PLAIN), unfail,
+                 edit(lambda x: x["src"].update(fail={"server show %s -f json -c id -c status" % SID:
+                                                      "Internal Server Error (HTTP 500)"})),
+                 mark, ("migrate", "app01", PLAIN)])
+ok("A6+A20: the source VM cannot be read: 'cannot read source VM ... this re-run deleted nothing; the earlier state "
+   "stays live; check the source credentials/SRC_PROJECT and run migrate again', nothing deleted",
+   r.rc == [3, 3] and "cannot read source VM %s (Internal Server Error (HTTP 500)): this re-run deleted nothing; the "
+   "earlier state stays live; check the source credentials/SRC_PROJECT and run migrate again" % SID in r.err
+   and not [c for c in after_mark(r.calls) if c.startswith("dst\tvolume delete")] and not retired(r, "app01"),
+   (r.rc, r.err[-500:]))
+r = app(FAILED, [("migrate", "app01", PLAIN), unfail, mark, ("migrate", "app01", PLAIN)])
+rb = after_mark(r.calls)
+probe = "src\tserver show %s -f json -c id -c status" % SID
+ok("A6+A20: the source VM there: one probe before the clean-up, then as 1.1.0 (the recorded volume deleted, the "
+   "earlier state retired, the run migrates, exit 0)",
+   r.rc == [3, 0] and rb.count(probe) == 1 and rb.index(probe) < rb.index("dst\tvolume delete vol-dst-0001")
+   and "failed before the cutover" in r.out and len(retired(r, "app01")) == 1 and r.world["dst"]["servers"],
+   (r.rc, rb[:5], r.err[-400:]))
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
