@@ -320,6 +320,8 @@ JSON argv không qua shell, timeout 30 s. Kiểm `notify_rc` và log hook sau ca
 
 ## 7. Nâng cấp, hạ cấp, gỡ
 
+Host cài bằng `git clone` theo README thì nâng cấp theo [mục Nâng cấp của README](README.md#nâng-cấp); mục này cho host cài bằng wheel và pin (artifact, không lấy gói từ mạng).
+
 1. Dừng nhận wave mới. Chờ CLI/UI idle, kiểm cả `migrate status --json` và processes; DETACHED có thể vẫn chạy.
 2. Lưu binary/version, wheel/hash, pin, conf/maps, state và job/audit vào nơi bảo mật. Giữ state nguyên quyền; không sửa marker.
 3. Sao lưu venv và UI đang chạy bằng bản copy giữ nguyên đường dẫn gốc: `cp -a /opt/mig-venv /opt/mig-venv.bak-<version>` và `cp -a /opt/migui /opt/migui.bak-<version>`. Venv không di chuyển được: script trong `bin/` ghi cứng đường dẫn Python của venv, nên **không** `mv` venv đang dùng sang tên khác.
@@ -347,7 +349,10 @@ Giữ jobs/accounts/audit để tra cứu. `--purge` xóa cả `/var/lib/migui`,
 | `No module named 'os_brick'` | Cài đủ requirements-host trong venv đang chạy; Doctor lại |
 | `openstack: not found on PATH` | Venv thiếu OSC: cài lại theo mục 2.1, rồi kiểm `/opt/mig-venv/bin/openstack --version` |
 | `pip check` báo xung đột sau khi tự cài | Gói cài từ hai nguồn khác nhau. Xóa venv, cài lại bằng đúng một cách của mục 2.1 |
-| Rollback chờ tới hết hạn dù đối tượng đích đã bị xóa, sau khi đổi bản OSC | Bản OSC in câu "not found" mà tool chưa biết. Quay về bộ đã test (mục 2.1, cách A) |
+| Rollback chờ tới hết hạn (hoặc dừng `cannot read destination ...`) dù đối tượng đích đã bị xóa, sau khi đổi bản OSC | Tool nhận 4 dạng "không tìm thấy" có nêu đúng ID (`No <Kind> found for <id>`, `No <kind> with a name or ID of '<id>' exists`, `<id> could not be found`, dòng kết thúc bằng `(HTTP 404)`/`404`) và một dòng nêu đúng ID có `(HTTP 404)` ở bất kỳ đâu hoặc token `404` đứng riêng theo sau là `Not Found`/hết dòng. Bản OSC in dạng khác thì quay về bộ đã test (mục 2.1, cách A) |
+| `this state was written by a run scoped with SRC_PROJECT=... DST_PROJECT=... (a password openrc); ... is an application credential, which cannot be rescoped` | Rollback state ghi bằng password openrc có scope mà openrc hiện tại là application credential: chạy rollback bằng đúng password openrc đã migrate (không cần đặt `SRC_PROJECT`/`DST_PROJECT`, tool lấy từ state) |
+| `WARN cannot read destination port <id> (...)` / `WARN cannot delete destination port <id> (...)` khi rollback | Rollback vẫn chạy tiếp và trả nguồn; port đích có thể còn giữ IP. Kiểm `openstack port show <id>` ở đích bằng quyền đủ rồi xóa tay |
+| `WARN cannot list destination images named mig-snap-<vm>: skipped` | Image tạm có thể còn trong pool đích; image đã ghi trong state vẫn bị xóa. Kiểm `openstack image list --name mig-snap-<vm>` ở đích rồi xóa tay |
 | `SYS_PY=... cannot import rados, rbd` | Cài python3-rbd hệ thống; kiểm SYS_PY conf thắng env |
 | `a command in it failed` | Openrc có lệnh trả nonzero; sửa file thành dữ liệu thuần, không tương tác |
 | `line N asks for input ('read')` | Openrc tải từ Horizon hỏi mật khẩu bằng `read`; migrate source không có terminal. Ghi mật khẩu vào file (root 0600) hoặc dùng application credential |
@@ -357,6 +362,7 @@ Giữ jobs/accounts/audit để tra cứu. `--purge` xóa cả `/var/lib/migui`,
 | `SRC_RC and DST_RC point at the same Keystone ...` | Xác nhận hai cloud và hai rc độc lập |
 | `SRC_PROJECT/DST_PROJECT needs a password openrc: an application credential is bound to one project (...)` | Dùng đúng scope appcred hoặc password account đa project |
 | `PROJECT_MAP_FILE ... is not a readable file` | Sửa path/quyền; không bỏ map để chạy nhầm project |
+| `VOLUME_TYPE_MAP: entry ...` / `destination volume type <t> (VOLUME_TYPE_MAP (<src>)) does not exist` | Map sai dạng (tool dừng trước mọi lệnh cloud) hoặc type đích không có ở đích (preflight FAIL, chưa đụng nguồn). Sửa map theo [GUIDE.md mục 4.2](GUIDE.md#42-az_type_map-volume_type_map-và-rbd_pool_map--type-và-pool-của-từng-volume); `migrate doctor` kiểm từng type đích của map |
 | `volume-... not visible in pool ...: wrong RBD_POOL_MAP for type '...', or ... lacks caps on that pool` | Xác minh type→backend→pool/caps; xử lý state trước rerun |
 | `another migrate, volume or rollback runs on this host` | Kiểm process và khóa; không xóa lock file |
 | `is in use by another migrate or rollback` | State đang bị flock; tìm process giữ |
