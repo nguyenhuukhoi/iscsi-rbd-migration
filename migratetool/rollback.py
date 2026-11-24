@@ -41,6 +41,11 @@ from .util import Die, jqs, lines, log, re_escape, words
 _GONE_FORMS = (r"no \w+ found for '?{o}'?(?![\w-])", r"no \w+ with a name or id of '{o}' exists",
                r"(?<![\w-]){o}'? could not be found")
 _ENDS_404 = re.compile(r"(?:\(HTTP 404\)|(?<![\w.])404)[.\s]*$")
+# R1 (1.2.0): a 404 anywhere on the line that names the object, not only at its end: "(HTTP 404)" wherever it is (a
+# 'Not Found (HTTP 404) (Request-ID: req-...) ... /v3/<project>/volumes/<id>' answer), or a 404 token of its own
+# (not part of an ID, an address or a URL path such as /v2/404abc or 172.20.40.4) followed by 'Not Found' or by the
+# end of the line. _ENDS_404 (1.1.1) still counts: what it took as gone stays gone.
+_HAS_404 = re.compile(r"\(HTTP 404\)|(?<![\w./-])404(?![\w.-])\s*(?:not found|$)", re.I)
 GONE_WAIT = 600       # seconds a deleted server or volume may take to disappear
 READ_ERRORS = 5       # A21: consecutive 'show' failures naming no object before wait_gone gives up (about 15 s)
 PORT_RETRIES = 60     # 'port show' answers that are neither the port nor "not found"
@@ -54,9 +59,10 @@ def _last_line(text):
 def gone(stderr, oid):
     """True only when the API says that object oid itself is not found (A21, 1.1.1): a line of stderr names oid (as
     it is, any case) and says 'No <Kind> found for <oid>', "No <kind> with a name or ID of '<oid>' exists", '<oid>
-    could not be found', or ends in '(HTTP 404)' / '404'. Anything that names no object (keystoneauth's 'public
-    endpoint for compute service in RegionOne region not found', 'openstack: command not found', the 404 of a wrong
-    endpoint URL) is not proof that the object was deleted: False. oid empty or None: False."""
+    could not be found', or ends in '(HTTP 404)' / '404'; R1 (1.2.0): or has '(HTTP 404)' anywhere, or a 404 token of
+    its own followed by 'Not Found' or the end of the line (_HAS_404). Anything that names no object (keystoneauth's
+    'public endpoint for compute service in RegionOne region not found', 'openstack: command not found', the 404 of a
+    wrong endpoint URL) is not proof that the object was deleted: False. oid empty or None: False."""
     if not isinstance(oid, str) or not oid.strip():
         return False
     o = re.escape(oid)
@@ -65,7 +71,7 @@ def gone(stderr, oid):
     for line in (stderr or "").splitlines():
         if not named.search(line):
             continue
-        if any(f.search(line) for f in forms) or _ENDS_404.search(line):
+        if any(f.search(line) for f in forms) or _ENDS_404.search(line) or _HAS_404.search(line):
             return True
     return False
 
