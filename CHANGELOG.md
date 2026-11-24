@@ -13,6 +13,35 @@ Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit 
 Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
 [archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
 
+## [1.1.1] — 2026-11-24 · branch `rollback-dest-check` · rollback trusts "gone" only for the object named, and reads the destination before it deletes (no data-path change)
+
+Thiết kế: `ISCSI-RBD-MIGRATION-ROLLBACK-DEST-CHECK-DESIGN.md` (Lab), từ review độc lập 1.1.0 (23/11: P1, P2-a, P2-b, P3-1..P3-6). Test: `bash tests/unit/run.sh --parity` (bộ mới
+`tests/unit/v12unit.py`, `tests/ui/v12ui.py`): trên mig-host `ALL pass=1001 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, ui 188, parity 205); UI guards 127/0. Báo cáo: `TEST-REPORT-rollback-dest-check.md` (labkit).
+
+### Thêm
+
+- **A21** `rollback.gone(stderr, oid)` thay `GONE_RE` và `server.PORT_GONE_RE`: một object chỉ được coi là đã mất khi một dòng trả lời nêu đúng ID của nó và nói `No <Kind> found for <id>`, `No <kind> with a name or ID of '<id>' exists`, `<id> could not be found` hoặc kết thúc bằng `(HTTP 404)`. Áp cho `wait_gone`, `drop_volume`, `delete_server`, probe nguồn A20, summary, `_port_device` (rollback) và `detach_source_ports` (migrate).
+- **A21** `rollback.require_destination`: ngay sau A20, trước lệnh xóa đầu tiên, rollback đọc `server show <dst-server-id> -f json -c id -c status` (không có server ID thì `volume show` volume đích đầu tiên; volume đơn cũng vậy). Đúng object hoặc not found nêu đúng ID thì đi tiếp (chạy lại sau lần xóa dở); còn lại dừng `cannot read destination server|volume <id> (<lý do>): nothing was deleted at the destination, the source was not touched; check the destination credentials/endpoint/DST_PROJECT and run the rollback again`.
+- `wait_gone`: 5 lần `show` lỗi liên tiếp không nêu object thì dừng `cannot read <label> <id> after its delete (...)` (khoảng 15 s), không chờ 600 s. `drop_volume`: `cannot read ...; nothing more was deleted`.
+- `rollback --dry-run [--json]`: `dst_error` (lý do khi server đích không đọc được; `dst_server_status` từ cùng probe), dòng `WARN the destination server could not be read (...): the rollback refuses until it can`; `projects {src, dst, origin: record|env|none}`. UI: hộp xác nhận rollback có dòng `Đích hiện tại: <status>` (`đã xóa`, `không đọc được`, `không có server đích ghi nhận`); runner chuyển `dst_error` vào `original`, không 409.
+- **P2-a** Rollback (CLI, cả dry-run; runner UI đi qua CLI) lấy `SRC_PROJECT`/`DST_PROJECT` từ `options.json` của state khi môi trường không đặt (`INFO scope SRC_PROJECT=… DST_PROJECT=… (from the state's options.json)`); state không có record giữ scope hiện hành (INFO); volume chỉ tìm được qua cloud theo tên giữ scope hiện hành (INFO).
+- **P2-a** Server đích chưa ghi ID được tìm bằng `server list --name ^<name>$ --all-projects` (403 thì thử lại không cờ); owner mark và created ≥ t-stop vẫn là điều kiện xóa.
+- **P3-2** A6 (`clean_before_cutover`) hỏi nguồn trước khi xóa volume đích của lần chạy lỗi trước (`require_source`): không tìm thấy/không đọc được thì dừng exit 3, `this re-run deleted nothing; the earlier state stays live`.
+- **P2-b** Preflight: `INFO volume <id> (<name>) source type <t> -> destination type <t_dst> pool <pool>` cho từng volume, `WARN <n> source volume types (...) all land on destination type <t_dst>: pass --volume-type per run if they must differ` khi VM có ≥ 2 type nguồn. Không đổi exit code.
+
+### Đổi hành vi
+
+- Rollback từ chối khi đích không đọc được (endpoint thiếu trong catalog, `(HTTP 404)` không nêu object, auth, mạng): không xóa gì, không đụng nguồn, state sống. Trước đây (1.0.0–1.1.0) lỗi có chữ `not found`/`404` trần được coi là đã xóa: rollback trả nguồn (unlock, gắn lại port cùng MAC/IP, start), retire state, exit 0 trong khi server và volume đích vẫn còn (hai VM cùng MAC/IP).
+- Port nguồn: lỗi endpoint của Neutron không còn được coi là "Nova đã xóa port" (rollback từng bỏ qua gắn lại NIC và exit 0; migrate từng tạo reserve port thừa): thử lại rồi dừng.
+- Rollback với `SRC_PROJECT`/`DST_PROJECT` khác record của state (kể cả chỉ đặt một bên) dừng `scope mismatch: …; nothing was done`. Mục "Biết trước" về scope của [1.1.0] đã đóng: CLI và UI đều chạy trong scope của record.
+- A6 thêm một lệnh đọc nguồn trước khi dọn; summary/dry-run trả `dst_server_status` `null` (không phải status) khi `server show` exit 0 mà không phải đúng server.
+
+### Biết trước
+
+- Volume metadata của Cinder, server `tags` và `config_drive` không được chép; thứ tự NIC ở đích theo `port list --server` (DESIGN mục 9).
+- `--verify readback` của live mode đọc lại qua cùng handle librbd (có `rbd_cache`): chứng minh ghi đúng offset, không chứng minh dữ liệu đã tới OSD; `--verify full` là kiểm độc lập.
+- Một volume type/pool cho mọi volume của VM (map theo từng volume: backlog 1.2).
+
 ## [1.1.0] — 2026-11-23 · branch `rollback-source-check` · rollback checks the source exists before it deletes anything (no data-path change)
 
 Thiết kế: `ISCSI-RBD-MIGRATION-ROLLBACK-SOURCE-CHECK-DESIGN.md` (Lab). Test: `bash tests/unit/run.sh --parity` (bộ mới
