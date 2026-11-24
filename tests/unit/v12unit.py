@@ -358,6 +358,144 @@ ok("A6+A20: the source VM there: one probe before the clean-up, then as 1.1.0 (t
    and "failed before the cutover" in r.out and len(retired(r, "app01")) == 1 and r.world["dst"]["servers"],
    (r.rc, rb[:5], r.err[-400:]))
 
+# ================================ case 13-15: the rollback runs in the scope the state was written with ================================
+SCOPE = {"env": {"SRC_PROJECT": "psrc", "DST_PROJECT": "pdst"}}
+
+
+def set_env(**kv):
+    """A step that changes this process's environment for the steps after it (None: unset)."""
+    def step(_wf, _root):
+        for k, v in kv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return step
+
+
+unscope = set_env(SRC_PROJECT=None, DST_PROJECT=None)
+
+
+def need_project(x):
+    """The objects of each side live in the project the migrate was scoped to: a token scoped elsewhere sees nothing."""
+    x["src"]["need_project"], x["dst"]["need_project"] = "psrc", "pdst"
+
+
+def options_doc(root):
+    with open(os.path.join(root, "app01", "options.json")) as f:
+        return json.load(f)
+
+
+def drop_projects_record(_wf, root):
+    """A state written before the projects record existed (options.json without effective.projects)."""
+    doc = options_doc(root)
+    doc["effective"].pop("projects", None)
+    p_ = os.path.join(root, "app01", "options.json")
+    os.chmod(p_, 0o600)
+    with open(p_, "w") as f:
+        json.dump(doc, f)
+
+
+SEEN = {}
+
+
+def keep_record(_wf, root):
+    SEEN["projects"] = options_doc(root)["effective"].get("projects")
+
+
+r = app(world(), [("migrate", "app01", PLAIN), keep_record, edit(need_project), unscope, mark, DRY, ROLL], env=SCOPE)
+obj = dry_json(r, 1)
+ok("P2-a the migrate recorded its scope: options.json effective.projects.value {src: psrc, dst: pdst}",
+   (SEEN.get("projects") or {}).get("value") == {"src": "psrc", "dst": "pdst"}, SEEN)
+ok("P2-a rollback without SRC_PROJECT/DST_PROJECT of a state written with psrc/pdst: 'INFO scope SRC_PROJECT=psrc "
+   "DST_PROJECT=pdst (from the state's options.json)'; the dry-run says projects origin record",
+   "INFO scope SRC_PROJECT=psrc DST_PROJECT=pdst (from the state's options.json)" in r.out
+   and obj.get("projects") == {"src": "psrc", "dst": "pdst", "origin": "record"}
+   and obj.get("source_status") == "SHUTOFF" and obj.get("dst_server_status") == "ACTIVE", (r.out[-800:], obj))
+ok("P2-a ... and the rollback runs in that scope (objects only visible there): exit 0, the destination empty, the "
+   "source ACTIVE, the state retired",
+   r.rc == [0, 0, 0] and not r.world["dst"]["servers"] and not r.world["dst"]["volumes"]
+   and src_state(r) == ("ACTIVE", False) and retired(r, "app01"), (r.rc, r.err[-500:]))
+r = app(world(), [("migrate", "app01", PLAIN), drop_projects_record, edit(need_project), unscope, mark, ROLL],
+        env=SCOPE)
+ok("P2-a the same state without its project record (1.1.0's behaviour, environment scope 'admin'): the source is "
+   "not visible, A20 refuses; nothing deleted (need_project makes the scope matter)",
+   r.rc == [0, 1] and "INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this environment"
+   in r.out and "is not found at the source" in r.err and not dst_deletes(r.calls), (r.rc, r.err[-400:]))
+r = app(world(), [("migrate", "app01", PLAIN), set_env(SRC_PROJECT="other"), mark, ROLL, DRY], env=SCOPE)
+ok("P2-a rollback with SRC_PROJECT=other for a state written with psrc/pdst: exit 1 'scope mismatch', nothing called "
+   "or deleted, the state live; the dry-run refuses the same way",
+   r.rc == [0, 1, 1] and "scope mismatch: this state was written with SRC_PROJECT=psrc DST_PROJECT=pdst, this run has "
+   "SRC_PROJECT=other DST_PROJECT=pdst: set them to the state's values (or unset them) and run the rollback again; "
+   "nothing was done" in r.err and not after_mark(r.calls) and live(r), (r.rc, r.err[-500:], after_mark(r.calls)))
+r = app(world(), [("migrate", "app01", PLAIN), set_env(DST_PROJECT=None), mark, ROLL], env=SCOPE)
+ok("P2-a one of the two set and the other not ('DST_PROJECT=none'): a mismatch too",
+   r.rc == [0, 1] and "this run has SRC_PROJECT=psrc DST_PROJECT=none" in r.err and not after_mark(r.calls),
+   (r.rc, r.err[-400:]))
+r = app(world(), [("migrate", "app01", PLAIN), mark, ROLL], env=SCOPE)
+ok("P2-a rollback with the same SRC_PROJECT/DST_PROJECT as the record: no scope line, the rollback runs",
+   r.rc == [0, 0] and "INFO scope" not in r.out and retired(r, "app01"), (r.rc, r.out[-400:]))
+r = app(world(), [("migrate", "app01", PLAIN), set_env(SRC_PROJECT="psrc", DST_PROJECT="pdst"), mark, ROLL])
+ok("P2-a a state written without a scope (record empty) and a rollback with SRC_PROJECT/DST_PROJECT set: mismatch "
+   "('SRC_PROJECT=none DST_PROJECT=none')",
+   r.rc == [0, 1] and "this state was written with SRC_PROJECT=none DST_PROJECT=none, this run has SRC_PROJECT=psrc "
+   "DST_PROJECT=pdst" in r.err, (r.rc, r.err[-400:]))
+r = app(world(), [("migrate", "app01", PLAIN), drop_projects_record, mark, DRY, ROLL])
+obj = dry_json(r, 1)
+ok("P2-a a state without a project record: 'INFO scope: the state has no project record; ...' (stderr with --json), "
+   "projects origin none, the rollback runs",
+   r.rc == [0, 0, 0] and "INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this "
+   "environment" in r.errs[1] and obj.get("projects") == {"src": None, "dst": None, "origin": "none"}
+   and "INFO scope: the state has no project record" in r.outs[2] and retired(r, "app01"), (r.rc, obj, r.errs[1][-300:]))
+r = app(world(), [("migrate", "app01", PLAIN), mark, DRY])
+ok("P2-a a state written without a scope, a rollback without one: no scope line, origin none",
+   "INFO scope" not in r.text and dry_json(r, 1).get("projects") == {"src": None, "dst": None, "origin": "none"},
+   (r.text[-300:], dry_json(r, 1).get("projects")))
+VSC = json.loads(json.dumps(VW))
+r = app(VSC, [("volume", "data", []), unscope, ("cli", ["rollback", "data", "--dry-run", "--json"])], env=SCOPE)
+ok("P2-a a volume found by its name through the source cloud: the scope of this environment, an INFO line, origin "
+   "none (no restore without the state directory)",
+   r.rc == [0, 0] and "INFO scope: data is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT of this "
+   "environment" in r.errs[1] and dry_json(r, 1).get("projects", {}).get("origin") == "none",
+   (r.rc, r.errs[1][-400:], dry_json(r, 1).get("projects")))
+
+
+# ================================ case 16: an unrecorded destination server in another project ================================
+def blank_server_id(_wf, root):
+    """'server create' never returned its ID: dst-server-id is empty."""
+    with open(os.path.join(root, "app01", "dst-server-id"), "w") as f:
+        f.write("")
+
+
+def in_other_project(x):
+    x["dst"]["servers"][DSID]["project_id"] = "pother"
+    x["dst"]["list_own_project"] = True  # a listing without --all-projects shows only the token's project
+
+
+r = app(world(), [("migrate", "app01", PLAIN), blank_server_id, edit(in_other_project), mark, ROLL])
+lists = [c for c in after_mark(r.calls) if c.startswith("dst\tserver list")]
+ok("P2-a an unrecorded destination server (its ID never returned) in another project: 'server list --name ^app01$ "
+   "--all-projects' finds it, its owner mark proves it, it is deleted; the rollback finishes",
+   r.rc == [0, 0] and lists == ["dst\tserver list --name ^app01$ --all-projects -f json"]
+   and DSID not in r.world["dst"]["servers"] and not r.world["dst"]["volumes"] and retired(r, "app01"),
+   (r.rc, lists, r.err[-400:]))
+
+
+def forbid_all(x):
+    in_other_project(x)
+    x["dst"]["forbid_all_projects"] = True
+    for v in x["dst"]["volumes"].values():  # detached, so that the volume step does not wait 300 s for an in-use one
+        v["status"] = "available"
+
+
+r = app(world(), [("migrate", "app01", PLAIN), blank_server_id, edit(forbid_all), mark, ROLL])
+lists = [c for c in after_mark(r.calls) if c.startswith("dst\tserver list")]
+ok("P2-a ... a token that may not list every project (403): asked again without --all-projects (its own project); "
+   "the server is not seen and left alone, as 1.1.0",
+   r.rc == [0, 0] and lists == ["dst\tserver list --name ^app01$ --all-projects -f json",
+                                "dst\tserver list --name ^app01$ -f json"]
+   and DSID in r.world["dst"]["servers"], (r.rc, lists, r.err[-400:]))
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

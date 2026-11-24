@@ -206,7 +206,12 @@ def delete_unrecorded_server(r, st):
         return  # the run never reached the cutover: no server can have been created
     server = st.json("server.json")
     name, source_id = jqs(server.get("name")), jqs(server.get("id"))
-    res = r.dst.run("server", "list", "--name", "^%s$" % re_escape(name), "-f", "json", stderr=proc.DEVNULL)
+    # P2-a (1.1.1): every project (the server is the copy whatever project the token is scoped to); a token that may
+    # not list other projects (403: no admin role, an application credential) lists its own, as selector.listing.
+    pattern = "^%s$" % re_escape(name)
+    res = r.dst.run("server", "list", "--name", pattern, "--all-projects", "-f", "json", stderr=proc.DEVNULL)
+    if res.rc != 0:
+        res = r.dst.run("server", "list", "--name", pattern, "-f", "json", stderr=proc.DEVNULL)
     try:
         rows = json.loads(res.stdout or "[]") if res.rc == 0 else []
     except ValueError:

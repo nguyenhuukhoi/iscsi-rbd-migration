@@ -26,7 +26,7 @@ from .preflight import load_flavor_map
 from .record import write_rollback_json
 from .rollback import rollback_vm, summary as rollback_summary, summary_lines as rollback_summary_lines
 from .state import StateDir
-from .util import Die, Exit, prog
+from .util import Die, Exit, log, prog
 from .vmcmd import cmd_migrate, cmd_plan
 from .volcmd import cmd_migrate_volume, volume_options_only
 
@@ -487,23 +487,82 @@ def confirm_rollback(d):
         raise Die("not confirmed, nothing changed")
 
 
+def rollback_scope(cfg, st):
+    """P2-a (1.1.1): SRC_PROJECT/DST_PROJECT of a rollback come from the run that wrote st (options.json, effective
+    projects.value {src, dst}). Neither set here: the record's are used (cfg changed in place). Set here: they must be
+    the record's (both; one set and one not counts as different), else Die before anything is read or deleted. A state
+    without that record (written before 7.3, or by the bash build) keeps this environment's. Returns (INFO line or
+    None, origin "record" | "env" | "none")."""
+    def shown(v):
+        return v or "none"
+    try:
+        doc = jsonout.read_json(st.p("options.json"))
+    except (OSError, ValueError):
+        doc = None
+    eff = doc.get("effective") if isinstance(doc, dict) else None
+    proj = eff.get("projects") if isinstance(eff, dict) else None
+    val = proj.get("value") if isinstance(proj, dict) else None
+    cur = (cfg.SRC_PROJECT or "", cfg.DST_PROJECT or "")
+    if not isinstance(val, dict):
+        return ("INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this environment",
+                "env" if any(cur) else "none")
+    rec = tuple(v if isinstance(v, str) else "" for v in (val.get("src"), val.get("dst")))
+    if not any(cur):
+        if not any(rec):
+            return None, "none"
+        cfg.values["SRC_PROJECT"], cfg.values["DST_PROJECT"] = rec
+        return ("INFO scope SRC_PROJECT=%s DST_PROJECT=%s (from the state's options.json)" % (shown(rec[0]),
+                                                                                             shown(rec[1])), "record")
+    if cur != rec:
+        raise Die("scope mismatch: this state was written with SRC_PROJECT=%s DST_PROJECT=%s, this run has "
+                  "SRC_PROJECT=%s DST_PROJECT=%s: set them to the state's values (or unset them) and run the rollback "
+                  "again; nothing was done" % (shown(rec[0]), shown(rec[1]), shown(cur[0]), shown(cur[1])))
+    return None, "record"
+
+
 def run_rollback(target, yes=True, dry_run=False, as_json=False, ask=False):
     """migrate rollback <target>. Library callers (tests) pass nothing and get the plain rollback; the command line
     passes ask=True: without --yes it shows summary() and asks (A5), --dry-run only shows it. Holds the host lock and
     the state directory lock (A7). The host lock comes first, before the state is looked up: a migrate of the same VM
     that is cleaning its failed run and starting again has no server.json for a moment, and a rollback looking then
-    would say 'no state' instead of 'another migrate runs'. --dry-run reads only and takes no lock, as plan."""
-    from .volcmd import find_volume_state, rollback_volume
+    would say 'no state' instead of 'another migrate runs'. --dry-run reads only and takes no lock, as plan.
+    P2-a (1.1.1): the state is first looked for on disk only (no cloud), and its project record sets the scope
+    (rollback_scope) before the clouds are set up; under the lock the same lookup must find the same state. A volume
+    found only through the source cloud (by name) keeps the scope of this environment (INFO)."""
+    from .volcmd import find_volume_state, local_volume_state, rollback_volume
     started = utc()
     cfg = config.load()
+
+    def local_state():
+        # A VM state under that name wins, exactly as before; then a migrate-volume state found by its directory.
+        if os.path.exists(os.path.join(StateDir(target).path, "server.json")):
+            return StateDir(target), "vm"
+        st_ = local_volume_state(target)
+        return (st_, "vol") if st_ is not None else None
+
+    # P2-a (1.1.1): the scope of the run that wrote the state, restored before the clouds are set up.
+    found = local_state()
+    if found is not None:
+        note, origin = rollback_scope(cfg, found[0])
+    else:
+        note = ("INFO scope: %s is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT of this "
+                "environment" % target)
+        origin = "env" if (cfg.SRC_PROJECT or cfg.DST_PROJECT) else "none"
+    if note:
+        if dry_run and as_json:
+            print(note, file=sys.stderr, flush=True)
+        else:
+            log(note)
     r = Run(cfg, Options())
     r.check_project_scope()
 
     def target_state():
-        # A VM state under that name wins, exactly as before; anything else is taken as a volume.
-        if os.path.exists(os.path.join(StateDir(target).path, "server.json")):
-            return StateDir(target), "vm"
-        return find_volume_state(r, target), "vol"
+        now = local_state()
+        if (now and (now[0].path, now[1])) != (found and (found[0].path, found[1])):
+            # The scope above was decided from what was there before the lock: a state that appeared or went since.
+            raise Die("the state of %s changed while the rollback started (a migrate of it ran): run the rollback "
+                      "again; nothing was done" % target)
+        return now if now is not None else (find_volume_state(r, target), "vol")
 
     def summary(st, kind):
         r.src.readonly = r.dst.readonly = True
@@ -514,6 +573,7 @@ def run_rollback(target, yes=True, dry_run=False, as_json=False, ask=False):
 
     if dry_run:
         d = summary(*target_state())
+        d["projects"] = {"src": cfg.SRC_PROJECT or None, "dst": cfg.DST_PROJECT or None, "origin": origin}
         if as_json:
             with jsonout.stdout_to_stderr() as real:
                 jsonout.emit_json(d, stream=real, cfg=cfg)

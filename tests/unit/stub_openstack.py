@@ -118,6 +118,15 @@ for _prefix, _out in c.get("answer", {}).items():
     if " ".join(a).startswith(_prefix):
         sys.stdout.write(_out)
         sys.exit(0)
+# 1.1.1 (P2-a): world[side]["need_project"] = "<name>": the objects of this side live in that project; a token scoped
+# to another one (OS_PROJECT_NAME) does not see them: 'server|volume show|delete' say "No <Kind> found for <id>" and
+# 'server list' is empty.
+if c.get("need_project") and os.environ.get("OS_PROJECT_NAME") != c["need_project"]:
+    if a[:2] in (["server", "show"], ["server", "delete"], ["volume", "show"], ["volume", "delete"]):
+        fail("No %s found for %s" % (a[0].capitalize(), a[2]))
+    if a[:2] == ["server", "list"]:
+        emit([])
+        sys.exit(0)
 if a[:2] == ["port", "show"] and "device_id" in a and a[2] in c.get("port_show_fail", {}):
     # 7.2 (B1): a transient failure ([count, message]) before the port answers again
     n, msg = c["port_show_fail"][a[2]]
@@ -239,7 +248,13 @@ elif a[:2] == ["image", "delete"]:
 elif a[:2] == ["server", "list"]:
     name = opt("--name", "")
     import re
-    rows = [{"ID": k, "Name": v["name"]} for k, v in c["servers"].items() if not name or re.search(name, v["name"])]
+    allp = "--all-projects" in a
+    if allp and c.get("forbid_all_projects"):  # 1.1.1: rollback lists a server it never recorded in every project
+        fail("Policy doesn't allow os_compute_api:servers:index:get_all_tenants to be performed. (HTTP 403)")
+    # 1.1.1: world[side]["list_own_project"]: without --all-projects only the token's own project is listed
+    own = c.get("list_own_project") and not allp
+    rows = [{"ID": k, "Name": v["name"]} for k, v in c["servers"].items() if (not name or re.search(name, v["name"]))
+            and not (own and v.get("project_id", c["project_id"]) != c["project_id"])]
     if "--host" in a:  # 7.3 (inventory --count): the VMs of one host, every project
         rows = [x for x in rows if c["servers"][x["ID"]].get("host", "cmp1") == opt("--host")]
     emit(rows)

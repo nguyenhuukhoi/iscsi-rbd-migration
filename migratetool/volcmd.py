@@ -197,14 +197,22 @@ def cmd_rollback_volume(r, arg):
     return rollback_volume(r, st)
 
 
+def local_volume_state(arg):
+    """1.1.1: the vol-<id> state directory of arg found without asking a cloud (arg is vol-<id>, or the ID itself);
+    None when only the source cloud can tell (a volume name)."""
+    root = StateDir("").root
+    if os.path.exists(os.path.join(root, arg, "volume.json")):
+        return StateDir(arg)
+    if os.path.exists(os.path.join(root, "vol-" + arg, "volume.json")):
+        return StateDir("vol-" + arg)
+    return None
+
+
 def find_volume_state(r, arg):
     """The vol-<id> state directory a rollback of arg works on (name, ID or vol-<id>); Die when there is none."""
     root = StateDir("").root
-    if os.path.exists(os.path.join(root, arg, "volume.json")):
-        st = StateDir(arg)
-    elif os.path.exists(os.path.join(root, "vol-" + arg, "volume.json")):
-        st = StateDir("vol-" + arg)
-    else:
+    st = local_volume_state(arg)
+    if st is None:
         vid = resolve_volume(r, arg)
         st = StateDir("vol-" + vid)
         if not (vid and st.exists("volume.json")):
