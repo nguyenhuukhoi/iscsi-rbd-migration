@@ -565,6 +565,30 @@ ok("v12_rule on a real A6 re-run: exactly its one source probe goes",
    and [c for c in r.calls if c not in p["rawcalls"]] == ["src\tserver show %s -f json -c id -c status" % SID],
    [c for c in r.calls if c not in p["rawcalls"]])
 
+# ================================ case 17: preflight says where each volume lands (P2-b) ================================
+TW = world()
+TW["src"]["volumes"]["vol-src-root"]["type"] = "ssd"
+TW["src"]["volumes"]["vol-src-data"]["type"] = "hdd"
+r = app(TW, [("plan", "app01", PLAIN)])
+ok("P2-b plan, a VM whose volumes have two source types: one INFO line per volume (source type -> destination type, "
+   "pool) and 'WARN 2 source volume types (ssd, hdd) all land on destination type default'; exit unchanged (0)",
+   r.rc == [0] and "  INFO  volume vol-src-root (no name) source type ssd -> destination type default pool mig-volumes"
+   in r.out and "  INFO  volume vol-src-data (data) source type hdd -> destination type default pool mig-volumes" in r.out
+   and "  WARN  2 source volume types (ssd, hdd) all land on destination type default: pass --volume-type per run if "
+   "they must differ" in r.out, (r.rc, r.out[-1500:]))
+TW1 = world()
+for v in TW1["src"]["volumes"].values():
+    v["type"] = "ssd"
+r = app(TW1, [("plan", "app01", PLAIN + ["--volume-type", "nvme"])])
+ok("P2-b plan, one source type: the INFO lines only (destination type nvme), no WARN",
+   r.rc == [0] and "  INFO  volume vol-src-data (data) source type ssd -> destination type nvme pool" in r.out
+   and "source volume types" not in r.out, (r.rc, r.out[-1200:]))
+p = ruled([], [], [], out="  INFO  volume v1 (data) source type ssd -> destination type default pool p\n"
+                          "[app01]   WARN  2 source volume types (ssd, hdd) all land on destination type default: pass "
+                          "--volume-type per run if they must differ\n  OK    kept\n")
+ok("v12_rule: the preflight type lines go (with or without a parallel plan's '[<ident>] ' prefix), the others stay",
+   p["out"] == "  OK    kept\n", p["out"])
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

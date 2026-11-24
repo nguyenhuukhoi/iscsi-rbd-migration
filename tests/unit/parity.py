@@ -607,7 +607,13 @@ V12_ARGS_DROP = ((re.compile(r"^(dst\tserver list --name \S+) --all-projects( -f
 V12_APP_OUT_DROP = (re.compile(r"INFO scope: the state has no project record; using SRC_PROJECT/DST_PROJECT of this "
                                r"environment$"),
                     re.compile(r"INFO scope: \S+ is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT "
-                               r"of this environment$"))
+                               r"of this environment$"),
+                    # Intended: v1.1.1 P2-b: the preflight says which destination type and pool each volume lands on,
+                    # and warns when the source volumes of one VM have several types (all flattened to one).
+                    # (a parallel plan prefixes each child line with "[<ident>] ")
+                    re.compile(r"(?:^|\] )  INFO  volume \S+ \(.*\) source type .* -> destination type \S+ pool \S+$"),
+                    re.compile(r"(?:^|\] )  WARN  \d+ source volume types \(.*\) all land on destination type \S+: pass "
+                               r"--volume-type per run if they must differ$"))
 
 
 def v12_rule(p):

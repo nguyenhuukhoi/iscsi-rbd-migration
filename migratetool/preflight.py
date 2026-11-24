@@ -388,6 +388,23 @@ def _vol_type(v):
     return "" if t is None else jqs(t)
 
 
+def volume_type_lines(r, vols):
+    """P2-b (1.1.1): every volume of a VM lands on one destination volume type and one RBD pool (--volume-type /
+    AZ_TYPE_MAP, RBD_POOL_MAP): an INFO line per volume says where each goes, a WARN when the source volumes have
+    two types or more (they are flattened to one). Information only: never a FAIL, the exit code does not change."""
+    t_dst = r.opts.volume_type or "default"
+    seen = []
+    for v in vols:
+        t = _vol_type(v)
+        if t and t not in seen:
+            seen.append(t)
+        out("  INFO  volume %s (%s) source type %s -> destination type %s pool %s"
+            % (jqs(v.get("id")), jqs(v.get("name")) or "no name", t or "unknown", t_dst, r.pool))
+    if len(seen) >= 2:
+        out("  WARN  %d source volume types (%s) all land on destination type %s: pass --volume-type per run if they "
+            "must differ" % (len(seen), ", ".join(seen), t_dst))
+
+
 def source_needs(vols):
     """The temporary clone at the source: one at a time (dropped before the next volume is cloned; one at a
     time in live mode too), so +1 volume and the largest size; per type too, the clone keeps its source's type."""
@@ -827,6 +844,7 @@ def preflight(r, st):
     vols = st.json("volumes.json")
     c.check("no encrypted volume", lambda: all(v.get("encrypted") is not True for v in vols))
     c.check("no multiattach volume", lambda: all(v.get("multiattach") is not True for v in vols))
+    volume_type_lines(r, vols)
     lock_preflight(server, c)
     if not o.volumes_only:
         eph, swap = flavor_extra_disks(r, server)
