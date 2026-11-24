@@ -13,6 +13,34 @@ Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit 
 Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
 [archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
 
+## [1.2.0] — 2026-11-24 · branch `volume-type-map` · VOLUME_TYPE_MAP (type and pool per volume), rollback WARNs instead of silence, README upgrade
+
+Thiết kế: xem review 1.1.0 backlog (việc 1–5; ngoài phạm vi: rbd_cache readback, scrub `source_error` ngoài scrub value hiện có, canary PowerStore/2023.1). Test: `bash tests/unit/run.sh --parity` (bộ mới `tests/unit/v13unit.py`, `tests/ui/v13ui.py`, case `source_error` trong `tests/ui/guards.mjs`): trên mig-host `ALL pass=1072 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 66, ui 193, parity 205); UI guards 130/0. Parity không đặt map: map rỗng giữ hành vi 1.1.1 (quy tắc `v13_rule`). Báo cáo: `TEST-REPORT-1.2.0.md` (labkit). Commit chính: `1d22035` (map), `33ada51` (R1), `f205203` (R3), `9c81ad2` (lời từ chối application credential), `341178c` (test), `5adcd93`/`e006de6` (docs).
+
+### Thêm
+
+- **VOLUME_TYPE_MAP** (conf, whitelist `options.json` `conf`, `migrate.conf.example`): `VOLUME_TYPE_MAP="type-nguồn:type-đích,…[,__DEFAULT__:type-đích]"`. Mỗi volume đích lấy type theo thứ tự `--volume-type` gõ tay (mọi volume) → `VOLUME_TYPE_MAP[type nguồn]` → `VOLUME_TYPE_MAP[__DEFAULT__]` → type của lần chạy (`AZ_TYPE_MAP`, `MIG_DEFAULT_OPTS`, default Cinder); pool theo `RBD_POOL_MAP` của type đó, không có thì `RBD_POOL`. `__DEFAULT__` cũng áp cho volume nguồn không có type và root disk ephemeral. Áp cho migrate cold/live, root ephemeral thành volume, `migrate volume`. Map sai dạng dừng `VOLUME_TYPE_MAP: …` trước mọi lệnh cloud.
+- Preflight khi map có đặt: dòng INFO từng volume thêm `(<nguồn>)`, `WARN source type <s> has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on <type>`, `INFO VOLUME_TYPE_MAP in use: <n> volume(s) mapped`, `INFO volume type <t> from cli overrides VOLUME_TYPE_MAP`, `volume type show` một lần mỗi type đích (`FAIL destination volume type <t> (VOLUME_TYPE_MAP (<s>)) does not exist`), `RBD access to pool` và dung lượng Ceph mỗi pool, quota `volumes_<type>`/`gigabytes_<type>` theo type đã map. `migrate doctor` kiểm mỗi type đích của map có ở đích.
+- `effective.volume_types` (`options.json`, `plan --json`): `{"value": {<id volume nguồn>|"ephemeral-root": {"type", "pool", "from"}}, "from", "detail"}`. File state mới `volume-types` (`<id nguồn> <type|-> <pool>` mỗi dòng; copy đọc lại pool của từng volume từ đây). `volume-map` giữ hai cột: rollback (và state cũ) không đổi.
+- README mục **Nâng cấp** cho host cài bằng `git clone` (giữ checkout cũ thành `/opt/mig-src.bak-<bản đang chạy>`); DEPLOY mục 7 trỏ tới đó cho đường `git clone`.
+
+### Đổi hành vi
+
+- **R3** Rollback: port đích (`dst-ports`) `port show` lỗi không còn bị coi là "không có port": `WARN cannot read destination port <id> (<lý do>): left, check it by hand`; not found nêu đúng port → `INFO destination port <id> already gone`; `port delete` lỗi → `WARN cannot delete destination port <id> (<lý do>): delete it by hand`. Rollback đi tiếp, trả nguồn (trước đây lỗi đọc bị nuốt im lặng, lỗi xóa làm rollback dừng khi nguồn còn lock). Quét tên `mig-<ident>-<i>` cũng vậy (không có tên đó vẫn im lặng). `image list` đích lỗi → `WARN cannot list destination images named mig-snap-<vm>: skipped`, image trong `dst-image-id` vẫn bị xóa.
+- **R3** UI: `original.source_error` (đã scrub) trong chuẩn bị rollback; hộp xác nhận ghi `Nguồn hiện tại: không đọc được (<lý do>)`.
+- Rollback bằng application credential của state có scope trong record (ghi bằng password openrc) bị từ chối bằng câu `this state was written by a run scoped with SRC_PROJECT=<A> DST_PROJECT=<B> (a password openrc); <openrc> is an application credential, which cannot be rescoped: run the rollback with the password openrc that wrote the state; nothing was done` thay cho `SRC_PROJECT/DST_PROJECT needs a password openrc …` (migrate/volume và scope từ môi trường giữ câu cũ).
+- **R1** `rollback.gone()`: dòng nêu đúng ID có `(HTTP 404)` ở bất kỳ đâu, hoặc token `404` đứng riêng theo sau là `Not Found`/hết dòng, cũng là "đã mất" (trước đây chỉ khi dòng kết thúc bằng 404: một `Not Found (HTTP 404) (Request-ID: …) …/volumes/<id>` làm rollback dừng `cannot read …` dù object đã mất).
+- `doctor`: `VOLUME_TYPE_MAP` sai dạng trong môi trường làm FAIL dòng conf, các kiểm khác vẫn chạy.
+
+### Sửa
+
+- —
+
+### Biết trước
+
+- Map chỉ theo **tên type nguồn**, không theo ID volume; không đổi type của volume đích đã tạo; UI không chọn map (hiện output CLI). Dung lượng Ceph theo pool chỉ cộng volume được copy, chưa cộng root ephemeral (như 1.1.1).
+- `--verify readback` của live mode vẫn đọc lại qua cùng handle librbd (có `rbd_cache`); canary trên hạ tầng 2023.1 + PowerStore chưa chạy.
+
 ## [1.1.1] — 2026-11-24 · branch `rollback-dest-check` · rollback trusts "gone" only for the object named, and reads the destination before it deletes (no data-path change)
 
 Thiết kế: `ISCSI-RBD-MIGRATION-ROLLBACK-DEST-CHECK-DESIGN.md` (Lab), từ review độc lập 1.1.0 (23/11: P1, P2-a, P2-b, P3-1..P3-6). Test: `bash tests/unit/run.sh --parity` (bộ mới
