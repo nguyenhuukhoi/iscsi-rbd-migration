@@ -37,7 +37,7 @@ Web không import engine và không đọc credentials/state migration. Runner p
 |---|---|
 | Compute AZ | CLI `--az` → `MIG_AZ` → `--az` trong default opts |
 | Volume AZ | CLI `--volume-az` → `MIG_VOLUME_AZ` → default opts → compute AZ |
-| Type (từng volume, 1.2.0) | CLI `--volume-type` (mọi volume) → `VOLUME_TYPE_MAP[type nguồn]` → `VOLUME_TYPE_MAP[__DEFAULT__]` → type của lần chạy: `AZ_TYPE_MAP` theo compute AZ → default opts → cloud default (`Options.type_for`). Root ephemeral không có type nguồn: `__DEFAULT__` hoặc type của lần chạy |
+| Type (từng volume, 1.2.0) | CLI `--volume-type` (mọi volume) → `VOLUME_TYPE_MAP[type nguồn]` → `VOLUME_TYPE_MAP[*]` (1.2.1; `__DEFAULT__` là tên type thật của Cinder, khớp ở bước trước như mọi tên) → type của lần chạy: `AZ_TYPE_MAP` theo compute AZ → default opts → cloud default (`Options.type_for`). Root ephemeral không có type nguồn: `*` hoặc type của lần chạy |
 | Pool (từng volume) | Mục đầu khớp type của volume đó trong `RBD_POOL_MAP` → `RBD_POOL` (`Options.pool_for`); `r.pool` là pool của type của lần chạy (header, dòng `options`) |
 | Flavor | CLI override → cùng tên nguồn → map nếu bật fallback và cùng tên không có |
 | Project | Selector lấy project đối tượng → `PROJECT_MAP_FILE` cho đích; volume đơn/rollback dùng scope được cung cấp |
@@ -316,8 +316,8 @@ Mỗi dòng có tiền tố chính xác `  OK    `, `  FAIL  `, `  WARN  `, `  I
 | `--ip ... is the source VM's own address ...`; `--ip ... is an allowed-address-pair ...` | FAIL | Start-source gây trùng IP |
 | `port ... has allowed-address-pairs ... and --start-source keeps the source running: ...` | WARN | Hai bản có thể cùng nhận VIP |
 | `no encrypted volume`; `no multiattach volume` | OK/FAIL | VM không dùng volume loại cấm |
-| `volume <id> (<name>) source type <t_src> -> destination type <t_dst> pool <pool>[ (<from>)]` | INFO | Type/pool đích của từng volume (`volume_type_lines`, P2-b, 1.1.1). 1.2.0: mỗi volume theo `Options.type_for`; khi `VOLUME_TYPE_MAP` có đặt thêm `(<from>)`: `VOLUME_TYPE_MAP (<t_src>)`, `VOLUME_TYPE_MAP (__DEFAULT__)`, `cli`, `AZ_TYPE_MAP (<AZ>)`, `MIG_DEFAULT_OPTS`, `default`; volume đơn cũng in khi map có đặt |
-| `source type <t_src> has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on <type>` | WARN | 1.2.0: type nguồn (hoặc `unknown`) map không phủ, volume về type của lần chạy; một dòng mỗi type nguồn |
+| `volume <id> (<name>) source type <t_src> -> destination type <t_dst> pool <pool>[ (<from>)]` | INFO | Type/pool đích của từng volume (`volume_type_lines`, P2-b, 1.1.1). 1.2.0: mỗi volume theo `Options.type_for`; khi `VOLUME_TYPE_MAP` có đặt thêm `(<from>)`: `VOLUME_TYPE_MAP (<t_src>)` (khớp tên, kể cả `__DEFAULT__`), `VOLUME_TYPE_MAP (*)` (fallback, 1.2.1), `cli`, `AZ_TYPE_MAP (<AZ>)`, `MIG_DEFAULT_OPTS`, `default`; volume đơn cũng in khi map có đặt |
+| `source type <t_src> has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on <type>` | WARN | 1.2.0 (câu 1.2.1): type nguồn (hoặc `unknown`) map không phủ, volume về type của lần chạy; một dòng mỗi type nguồn |
 | `root disk volume -> destination type <t> pool <p> (<from>)` | INFO | 1.2.0, map có đặt: type/pool của root ephemeral thành volume |
 | `<n> source volume types (<t1>, <t2>) all land on destination type <t_dst>: pass --volume-type per run if they must differ` | WARN | VM có ≥ 2 type nguồn khác nhau bị san về một type; không đổi exit code. Chỉ khi `VOLUME_TYPE_MAP` rỗng (1.2.0) |
 | `source VM is locked with reason ...` | FAIL | Không tự tháo human lock (`lock_preflight`) |
@@ -562,6 +562,6 @@ Plan events touch idle; batch của phiên đang chạy touch mỗi 60 s. Pollin
 | Thứ tự NIC | VM nhiều port: thứ tự gắn ở đích theo `port list --server` (`vmdef.export_definition`), Neutron không bảo đảm trùng thứ tự ở nguồn; guest cấu hình theo tên interface có thể đảo eth0/eth1. Canary kiểm `ip -o link` theo MAC |
 | `config_drive` | Không chép; guest chỉ dùng datasource ConfigDrive sẽ không có metadata ở đích. Kiểm `config_drive` trong `server.json` của state |
 | Tags và volume metadata | Server `tags` và Cinder volume metadata (không phải image metadata) không chép |
-| Volume type/pool | 1.2.0: type theo **tên type nguồn** (`VOLUME_TYPE_MAP`, `__DEFAULT__`), pool theo type đó; không map theo volume ID, không đổi type sau khi volume đích đã tạo, UI không chọn map (chỉ hiện output CLI). `VOLUME_TYPE_MAP` rỗng: một type và một pool cho mọi volume của VM như trước, preflight WARN khi nguồn có ≥ 2 type (mục 6.2). Dung lượng Ceph theo pool chỉ cộng volume được copy, chưa cộng root ephemeral |
+| Volume type/pool | 1.2.0: type theo **tên type nguồn** (`VOLUME_TYPE_MAP`, fallback `*` từ 1.2.1; `__DEFAULT__` là tên type thật), pool theo type đó; không map theo volume ID, không đổi type sau khi volume đích đã tạo, UI không chọn map (chỉ hiện output CLI). `VOLUME_TYPE_MAP` rỗng: một type và một pool cho mọi volume của VM như trước, preflight WARN khi nguồn có ≥ 2 type (mục 6.2). Dung lượng Ceph theo pool chỉ cộng volume được copy, chưa cộng root ephemeral |
 
 Các mục chưa được chứng minh trên hệ thật nằm trong [RELEASE-1.0.0.md](RELEASE-1.0.0.md). Không dùng tài liệu lưu trữ để suy thêm bảo đảm ngoài code hiện hành.

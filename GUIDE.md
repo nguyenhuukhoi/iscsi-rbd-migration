@@ -130,7 +130,7 @@ File `/opt/mig/migrate.conf`, hoặc env `MIG_CONF`, chỉ là dữ liệu `KEY=
 | `MIG_AZ` | Compute AZ | Rỗng |
 | `MIG_VOLUME_AZ` | Cinder AZ | Rỗng: theo compute AZ |
 | `AZ_TYPE_MAP` | `AZ:type,AZ:type` | Rỗng |
-| `VOLUME_TYPE_MAP` | `type-nguồn:type-đích,…[,__DEFAULT__:type-đích]`: type đích của từng volume theo tên type nguồn | Rỗng: mọi volume dùng type của lần chạy |
+| `VOLUME_TYPE_MAP` | `type-nguồn:type-đích,…[,*:type-đích]`: type đích của từng volume theo tên type nguồn; `*` là fallback | Rỗng: mọi volume dùng type của lần chạy |
 | `MIG_DEFAULT_OPTS` | Token option tách whitespace | Rỗng |
 | `MIG_LOCK` | Khóa chung CLI/UI | `/run/mig/migrate.lock` |
 | `MIG_CMD_TIMEOUT` | Deadline control-plane, giây; `0` tắt | `600` |
@@ -217,7 +217,7 @@ Không tự tạo project, flavor, type, pool, network hoặc subnet. Đóng bă
 | Bước | Giá trị | Thứ tự ưu tiên | Không có nguồn nào |
 |---|---|---|---|
 | 1 | compute AZ (cả VM) | `--az` gõ trong lệnh → `MIG_AZ` trong conf → `--az` trong `MIG_DEFAULT_OPTS` | Nova tự chọn AZ, và bước 2 **không** tra `AZ_TYPE_MAP` |
-| 2 | volume type (từng volume) | `--volume-type` gõ trong lệnh (mọi volume, bỏ qua `VOLUME_TYPE_MAP`) → `VOLUME_TYPE_MAP` tra theo **tên type nguồn** của volume → `VOLUME_TYPE_MAP` khóa `__DEFAULT__` → `AZ_TYPE_MAP` tra theo compute AZ của bước 1 → `--volume-type` trong `MIG_DEFAULT_OPTS` | type mặc định của Cinder đích |
+| 2 | volume type (từng volume) | `--volume-type` gõ trong lệnh (mọi volume, bỏ qua `VOLUME_TYPE_MAP`) → `VOLUME_TYPE_MAP` tra theo **tên type nguồn** của volume → `VOLUME_TYPE_MAP` khóa `*` → `AZ_TYPE_MAP` tra theo compute AZ của bước 1 → `--volume-type` trong `MIG_DEFAULT_OPTS` | type mặc định của Cinder đích |
 | 3 | pool RBD (từng volume) | `RBD_POOL_MAP` tra theo volume type của bước 2 | `RBD_POOL` |
 
 Ba nguồn cuối của bước 2 (`AZ_TYPE_MAP`, `MIG_DEFAULT_OPTS`, default) gọi chung là **type của lần chạy**: header plan `type=… pool=…` và `effective.volume_type`/`effective.pool` luôn in type/pool này; type/pool thật của từng volume nằm ở dòng INFO từng volume và `effective.volume_types`.
@@ -275,7 +275,9 @@ Ví dụ với conf `MIG_AZ=AZ1`, `AZ_TYPE_MAP="AZ1:rbd-az1,AZ2:rbd-az2"`, `RBD_
 - **`MIG_VOLUME_AZ`/`--volume-az`** chỉ đổi AZ của Cinder volume, không đổi type. Map tra theo **compute AZ**.
 - **Volume rời** (`migrate volume`) dùng cùng chuỗi suy ra với `--az` của lệnh đó.
 
-**VOLUME_TYPE_MAP: type đích theo type nguồn.** `VOLUME_TYPE_MAP="type-nguồn:type-đích,type-nguồn:type-đích[,__DEFAULT__:type-đích]"`, cùng định dạng hai map trên. Khóa là **tên** volume type nguồn như `openstack volume show` in (trường `type`). `__DEFAULT__` áp cho volume có type nguồn không có trong map, volume nguồn không có type, và root disk của VM ephemeral (không có volume nguồn). Không có `__DEFAULT__` thì các volume đó dùng type của lần chạy và preflight in `WARN source type <s> has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on <type>`. Map sai dạng (cặp thiếu `:`, thiếu một vế, type nguồn ghi hai lần) thì mọi lệnh dừng `VOLUME_TYPE_MAP: …` trước khi gọi cloud. Map rỗng: như bản trước, một type cho cả lần chạy.
+**VOLUME_TYPE_MAP: type đích theo type nguồn.** `VOLUME_TYPE_MAP="type-nguồn:type-đích,type-nguồn:type-đích[,*:type-đích]"`, cùng định dạng hai map trên. Khóa là **tên** volume type nguồn như `openstack volume show` in (trường `type`), khớp đúng chuỗi. Khóa `*` là fallback: áp cho volume có type nguồn không có trong map, volume nguồn không có type, và root disk của VM ephemeral (không có volume nguồn). `*` chỉ đứng ở vế nguồn; `a:*` làm mọi lệnh dừng `VOLUME_TYPE_MAP: '*' is only a source key`. Không có `*` thì các volume đó dùng type của lần chạy và preflight in `WARN source type <s> has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on <type>`. Map sai dạng (cặp thiếu `:`, thiếu một vế, type nguồn ghi hai lần, `*` ở vế đích) thì mọi lệnh dừng `VOLUME_TYPE_MAP: …` trước khi gọi cloud. Map rỗng: như bản trước, một type cho cả lần chạy.
+
+**`__DEFAULT__` là tên type thật, không phải fallback.** Cinder đặt tên type mặc định của nó là `__DEFAULT__`: volume tạo mà không chọn type mang type `__DEFAULT__`. Trong `VOLUME_TYPE_MAP` (như trong `RBD_POOL_MAP`) `__DEFAULT__` là một tên type như mọi tên khác. Ví dụ: nguồn có volume type `__DEFAULT__` và volume type `ps-silver`; map `__DEFAULT__:rbd-hdd,*:rbd-ssd` đưa volume `__DEFAULT__` về `rbd-hdd` (nhãn `VOLUME_TYPE_MAP (__DEFAULT__)`) và volume `ps-silver` về `rbd-ssd` (nhãn `VOLUME_TYPE_MAP (*)`); map chỉ có `__DEFAULT__:rbd-hdd` thì volume `ps-silver` về type của lần chạy kèm WARN. Conf viết `__DEFAULT__:<type>` với ý fallback (cách viết của bản trước) phải đổi thành `*:<type>`.
 
 Ví dụ: conf `VOLUME_TYPE_MAP="ps-gold:rbd-ssd,ps-silver:rbd-hdd"`, `RBD_POOL_MAP="rbd-ssd:volumes-ssd,rbd-hdd:volumes"`, `RBD_POOL=volumes`; VM có root type `ps-gold` 10 GB, data type `ps-silver` 2 GB, data2 type `ps-bronze` 1 GB.
 
@@ -283,10 +285,11 @@ Ví dụ: conf `VOLUME_TYPE_MAP="ps-gold:rbd-ssd,ps-silver:rbd-hdd"`, `RBD_POOL_
 |---|---|---|---|---|
 | `migrate plan app01` | `rbd-ssd` / `volumes-ssd` | `rbd-hdd` / `volumes` | type của lần chạy (default) / `volumes` | `WARN source type ps-bronze has no entry …`; Ceph `volumes-ssd` 10 GB, `volumes` 3 GB; hai dòng `RBD access to pool` |
 | `migrate plan app01 --volume-type rbd-hdd` | `rbd-hdd` / `volumes` | `rbd-hdd` / `volumes` | `rbd-hdd` / `volumes` | Một dòng `INFO volume type rbd-hdd from cli overrides VOLUME_TYPE_MAP` |
-| thêm `__DEFAULT__:rbd-hdd` vào map | `rbd-ssd` / `volumes-ssd` | `rbd-hdd` / `volumes` | `rbd-hdd` / `volumes` | Không WARN |
+| thêm `*:rbd-hdd` vào map | `rbd-ssd` / `volumes-ssd` | `rbd-hdd` / `volumes` | `rbd-hdd` / `volumes` (`VOLUME_TYPE_MAP (*)`) | Không WARN |
+| thêm `__DEFAULT__:rbd-hdd` (không có `*`) | `rbd-ssd` / `volumes-ssd` | `rbd-hdd` / `volumes` | type của lần chạy (default) / `volumes` | Vẫn `WARN source type ps-bronze has no entry …`: `__DEFAULT__` chỉ khớp volume có type tên `__DEFAULT__` |
 | map `ps-gold:rbd-nvme` mà đích không có `rbd-nvme` | — | — | — | `FAIL destination volume type rbd-nvme (VOLUME_TYPE_MAP (ps-gold)) does not exist`; migrate dừng trước khi tạo gì, chưa đụng nguồn |
 
-Plan in mỗi volume một dòng `INFO volume <id> (<tên>) source type <s> -> destination type <t> pool <p> (<nguồn>)` (nguồn: `VOLUME_TYPE_MAP (<s>)`, `VOLUME_TYPE_MAP (__DEFAULT__)`, `cli`, `AZ_TYPE_MAP (<AZ>)`, `MIG_DEFAULT_OPTS` hoặc `default`), sau header một dòng `INFO VOLUME_TYPE_MAP in use: <n> volume(s) mapped`, kiểm `volume type show` một lần cho mỗi type đích, dung lượng Ceph và `RBD access` cho mỗi pool, quota `volumes_<type>`/`gigabytes_<type>` theo type đã map. `options.json` và `plan --json` có `effective.volume_types` (`{"value": {<id volume nguồn>|"ephemeral-root": {"type", "pool", "from"}}, "from": "conf", "detail": "VOLUME_TYPE_MAP"}`); thư mục state có file `volume-types` (`<id nguồn> <type|-> <pool>` mỗi dòng). `migrate doctor` kiểm mỗi type đích của map có trong `volume type list` ở đích (một dòng OK/FAIL mỗi type) và báo INFO khi `RBD_POOL_MAP` có đặt mà không có dòng cho type đó (dùng `RBD_POOL`). Rollback không đổi: xóa theo `volume-map`, không cần pool.
+Plan in mỗi volume một dòng `INFO volume <id> (<tên>) source type <s> -> destination type <t> pool <p> (<nguồn>)` (nguồn: `VOLUME_TYPE_MAP (<s>)` khi khớp tên type nguồn, kể cả `VOLUME_TYPE_MAP (__DEFAULT__)`; `VOLUME_TYPE_MAP (*)` khi lấy fallback; `cli`, `AZ_TYPE_MAP (<AZ>)`, `MIG_DEFAULT_OPTS` hoặc `default`), sau header một dòng `INFO VOLUME_TYPE_MAP in use: <n> volume(s) mapped`, kiểm `volume type show` một lần cho mỗi type đích, dung lượng Ceph và `RBD access` cho mỗi pool, quota `volumes_<type>`/`gigabytes_<type>` theo type đã map. `options.json` và `plan --json` có `effective.volume_types` (`{"value": {<id volume nguồn>|"ephemeral-root": {"type", "pool", "from"}}, "from": "conf", "detail": "VOLUME_TYPE_MAP"}`); thư mục state có file `volume-types` (`<id nguồn> <type|-> <pool>` mỗi dòng). `migrate doctor` kiểm mỗi type đích của map có trong `volume type list` ở đích (một dòng OK/FAIL mỗi type) và báo INFO khi `RBD_POOL_MAP` có đặt mà không có dòng cho type đó (dùng `RBD_POOL`). Rollback không đổi: xóa theo `volume-map`, không cần pool.
 
 ### 4.3. FLAVOR_MAP_FILE — flavor đích khi không có flavor cùng tên
 
