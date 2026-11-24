@@ -648,6 +648,43 @@ def v12_rule(p):
     p["files"] = {k: (drop_lines(v) if k.startswith("log/") else v) for k, v in p["files"].items()}
 
 
+# --- 1.2.0: the mechanical rule for every scenario (no scenario sets VOLUME_TYPE_MAP: an empty map is 1.1.1) --------
+V13_APP_OUT_DROP = (
+    re.compile(r"(?:^|\] )  INFO  VOLUME_TYPE_MAP in use: \d+ volume\(s\) mapped$"),       # Intended: v1.2.0 VTM
+    re.compile(r"(?:^|\] )  INFO  volume type \S+ from cli overrides VOLUME_TYPE_MAP$"),   # Intended: v1.2.0 VTM
+    re.compile(r"INFO destination port \S+ already gone$"),                                # Intended: v1.2.0 R3a
+    re.compile(r"WARN cannot read destination port \S+ \(.*\): left, check it by hand$"),  # Intended: v1.2.0 R3a
+    re.compile(r"WARN cannot delete destination port \S+ \(.*\): delete it by hand$"),     # Intended: v1.2.0 R3a
+    re.compile(r"WARN cannot list destination images named \S+: skipped$"),                 # Intended: v1.2.0 R3b
+)
+# Intended: v1.2.0 VTM: one 'RBD access to pool' line per pool the VM's volumes land on (VOLUME_TYPE_MAP); with one pool
+# (every scenario) there is one line, as in the reference: the lines after the first of a run of them go.
+V13_POOL_LINE = re.compile(r"^(.*?)  (?:OK    |FAIL  )RBD access to pool \S+$")  # group 1: a parallel plan's prefix
+# Intended: v1.2.0 VTM: the state file volume-types (<source id> <type|-> <pool> per destination volume), app only.
+V13_APP_FILES_DROP = re.compile(r"(^|/)volume-types$")
+
+
+def v13_rule(p):
+    """Apply the 1.2.0 rule to an app result p (in place): the VOLUME_TYPE_MAP and R3 lines of its out, err and log
+    files, a second 'RBD access to pool' line right after another of the same VM (same prefix), and the state file
+    volume-types. options.json (with effective.volume_types) is v73_rule's."""
+    def drop_lines(text):
+        kept, prev = [], None  # prev: the prefix of the pool line just kept, None after any other line
+        for line in text.splitlines(True):
+            bare = line.rstrip("\n")
+            if any(x.search(bare) for x in V13_APP_OUT_DROP):
+                continue
+            m = V13_POOL_LINE.match(bare)
+            if m and prev == m.group(1):
+                continue
+            prev = m.group(1) if m else None
+            kept.append(line)
+        return "".join(kept)
+    p["out"], p["err"] = drop_lines(p["out"]), drop_lines(p["err"])
+    p["files"] = {k: (drop_lines(v) if k.startswith("log/") else v) for k, v in p["files"].items()
+                  if not V13_APP_FILES_DROP.search(k)}
+
+
 def compare(name, args, world=None, env=None, conf=None, expect_diff=(), pre_state=None, show=False,
             impls=("bash", "py"), py_args=None, bash_subs=(), out_subseq=False, tty=None, check=None,
             p6=False, subs_all=(), app_calls_ignore=(), v72=False, ref_calls_subs=(), v1=False):
@@ -671,6 +708,7 @@ def compare(name, args, world=None, env=None, conf=None, expect_diff=(), pre_sta
             optouts=not p6 and not os.environ.get("HARNESS_NO_OPTOUTS"))
     v11_rule(p)  # 1.1.0: before the other rules, while each step's calls are still marked
     v12_rule(p)  # 1.1.1: the same, right after it
+    v13_rule(p)  # 1.2.0: VOLUME_TYPE_MAP and R3 lines, the volume-types state file
     if not v72:
         nsteps = len(args) if args and isinstance(args[0], list) else 1
         v72_rule(b, p, impls[1].split("+") if "+" in impls[1] else [impls[1]] * nsteps)

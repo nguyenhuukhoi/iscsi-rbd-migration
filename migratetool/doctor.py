@@ -71,7 +71,12 @@ def check_conf(c):
         cfg = config.load()
     except Die as e:
         c.failed("conf %s: %s" % (path, e))
-        return config.load(dict(os.environ, MIG_CONF="/nonexistent"))
+        env = dict(os.environ, MIG_CONF="/nonexistent")
+        try:
+            return config.load(env)
+        except Die:  # 1.2.0: a malformed VOLUME_TYPE_MAP in the environment (said above): the other checks still run
+            env["VOLUME_TYPE_MAP"] = ""
+            return config.load(env)
     if os.path.isfile(path) and os.access(path, os.R_OK):
         out("  OK    conf %s" % path)
     else:

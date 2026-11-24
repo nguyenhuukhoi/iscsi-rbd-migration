@@ -85,6 +85,7 @@ suite v73unit "$PY" -I "$HERE/v73unit.py" "$REPO"
 suite v1unit "$PY" -I "$HERE/v1unit.py" "$REPO"  # 1.0.0: REVIEW-20261121 phase 1
 suite v11unit "$PY" -I "$HERE/v11unit.py" "$REPO"  # 1.1.0: A20, rollback checks the source exists first
 suite v12unit "$PY" -I "$HERE/v12unit.py" "$REPO"  # 1.1.1: A21, rollback trusts "gone" only for the object named
+suite v13unit "$PY" -I "$HERE/v13unit.py" "$REPO"  # 1.2.0: VOLUME_TYPE_MAP, R1 gone() 404, R3 rollback WARNs, wording
 suite ui env PYTHON="$PY" bash "$REPO/tests/ui/run.sh"  # 7.3 UI (migui): DESIGN-UI 10 and 14, tests/ui/
 if [ "$PARITY" = 1 ]; then
   suite parity /usr/bin/python3 -I "$HERE/scenarios.py" "$@"
