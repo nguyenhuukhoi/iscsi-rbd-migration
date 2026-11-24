@@ -126,7 +126,7 @@ Standalone volume lỗi không có A6 hay exit classes VM. Dùng ident `vol-<sou
 2. Chốt bản dữ liệu nào là thẩm quyền. Tool không merge hai phía, không copy ngược.
 3. Lưu dry-run, đọc IDs, project, t-stop/age và source_power. Tuổi t-stop không phải thời gian bắt đầu ghi ở đích.
 4. Kiểm process kết thúc và không còn consumer khác của volume/port sẽ xóa.
-5. Chạy rollback đúng scope trong hint hoặc original job. Xác nhận tên/ident; automation chỉ dùng `--yes` sau khi đã ghi quyết định.
+5. Chạy rollback đúng scope trong hint hoặc original job (từ 1.1.1 rollback tự lấy scope từ `options.json` của state khi không đặt `SRC_PROJECT`/`DST_PROJECT`, đặt khác thì dừng `scope mismatch`; đích không đọc được thì dừng `cannot read destination ...` trước khi xóa gì, không đụng nguồn). Xác nhận tên/ident; automation chỉ dùng `--yes` sau khi đã ghi quyết định.
 6. Kiểm server/volume đích gone, port nguồn đúng device_id, nguồn đúng trạng thái export, checksum và ứng dụng nguồn. Kiểm FIP riêng vì restore FIP chỉ best effort.
 7. Lưu `.rolled-back.<epoch>` và `rollback.json`; ghi lý do, RPO thực tế, các object giữ lại.
 

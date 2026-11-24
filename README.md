@@ -31,7 +31,7 @@ apt-get install -y git open-iscsi qemu-utils qemu-block-extra ceph-common python
 systemctl enable --now iscsid
 ```
 
-2. Lấy mã và cài tool vào venv (cài luôn OpenStack CLI và SDK đúng bộ đã test; chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). `<tag>` là bản muốn cài, ví dụ `v1.0.1` (danh sách: trang Tags trên GitHub; bỏ `--branch` để lấy `main`):
+2. Lấy mã và cài tool vào venv (cài luôn OpenStack CLI và SDK đúng bộ đã test; chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). `<tag>` là bản muốn cài, ví dụ tag mới nhất ở trang Releases trên GitHub (bỏ `--branch` để lấy `main`):
 
 ```bash
 git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git /opt/mig-src

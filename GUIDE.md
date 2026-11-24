@@ -75,7 +75,7 @@ Giá trị thực tế và nguồn nằm trong `effective` của plan và `optio
 | `--az AZ` | Compute AZ; fallback volume AZ | Scheduler | CLI, `MIG_AZ`, `MIG_DEFAULT_OPTS`; suy từ host |
 | `--volume-az AZ` | Cinder AZ | Compute AZ hiệu lực | CLI, `MIG_VOLUME_AZ`, `MIG_DEFAULT_OPTS` |
 | `--dst-host HOST` | Nova host đích; cần admin và API 2.74 | Scheduler | Chỉ CLI; cấm trong `MIG_DEFAULT_OPTS` |
-| `--verify readback\|full\|none` | Cold: full compare nếu khác none; live: readback hoặc thêm full compare cuối | `readback` | CLI, `MIG_DEFAULT_OPTS` |
+| `--verify readback\|full\|none` | Cold: full compare nếu khác none; live: readback hoặc thêm full compare cuối. `readback` đọc lại qua cùng handle librbd (có `rbd_cache`): chứng minh ghi đúng offset, không chứng minh dữ liệu đã tới OSD; `full` (qemu-img compare, tiến trình khác) mới là kiểm độc lập | `readback` | CLI, `MIG_DEFAULT_OPTS` |
 | `--max-passes N` | Pre-sync tối đa, N ≥ 1 | `5` | CLI, `MIG_DEFAULT_OPTS` |
 | `--delta-limit MB` | Ngưỡng delta từ lượt 2, MB ≥ 0 | `64` | CLI, `MIG_DEFAULT_OPTS` |
 | `--flavor NAME` | Flavor đích có sẵn | Cùng tên nguồn | CLI, `MIG_DEFAULT_OPTS` |
@@ -359,6 +359,8 @@ Hai lệnh cuối dừng VM nguồn, không tạo VM đích. Kiểm `volume-map`
 `rollback --dry-run --json` liệt kê chủ yếu ID đã ghi; không phải inventory mồ côi toàn diện. Rollback thật không dùng `--json`. Prompt nhận tên nguồn hoặc ident đầy đủ. Không TTY và thiếu `--yes` → exit 2. `--yes` bỏ tóm tắt tương tác và prompt; automation cần lưu dry-run trước.
 
 Rollback hỏi nguồn trước khi xóa gì ở đích (A20): nguồn trả not found (`source_status` = `GONE` trong dry-run: VM/volume đã bị xóa, credentials/`SRC_PROJECT` nguồn không thấy nó, hoặc sai endpoint/region) thì rollback từ chối, exit 1, không xóa gì ở đích vì đích có thể là bản sao duy nhất còn lại; kiểm scope và endpoint nguồn trước; muốn bỏ state đó thì xóa thư mục state bằng tay (`prune` không đụng state sống). Không đọc được nguồn (`source_status` = `null`) thì cũng từ chối: sửa credentials/`SRC_PROJECT` rồi chạy lại. Rollback chạy lại sau khi lỗi giữa chừng vẫn qua khi nguồn vẫn đọc được.
+
+Rollback cũng phải đọc được đích trước lệnh xóa đầu tiên (A21, 1.1.1): `server show` server đích đã ghi (không có thì volume đích đầu tiên) trả đúng object hoặc not found nêu đúng ID thì đi tiếp; lỗi không nêu object (ví dụ `public endpoint for compute service in RegionOne region not found` khi sai `OS_REGION_NAME`/`OS_INTERFACE` hoặc catalog đích đổi, `(HTTP 404)` trần) thì dừng `cannot read destination ...`, không xóa gì, không đụng nguồn (`dst_server_status` = `null`, `dst_error` trong dry-run); sửa credentials/endpoint/`DST_PROJECT` rồi chạy lại. Scope: rollback tự lấy `SRC_PROJECT`/`DST_PROJECT` từ `options.json` của state khi môi trường không đặt (log `INFO scope ... (from the state's options.json)`); đặt khác record thì dừng `scope mismatch`, không làm gì; bỏ hai biến đó hoặc đặt đúng giá trị của state rồi chạy lại.
 
 Rollback xóa server/port/volume/image đích của lần chạy, dọn clone, trả port và trạng thái điện nguồn lúc export. SG/server group copy được giữ. Nguồn vốn `SHUTOFF` vẫn `SHUTOFF`; nguồn vốn chạy được start lại. **Không reverse sync**. RPO: mất toàn bộ ghi chỉ có ở đích sau cutover. `t_stop` là thời gian marker, không phải thời gian ứng dụng chạy ở đích.
 
