@@ -3,7 +3,8 @@
 R1 (gone() takes a 404 anywhere on a line that names the object), R3 (a destination port or image listing the rollback
 cannot read or delete is a WARN, not silence and not the end of the rollback), the wording of an application credential
 refused for a state scoped by its record, doctor's check of the map, the version, and the parity rule v13_rule. Runs
-the app in this process against the fake clouds (inproc.py), like v12unit.py. Test IDs T1-T24: the 1.2.0 design.
+the app in this process against the fake clouds (inproc.py), like v12unit.py. Test IDs T1-T24: the 1.2.0 design;
+T25-T28 and the '*' key in T3/T7/T23: its 1.2.1 appendix (the fallback key is '*', '__DEFAULT__' a type name).
 
     python3 v13unit.py <directory holding migratetool/>
 """
@@ -101,7 +102,7 @@ def menv(vmap=MAP, **extra):
 INFO_ROOT = "  INFO  volume vol-src-root (no name) source type ps-gold -> destination type %s pool %s"
 INFO_DATA = "  INFO  volume vol-src-data (data) source type ps-silver -> destination type %s pool %s"
 INFO_DATA2 = "  INFO  volume vol-src-data2 (data2) source type ps-bronze -> destination type %s pool %s"
-WARN_BRONZE = ("  WARN  source type ps-bronze has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on default")
+WARN_BRONZE = ("  WARN  source type ps-bronze has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on default")
 
 # ================================ T1: the map without --volume-type (plan, then migrate cold) ================================
 r = app(vtm_world(), [("plan", "app01", PLAIN), ("migrate", "app01", PLAIN)], env=menv())
@@ -184,25 +185,25 @@ ok("T2 ... the three volumes are created with --type rbd-hdd and checked in pool
    and all(rbd_info(r.calls, "volumes", "vol-dst-000%d" % i) for i in (1, 2, 3))
    and not any(" -p volumes-ssd " in c for c in r.calls if c.startswith("rbd\t")), r.calls[-60:])
 
-# ================================ T3: __DEFAULT__ covers the type the map does not name ================================
+# ================================ T3: '*' (1.2.1) covers the type the map does not name ================================
 r = app(vtm_world(), [("plan", "app01", PLAIN), ("migrate", "app01", PLAIN)],
-        env=menv(MAP + ",__DEFAULT__:rbd-hdd"))
+        env=menv(MAP + ",*:rbd-hdd"))
 plan = r.outs[0]
-ok("T3 __DEFAULT__:rbd-hdd: data2 (ps-bronze) -> rbd-hdd/volumes (VOLUME_TYPE_MAP (__DEFAULT__)), no WARN, 3 mapped",
-   r.rc == [0, 0] and (INFO_DATA2 % ("rbd-hdd", "volumes")) + " (VOLUME_TYPE_MAP (__DEFAULT__))" in plan
+ok("T3 *:rbd-hdd: data2 (ps-bronze) -> rbd-hdd/volumes (VOLUME_TYPE_MAP (*)), no WARN, 3 mapped",
+   r.rc == [0, 0] and (INFO_DATA2 % ("rbd-hdd", "volumes")) + " (VOLUME_TYPE_MAP (*))" in plan
    and "  WARN  source type" not in plan and "  INFO  VOLUME_TYPE_MAP in use: 3 volume(s) mapped" in plan
    and has(r.calls, "dst\tvolume create app01-vdc --size 1 --type rbd-hdd ")
    and "vol-src-data2 rbd-hdd volumes\n" in (read(os.path.join(r.state, "app01", "volume-types")) or ""),
    (r.rc, plan[-1500:]))
 w = vtm_world()
 w["src"]["volumes"]["vol-src-data2"].pop("type")
-r = app(w, [("plan", "app01", PLAIN)], env=menv(MAP + ",__DEFAULT__:rbd-hdd"))
-ok("T3 a source volume without a type takes __DEFAULT__ too", r.rc == [0] and (
+r = app(w, [("plan", "app01", PLAIN)], env=menv(MAP + ",*:rbd-hdd"))
+ok("T3 a source volume without a type takes '*' too", r.rc == [0] and (
     "  INFO  volume vol-src-data2 (data2) source type unknown -> destination type rbd-hdd pool volumes "
-    "(VOLUME_TYPE_MAP (__DEFAULT__))") in r.out, r.out[-1500:])
+    "(VOLUME_TYPE_MAP (*))") in r.out, r.out[-1500:])
 r = app(w, [("plan", "app01", PLAIN)], env=menv())
-ok("T3 ... and without __DEFAULT__ it lands on the run's type with a WARN naming it 'unknown'",
-   r.rc == [0] and "  WARN  source type unknown has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on default"
+ok("T3 ... and without '*' it lands on the run's type with a WARN naming it 'unknown'",
+   r.rc == [0] and "  WARN  source type unknown has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on default"
    in r.out, r.out[-1500:])
 
 # ================================ T4: a mapped destination type that does not exist ================================
@@ -271,21 +272,25 @@ def eph_world(disk=1):
     return w
 
 
-r = app(eph_world(), [("plan", "eph01", PLAIN), ("migrate", "eph01", PLAIN)], env=menv(MAP + ",__DEFAULT__:rbd-ssd"))
-ok("T7 ephemeral root with __DEFAULT__:rbd-ssd: 'volume create eph01-vda --image ... --type rbd-ssd', checked in "
+r = app(eph_world(), [("plan", "eph01", PLAIN), ("migrate", "eph01", PLAIN)], env=menv(MAP + ",*:rbd-ssd"))
+ok("T7 ephemeral root with *:rbd-ssd: 'volume create eph01-vda --image ... --type rbd-ssd', checked in "
    "volumes-ssd, volume-types 'ephemeral-root rbd-ssd volumes-ssd', plan INFO 'root disk volume -> ... (VOLUME_TYPE_MAP "
-   "(__DEFAULT__))', 1 mapped",
+   "(*))', 1 mapped",
    r.rc == [0, 0] and any(c.startswith("dst\tvolume create eph01-vda --image ") and " --type rbd-ssd " in c
                           for c in r.calls)
    and rbd_info(r.calls, "volumes-ssd", "vol-dst-0001")
    and read(os.path.join(r.state, "eph01", "volume-types")) == "ephemeral-root rbd-ssd volumes-ssd\n"
-   and "  INFO  root disk volume -> destination type rbd-ssd pool volumes-ssd (VOLUME_TYPE_MAP (__DEFAULT__))"
+   and "  INFO  root disk volume -> destination type rbd-ssd pool volumes-ssd (VOLUME_TYPE_MAP (*))"
    in r.outs[0] and "  INFO  VOLUME_TYPE_MAP in use: 1 volume(s) mapped" in r.outs[0]
    and jload(os.path.join(r.state, "eph01", "options.json")).get("effective", {}).get("volume_types", {}).get("value")
-   == {"ephemeral-root": {"type": "rbd-ssd", "pool": "volumes-ssd", "from": "VOLUME_TYPE_MAP (__DEFAULT__)"}},
+   == {"ephemeral-root": {"type": "rbd-ssd", "pool": "volumes-ssd", "from": "VOLUME_TYPE_MAP (*)"}},
    (r.rc, [c for c in r.calls if "volume create" in c], r.err[-500:]))
+r = app(eph_world(), [("plan", "eph01", PLAIN)], env=menv(MAP + ",__DEFAULT__:rbd-ssd"))
+ok("T7 ephemeral root with __DEFAULT__:rbd-ssd (1.2.1: a type name, not the fallback): the run's type, no 'in use' "
+   "line", r.rc == [0] and "  INFO  root disk volume -> destination type default pool volumes (default)" in r.out
+   and "VOLUME_TYPE_MAP in use" not in r.out, (r.rc, r.out[-800:]))
 r = app(eph_world(), [("plan", "eph01", PLAIN), ("migrate", "eph01", PLAIN)], env=menv())
-ok("T7 ephemeral root without __DEFAULT__: the run's type (no --type), RBD_POOL; no 'in use' line, no WARN (no source "
+ok("T7 ephemeral root without '*': the run's type (no --type), RBD_POOL; no 'in use' line, no WARN (no source "
    "type to name)",
    r.rc == [0, 0] and any(c.startswith("dst\tvolume create eph01-vda --image ") and "--type" not in c for c in r.calls)
    and rbd_info(r.calls, "volumes", "vol-dst-0001")
@@ -501,12 +506,12 @@ ok("T22 migrate with an application credential and SRC_PROJECT/DST_PROJECT: the 
 
 # ================================ T23: doctor checks the map's destination types ================================
 w = vtm_world()
-r = app(w, [("doctor",)], env=menv("ps-gold:rbd-nvme,ps-silver:rbd-hdd,__DEFAULT__:rbd-hdd",
+r = app(w, [("doctor",)], env=menv("ps-gold:rbd-nvme,ps-silver:rbd-hdd,*:rbd-hdd",
                                    RBD_POOL_MAP="rbd-hdd:volumes"))
 ok("T23 doctor: 'FAIL VOLUME_TYPE_MAP destination type rbd-nvme (for ps-gold) is not a volume type of the "
-   "destination', 'OK ... rbd-hdd (for ps-silver, __DEFAULT__)', INFO for a type RBD_POOL_MAP does not name; exit 1",
+   "destination', 'OK ... rbd-hdd (for ps-silver, *)', INFO for a type RBD_POOL_MAP does not name; exit 1",
    r.rc == [1] and "  FAIL  VOLUME_TYPE_MAP destination type rbd-nvme (for ps-gold) is not a volume type of the "
-   "destination" in r.out and "  OK    VOLUME_TYPE_MAP destination type rbd-hdd (for ps-silver, __DEFAULT__)" in r.out
+   "destination" in r.out and "  OK    VOLUME_TYPE_MAP destination type rbd-hdd (for ps-silver, *)" in r.out
    and "  INFO  VOLUME_TYPE_MAP destination type rbd-nvme has no RBD_POOL_MAP entry: uses RBD_POOL volumes" in r.out
    and "rbd-hdd has no RBD_POOL_MAP entry" not in r.out
    and r.calls.count("dst\tvolume type list -f value -c Name") == 1, (r.rc, r.out[-1500:]))
@@ -525,32 +530,112 @@ ok("T23 doctor, the listing fails: one FAIL 'VOLUME_TYPE_MAP not checked: cannot
    "  FAIL  VOLUME_TYPE_MAP not checked: cannot list the destination volume types (Service Unavailable (HTTP 503))"
    in r.out, r.out[-800:])
 
-# ================================ T24: version 1.2.0 ================================
+# ================================ T25: __DEFAULT__ is a source type name, '*' the fallback (1.2.1) ================================
+def dflt_world():
+    """T25/T26: root of Cinder's default type '__DEFAULT__' 10 GB, data ps-silver 2 GB, data2 without a type 1 GB."""
+    w = vtm_world()
+    w["src"]["volumes"]["vol-src-root"]["type"] = "__DEFAULT__"
+    w["src"]["volumes"]["vol-src-data2"].pop("type")
+    return w
+
+
+INFO_DROOT = "  INFO  volume vol-src-root (no name) source type __DEFAULT__ -> destination type %s pool %s"
+INFO_NODATA2 = "  INFO  volume vol-src-data2 (data2) source type unknown -> destination type %s pool %s"
+MAP_DS = "__DEFAULT__:rbd-hdd,*:rbd-ssd"
+r = app(dflt_world(), [("plan", "app01", PLAIN), ("migrate", "app01", PLAIN)], env=menv(MAP_DS))
+plan = r.outs[0]
+ok("T25 map __DEFAULT__:rbd-hdd,*:rbd-ssd: the __DEFAULT__ volume -> rbd-hdd/volumes (VOLUME_TYPE_MAP (__DEFAULT__)), "
+   "ps-silver and the volume without a type -> rbd-ssd/volumes-ssd (VOLUME_TYPE_MAP (*)), no WARN, 3 mapped",
+   r.rc == [0, 0] and (INFO_DROOT % ("rbd-hdd", "volumes")) + " (VOLUME_TYPE_MAP (__DEFAULT__))" in plan
+   and (INFO_DATA % ("rbd-ssd", "volumes-ssd")) + " (VOLUME_TYPE_MAP (*))" in plan
+   and (INFO_NODATA2 % ("rbd-ssd", "volumes-ssd")) + " (VOLUME_TYPE_MAP (*))" in plan
+   and "  WARN  source type" not in plan and "  INFO  VOLUME_TYPE_MAP in use: 3 volume(s) mapped" in plan
+   and "  OK    volume type rbd-hdd (VOLUME_TYPE_MAP (__DEFAULT__))" in plan
+   and "  OK    volume type rbd-ssd (VOLUME_TYPE_MAP (*))" in plan, (r.rc, plan[-2500:]))
+ok("T25 migrate: created with --type rbd-hdd (root), --type rbd-ssd (data, data2); volume-types and "
+   "effective.volume_types say so",
+   has(r.calls, "dst\tvolume create app01-vda --size 10 --type rbd-hdd --description ")
+   and has(r.calls, "dst\tvolume create app01-vdb --size 2 --type rbd-ssd --description ")
+   and has(r.calls, "dst\tvolume create app01-vdc --size 1 --type rbd-ssd --description ")
+   and rbd_info(r.calls, "volumes", "vol-dst-0001") and rbd_info(r.calls, "volumes-ssd", "vol-dst-0002")
+   and rbd_info(r.calls, "volumes-ssd", "vol-dst-0003")
+   and read(os.path.join(r.state, "app01", "volume-types")) == "vol-src-root rbd-hdd volumes\n"
+                                                              "vol-src-data rbd-ssd volumes-ssd\n"
+                                                              "vol-src-data2 rbd-ssd volumes-ssd\n"
+   and jload(os.path.join(r.state, "app01", "options.json")).get("effective", {}).get("volume_types", {}).get("value")
+   == {"vol-src-root": {"type": "rbd-hdd", "pool": "volumes", "from": "VOLUME_TYPE_MAP (__DEFAULT__)"},
+       "vol-src-data": {"type": "rbd-ssd", "pool": "volumes-ssd", "from": "VOLUME_TYPE_MAP (*)"},
+       "vol-src-data2": {"type": "rbd-ssd", "pool": "volumes-ssd", "from": "VOLUME_TYPE_MAP (*)"}},
+   (r.rc, [c for c in r.calls if "volume create" in c], read(os.path.join(r.state, "app01", "volume-types"))))
+
+# ================================ T26: __DEFAULT__ without '*' covers only the type of that name ================================
+r = app(dflt_world(), [("plan", "app01", PLAIN), ("migrate", "app01", PLAIN)], env=menv("__DEFAULT__:rbd-hdd"))
+plan = r.outs[0]
+ok("T26 map __DEFAULT__:rbd-hdd without '*': ps-silver lands on the run's type (default) with \"WARN source type "
+   "ps-silver has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on default\" (the volume without a type too, "
+   "as 'unknown'); the __DEFAULT__ volume -> rbd-hdd (VOLUME_TYPE_MAP (__DEFAULT__)); 1 mapped",
+   r.rc == [0, 0] and (INFO_DROOT % ("rbd-hdd", "volumes")) + " (VOLUME_TYPE_MAP (__DEFAULT__))" in plan
+   and (INFO_DATA % ("default", "volumes")) + " (default)" in plan
+   and (INFO_NODATA2 % ("default", "volumes")) + " (default)" in plan
+   and "  WARN  source type ps-silver has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on default" in plan
+   and "  WARN  source type unknown has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on default" in plan
+   and plan.count("  WARN  source type ") == 2 and "  INFO  VOLUME_TYPE_MAP in use: 1 volume(s) mapped" in plan,
+   (r.rc, plan[-2500:]))
+ok("T26 migrate: root created with --type rbd-hdd, data and data2 without --type (the Cinder default of the "
+   "destination)",
+   has(r.calls, "dst\tvolume create app01-vda --size 10 --type rbd-hdd --description ")
+   and has(r.calls, "dst\tvolume create app01-vdb --size 2 --description ")
+   and has(r.calls, "dst\tvolume create app01-vdc --size 1 --description "),
+   (r.rc, [c for c in r.calls if "volume create" in c]))
+r = app(dflt_world(), [("plan", "app01", PLAIN)],
+        env=menv("__DEFAULT__:rbd-hdd", MIG_DEFAULT_OPTS="--volume-type rbd-ssd"))
+ok("T26 ... with the run's type rbd-ssd (MIG_DEFAULT_OPTS): the WARN names it ('lands on rbd-ssd')",
+   r.rc == [0] and "  WARN  source type ps-silver has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on rbd-ssd"
+   in r.out and (INFO_DATA % ("rbd-ssd", "volumes-ssd")) + " (MIG_DEFAULT_OPTS)" in r.out, r.out[-1500:])
+
+# ================================ T27: '*' as a destination is refused before any cloud call ================================
+for bad in ("a:*", "ps-gold:rbd-ssd,*:*"):
+    r = app(vtm_world(), [("migrate", "app01", PLAIN), ("plan", "app01", PLAIN), ("volume", "data", []),
+                          ("rollback", "app01"), mark, ("doctor",)], env=menv(bad))
+    ok("T27 VOLUME_TYPE_MAP=%r: migrate, plan, volume and rollback die \"ERROR: VOLUME_TYPE_MAP: '*' is only a source "
+       "key\" (exit 1), no cloud call; doctor FAILs its conf line with it" % bad,
+       r.rc[:4] == [1, 1, 1, 1] and all(e.count("ERROR: VOLUME_TYPE_MAP: '*' is only a source key") == 1
+                                         for e in r.errs[:4])
+       and r.calls[:1] == ["#rollback"] and "  FAIL  conf " in r.outs[4]
+       and "VOLUME_TYPE_MAP: '*' is only a source key" in r.outs[4] and "Traceback" not in r.text,
+       (r.rc, r.errs[:4], r.calls[:3], r.outs[4][-800:]))
+
+# ================================ T28: version 1.2.1 (T24 of 1.2.0 follows) ================================
 import migratetool  # noqa: E402
 import migui  # noqa: E402
 
-ok("T24 version 1.2.0: migratetool, migui and pyproject agree",
-   migratetool.__version__ == "1.2.0" and migui.__version__ == "1.2.0"
-   and 'version = "1.2.0"' in (read(os.path.join(REPO, "pyproject.toml")) or ""), migratetool.__version__)
+ok("T28 version 1.2.1: migratetool, migui and pyproject agree",
+   migratetool.__version__ == "1.2.1" and migui.__version__ == "1.2.1"
+   and 'version = "1.2.1"' in (read(os.path.join(REPO, "pyproject.toml")) or ""), migratetool.__version__)
 
 # ================================ config.parse_type_map and Options.type_for ================================
 from migratetool import config  # noqa: E402
 from migratetool.options import Options  # noqa: E402
 from migratetool.util import Die  # noqa: E402
 
-ok("parse_type_map: order kept, '' -> {}, __DEFAULT__ a key like the others, ':' split once",
-   list(config.parse_type_map("b:x,a:y,__DEFAULT__:z").items()) == [("b", "x"), ("a", "y"), ("__DEFAULT__", "z")]
+ok("parse_type_map: order kept, '' -> {}, '*' and __DEFAULT__ keys like the others, ':' split once; "
+   "DEFAULT_TYPE_KEY is '*' (1.2.1)",
+   list(config.parse_type_map("b:x,a:y,__DEFAULT__:z,*:w").items())
+   == [("b", "x"), ("a", "y"), ("__DEFAULT__", "z"), ("*", "w")]
    and config.parse_type_map("") == {} and config.parse_type_map("a:b:c") == {"a": "b:c"}
-   and config.parse_type_map("a:b,") == {"a": "b"}, "")
+   and config.parse_type_map("a:b,") == {"a": "b"} and config.DEFAULT_TYPE_KEY == "*"
+   and config.parse_type_map("a:__DEFAULT__") == {"a": "__DEFAULT__"}, "")
 bad = []
-for text in ("a:", ":b", "a", "a:x,a:y", "a:b,,c:d"):
+for text in ("a:", ":b", "a", "a:x,a:y", "a:b,,c:d", "*:x,*:y", "a:*", "*:*"):
     try:
         config.parse_type_map(text)
         bad.append(text)
     except Die as e:
-        if not str(e).startswith("VOLUME_TYPE_MAP: "):
+        if not str(e).startswith("VOLUME_TYPE_MAP: ") or (text.endswith(":*") and
+                                                           str(e) != "VOLUME_TYPE_MAP: '*' is only a source key"):
             bad.append((text, str(e)))
-ok("parse_type_map: a:, :b, a, a twice, an empty entry in the middle: Die 'VOLUME_TYPE_MAP: ...'", not bad, bad)
+ok("parse_type_map: a:, :b, a, a twice, an empty entry in the middle, '*' twice: Die 'VOLUME_TYPE_MAP: ...'; "
+   "a:* and *:* (T27): Die \"VOLUME_TYPE_MAP: '*' is only a source key\"", not bad, bad)
 
 
 class _Cfg:
@@ -566,14 +651,21 @@ class _Cfg:
 
 o = Options()
 o.volume_type, o.type_from = "az-t", "AZ_TYPE_MAP (AZ1)"
-cf = _Cfg(VOLUME_TYPE_MAP="g:t1,__DEFAULT__:t9", RBD_POOL_MAP="t1:p1,az-t:p2")
-ok("type_for: map by source type, __DEFAULT__ for others and for '', the run's type (AZ_TYPE_MAP) only without them; "
+cf = _Cfg(VOLUME_TYPE_MAP="g:t1,*:t9", RBD_POOL_MAP="t1:p1,az-t:p2")
+ok("type_for: map by source type, '*' for others and for '', the run's type (AZ_TYPE_MAP) only without them; "
    "pool_for by RBD_POOL_MAP of that type",
-   o.type_for("g", cf) == ("t1", "VOLUME_TYPE_MAP (g)") and o.type_for("x", cf) == ("t9", "VOLUME_TYPE_MAP (__DEFAULT__)")
-   and o.type_for("", cf) == ("t9", "VOLUME_TYPE_MAP (__DEFAULT__)")
+   o.type_for("g", cf) == ("t1", "VOLUME_TYPE_MAP (g)") and o.type_for("x", cf) == ("t9", "VOLUME_TYPE_MAP (*)")
+   and o.type_for("", cf) == ("t9", "VOLUME_TYPE_MAP (*)")
    and o.type_for("x", _Cfg(VOLUME_TYPE_MAP="g:t1")) == ("az-t", "AZ_TYPE_MAP (AZ1)")
    and o.pool_for("t1", cf) == "p1" and o.pool_for("t9", cf) == "p0" and o.pool_for("", cf) == "p0"
    and o.target("g", cf) == ("t1", "p1", "VOLUME_TYPE_MAP (g)"), (o.type_for("g", cf), o.type_for("x", cf)))
+cd = _Cfg(VOLUME_TYPE_MAP="__DEFAULT__:t5")
+ok("type_for (1.2.1): __DEFAULT__ matches only the source type of that name; without '*' the others (and '') get "
+   "the run's type",
+   o.type_for("__DEFAULT__", cd) == ("t5", "VOLUME_TYPE_MAP (__DEFAULT__)")
+   and o.type_for("x", cd) == ("az-t", "AZ_TYPE_MAP (AZ1)") and o.type_for("", cd) == ("az-t", "AZ_TYPE_MAP (AZ1)")
+   and o.type_for("__DEFAULT__", _Cfg(VOLUME_TYPE_MAP="__DEFAULT__:t5,*:t9")) == ("t5", "VOLUME_TYPE_MAP (__DEFAULT__)"),
+   (o.type_for("__DEFAULT__", cd), o.type_for("x", cd)))
 o.type_cli = True
 ok("type_for: a typed --volume-type wins for every volume", o.type_for("g", cf) == ("az-t", "cli"), o.type_for("g", cf))
 
