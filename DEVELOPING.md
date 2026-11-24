@@ -87,13 +87,19 @@ node tests/ui/guards.mjs .
 
 | Harness | Phạm vi / output |
 |---|---|
-| `tests/unit/run.sh` | checks, unit, p5unit, p6unit, v72unit, v73unit, v1unit, ui; thêm parity khi yêu cầu; `ALL pass=N fail=M` |
+| `tests/unit/run.sh` | checks, unit, p5unit, p6unit, v72unit, v73unit, v1unit, v11unit, v12unit, v13unit, ui (gọi `tests/ui/run.sh`); thêm parity khi `--parity`; `ALL pass=N fail=M` |
 | Unit wrapper E2 | Suite thiếu TOTAL là lỗi; suite rc nonzero dù TOTAL fail 0 cũng bị tính lỗi |
 | `tests/unit/v1unit.py` | Review IDs; real blocksync với fake device/librbd, ownership/delete/A6/locks/deadline/prune/JSON |
+| `tests/unit/v11unit.py` | 1.1.0 (A20): rollback hỏi nguồn trước, nguồn mất hoặc không đọc được thì không xóa gì ở đích |
+| `tests/unit/v12unit.py` | 1.1.1 (A21, P2-a, P2-b): `gone()` chỉ tin câu nêu đúng ID, probe đích trước lần xóa đầu, scope rollback từ record, dòng type/pool preflight; unit của `v12_rule` |
+| `tests/unit/v13unit.py` | 1.2.0: `VOLUME_TYPE_MAP` (type/pool từng volume cold/live/ephemeral/volume đơn, parse, capacity/quota theo pool/type, doctor), R1 `gone()` 404, R3 WARN port/image khi rollback, câu application credential; unit của `v13_rule` |
 | `tests/unit/inproc.py` | App trong process với world giả; thay proc và child để nhanh |
 | `tests/unit/scenarios.py`, `parity.py` | Chạy Bash reference và app qua stubs/Glance giả, so sáu chiều |
-| `tests/ui/run.sh` | security, functional, passwd, install_audit, v1ui và SEC-7 grep; stack thật với CLI giả |
+| `tests/ui/run.sh` | security, functional, passwd, install_audit, v1ui, v11ui, v12ui, v13ui và SEC-7 grep; stack thật với CLI giả |
 | `tests/ui/v1ui.py` | D3 gate, parallel plan, conf digest, notify, audit 503, scrub value, SSE cap, revocation/lockout |
+| `tests/ui/v11ui.py` | 1.1.0 (A20) phía runner: nguồn GONE → 409 trước khi có batch; nguồn không đọc được vẫn chuẩn bị, `original.source_status` null |
+| `tests/ui/v12ui.py` | 1.1.1 (A21) phía runner: đích không đọc được vẫn chuẩn bị, `original.dst_error` mang lý do; GONE/ACTIVE |
+| `tests/ui/v13ui.py` | 1.2.0 (R3c) phía runner: `original.source_error` mang lý do nguồn không đọc được, được scrub như `dst_error` |
 | `tests/ui/guards.mjs` | Fake DOM/fetch chạy app.js, double submit, fingerprint, WARN, stream, controls/CSP/contrast |
 | `tests/ui/browser.mjs` | CDP smoke click-through thật trên stack dùng fake migrate; có bắt đầu migration giả |
 
@@ -112,6 +118,7 @@ So stdout, stderr, rc, state files, chuỗi calls và world cuối. Chuẩn hóa
 | `v73_rule` | Bỏ JSON record mới khỏi so state khi reference không ghi chúng |
 | `v1_rule` | Bỏ các calls kiểm mới theo ID; bỏ owner mark khỏi world/calls khi so reference; chuẩn hóa suffix batch, text marker, C11 warning và exit 3/4/5→1 |
 | `v12_rule` (1.1.1) | Bỏ probe đích A21 đầu tiên của mỗi step rollback của app, probe nguồn A6 của step migrate, token `--all-projects` của listing server chưa ghi ID, các dòng `INFO scope` (scope khôi phục từ record, không có record, volume tìm theo tên) và hai dòng preflight type/pool (P2-b); comment `Intended: v1.1.1 <ID>` |
+| `v13_rule` (1.2.0) | Bỏ các dòng `INFO VOLUME_TYPE_MAP in use`, `INFO volume type … from cli overrides VOLUME_TYPE_MAP`, dòng `RBD access to pool` thứ hai liền sau của cùng VM, các dòng R3 (`INFO destination port … already gone`, `WARN cannot read/delete destination port …`, `WARN cannot list destination images …`) và file state `volume-types`; `effective.volume_types` nằm trong `options.json` đã do `v73_rule` bỏ. Không kịch bản nào đặt map: parity chứng minh map rỗng giữ hành vi 1.1.1; comment `Intended: v1.2.0 <ID>` |
 
 Mỗi normalization `v1_rule` có comment `Intended: v1 <ID>` như A2/A4/A5/A6/A11/A12/A15/C8/C11/C12. `compare(..., v1=True)` tắt normalization v1 cho case cần so hành vi mới. Kịch bản reference ephemeral thêm `--ephemeral-as-image` cho app; rollback app thêm `--yes`. Parity chứng minh phần tương đương đã định nghĩa, không chứng minh binary cũ xử lý an toàn mọi state mới.
 

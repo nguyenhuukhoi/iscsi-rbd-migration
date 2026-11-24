@@ -72,7 +72,7 @@ Form VM nhóm Đích, Mạng, Lưu trữ, Tính toán, Live và Nâng cao. Form 
 
 | Nhóm/control | Thao tác và ý nghĩa |
 |---|---|
-| Project đích | Chỉ xem mapping; muốn đổi phải sửa `PROJECT_MAP_FILE` trên host rồi plan lại ([GUIDE.md](GUIDE.md#41-project_map_file--đổi-tên-project-ở-đích)). AZ → type → pool và flavor map: [GUIDE.md](GUIDE.md#42-az_type_map-và-rbd_pool_map--az-quyết-định-volume-type-và-pool), [mục 4.3](GUIDE.md#43-flavor_map_file--flavor-đích-khi-không-có-flavor-cùng-tên) |
+| Project đích | Chỉ xem mapping; muốn đổi phải sửa `PROJECT_MAP_FILE` trên host rồi plan lại ([GUIDE.md](GUIDE.md#41-project_map_file--đổi-tên-project-ở-đích)). AZ → type → pool và flavor map: [GUIDE.md](GUIDE.md#42-az_type_map-volume_type_map-và-rbd_pool_map--type-và-pool-của-từng-volume), [mục 4.3](GUIDE.md#43-flavor_map_file--flavor-đích-khi-không-có-flavor-cùng-tên) |
 | AZ, host đích | Chọn từ inventory; để host mặc định thì Nova scheduler chọn |
 | ip: same / new / theo dòng | same giữ IP/MAC và tháo port nguồn; new cấp mới; **theo dòng** mở bảng "VM đã chọn → IP mới" ngay trong nhóm Mạng: nhập IPv4 cho từng VM (một NIC), ô trống = same; IP sai định dạng khóa nút Plan |
 | Keep source ports | Mở cảnh báo và cần acknowledge; vẫn có thể được bật ngầm bởi MIG_DEFAULT_OPTS |
@@ -116,7 +116,7 @@ Checkbox dừng đợt khi một con FAIL được bật theo mặc định. T�
 
 ### Rollback dialog
 
-Mở từ hàng có state, Lịch sử hoặc banner sự cố; tiêu đề **Rollback <tên>**. Dialog liệt kê **Sẽ xóa: N server · N port · N volume · N image** (ID đầy đủ trong mục "ID tài nguyên sẽ xóa"), thời điểm cutover và tuổi t-stop, trạng thái server đích nếu đọc được, nguồn đang ACTIVE/SHUTOFF và nguồn sẽ được bật lại hay giữ SHUTOFF. Tick chấp nhận mất dữ liệu ghi ở đích từ thời điểm cutover, rồi gõ tên hoặc ident đầy đủ; nút đỏ **Rollback <tên>** chỉ bật khi cả hai khớp và xác nhận chưa hết hạn (đếm ngược hiện dưới ô gõ). Đóng dialog trở về màn đã mở nó.
+Mở từ hàng có state, Lịch sử hoặc banner sự cố; tiêu đề **Rollback <tên>**. Dialog liệt kê **Sẽ xóa: N server · N port · N volume · N image** (ID đầy đủ trong mục "ID tài nguyên sẽ xóa"), thời điểm cutover và tuổi t-stop, trạng thái server đích nếu đọc được, nguồn đang ACTIVE/SHUTOFF và nguồn sẽ được bật lại hay giữ SHUTOFF. Dòng **Nguồn hiện tại** là trạng thái nguồn lúc chuẩn bị rollback; nguồn không đọc được thì hiện `không đọc được (<lý do>)` với lý do lấy từ CLI (đã scrub giá trị bí mật), ví dụ `không đọc được (Service Unavailable (HTTP 503))`, và engine sẽ từ chối rollback cho tới khi đọc được. Tick chấp nhận mất dữ liệu ghi ở đích từ thời điểm cutover, rồi gõ tên hoặc ident đầy đủ; nút đỏ **Rollback <tên>** chỉ bật khi cả hai khớp và xác nhận chưa hết hạn (đếm ngược hiện dưới ô gõ). Đóng dialog trở về màn đã mở nó.
 
 Dry-run có thể chưa liệt kê orphan chưa ghi ID. Xác minh cloud/state trước khi confirm. Rollback xóa bản đích, không reverse-sync. Nguồn ban đầu SHUTOFF vẫn SHUTOFF. Không cần Doctor xanh để xử lý rollback.
 

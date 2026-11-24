@@ -71,7 +71,7 @@ Giá trị thực tế và nguồn nằm trong `effective` của plan và `optio
 |---|---|---|---|
 | `--mode cold\|live` | Cold copy trong downtime; live pre-sync rồi delta cuối | `cold` | CLI, `MIG_DEFAULT_OPTS` |
 | `--ip same\|new\|<addr>` | Giữ IP/MAC; cấp mới; IP chỉ định cho một NIC | `same` | CLI, `MIG_DEFAULT_OPTS` |
-| `--volume-type TYPE` | Type mọi volume đích | Cloud default nếu không map | CLI, `AZ_TYPE_MAP`, `MIG_DEFAULT_OPTS` |
+| `--volume-type TYPE` | Type mọi volume đích; gõ trong lệnh thì thắng cả `VOLUME_TYPE_MAP` | Từng volume theo `VOLUME_TYPE_MAP`, rồi map AZ, rồi cloud default | CLI, `VOLUME_TYPE_MAP` (theo type nguồn), `AZ_TYPE_MAP`, `MIG_DEFAULT_OPTS` |
 | `--az AZ` | Compute AZ; fallback volume AZ | Scheduler | CLI, `MIG_AZ`, `MIG_DEFAULT_OPTS`; suy từ host |
 | `--volume-az AZ` | Cinder AZ | Compute AZ hiệu lực | CLI, `MIG_VOLUME_AZ`, `MIG_DEFAULT_OPTS` |
 | `--dst-host HOST` | Nova host đích; cần admin và API 2.74 | Scheduler | Chỉ CLI; cấm trong `MIG_DEFAULT_OPTS` |
@@ -130,6 +130,7 @@ File `/opt/mig/migrate.conf`, hoặc env `MIG_CONF`, chỉ là dữ liệu `KEY=
 | `MIG_AZ` | Compute AZ | Rỗng |
 | `MIG_VOLUME_AZ` | Cinder AZ | Rỗng: theo compute AZ |
 | `AZ_TYPE_MAP` | `AZ:type,AZ:type` | Rỗng |
+| `VOLUME_TYPE_MAP` | `type-nguồn:type-đích,…[,__DEFAULT__:type-đích]`: type đích của từng volume theo tên type nguồn | Rỗng: mọi volume dùng type của lần chạy |
 | `MIG_DEFAULT_OPTS` | Token option tách whitespace | Rỗng |
 | `MIG_LOCK` | Khóa chung CLI/UI | `/run/mig/migrate.lock` |
 | `MIG_CMD_TIMEOUT` | Deadline control-plane, giây; `0` tắt | `600` |
@@ -139,7 +140,7 @@ Bảng bao gồm mọi khóa của [migrate.conf.example](migrate.conf.example),
 
 Thứ tự chung, nguồn trước thắng nguồn sau: option gõ trong lệnh, rồi biến môi trường, rồi conf, rồi mặc định của tool. Biến môi trường đặt rỗng vẫn thắng conf, sau đó khóa có mặc định thì dùng mặc định. **Ngoại lệ `SYS_PY`: conf thắng biến môi trường** (`config.load`).
 
-Compute AZ, volume type và pool có thứ tự riêng: xem bảng ở [mục 4.2](#42-az_type_map-và-rbd_pool_map--az-quyết-định-volume-type-và-pool). Volume AZ lấy theo thứ tự: `--volume-az` gõ trong lệnh, rồi `MIG_VOLUME_AZ`, rồi `--volume-az` trong `MIG_DEFAULT_OPTS`; không có thì bằng compute AZ.
+Compute AZ, volume type (của từng volume) và pool có thứ tự riêng: xem bảng ở [mục 4.2](#42-az_type_map-volume_type_map-và-rbd_pool_map--type-và-pool-của-từng-volume). Volume AZ lấy theo thứ tự: `--volume-az` gõ trong lệnh, rồi `MIG_VOLUME_AZ`, rồi `--volume-az` trong `MIG_DEFAULT_OPTS`; không có thì bằng compute AZ.
 
 Ví dụ, thay tên theo inventory đã nghiệm thu:
 
@@ -207,17 +208,19 @@ Không tự tạo project, flavor, type, pool, network hoặc subnet. Đóng bă
 | `migrate volume <volume>` một volume lẻ | **Không đọc map**: dùng `SRC_PROJECT`/`DST_PROJECT` của env hoặc conf. `migrate volume --project … --available` thì có map |
 | Rollback | Dùng scope của state hoặc của hint trong log; đổi map sau đó không ảnh hưởng |
 
-### 4.2. AZ_TYPE_MAP và RBD_POOL_MAP — AZ quyết định volume type và pool
+### 4.2. AZ_TYPE_MAP, VOLUME_TYPE_MAP và RBD_POOL_MAP — type và pool của từng volume
 
-**Khi nào cần:** đích có nhiều AZ, mỗi AZ có backend Ceph riêng. Ví dụ AZ1 dùng type `rbd-az1` (pool `volumes-az1`), AZ2 dùng `rbd-az2` (pool `volumes-az2`).
+**Khi nào cần:** đích có nhiều AZ, mỗi AZ có backend Ceph riêng (ví dụ AZ1 dùng type `rbd-az1`, pool `volumes-az1`; AZ2 dùng `rbd-az2`, pool `volumes-az2`): `AZ_TYPE_MAP`. Nguồn có nhiều volume type cần giữ phân loại ở đích (ví dụ PowerStore `ps-gold` → `rbd-ssd`, `ps-silver` → `rbd-hdd`): `VOLUME_TYPE_MAP`. Hai map dùng chung được.
 
-**Tool chọn ba giá trị theo thứ tự cho mỗi VM.** Mỗi giá trị lấy nguồn **đầu tiên** có giá trị trong cột giữa; không nguồn nào có thì dùng cột cuối. Bước sau dùng kết quả của bước trước.
+**Tool chọn theo thứ tự.** Compute AZ chọn một lần cho VM; type và pool chọn **cho từng volume**. Mỗi giá trị lấy nguồn **đầu tiên** có giá trị trong cột giữa; không nguồn nào có thì dùng cột cuối. Bước sau dùng kết quả của bước trước.
 
 | Bước | Giá trị | Thứ tự ưu tiên | Không có nguồn nào |
 |---|---|---|---|
-| 1 | compute AZ | `--az` gõ trong lệnh → `MIG_AZ` trong conf → `--az` trong `MIG_DEFAULT_OPTS` | Nova tự chọn AZ, và bước 2 **không** tra `AZ_TYPE_MAP` |
-| 2 | volume type | `--volume-type` gõ trong lệnh → `AZ_TYPE_MAP` tra theo compute AZ của bước 1 → `--volume-type` trong `MIG_DEFAULT_OPTS` | type mặc định của Cinder đích |
-| 3 | pool RBD | `RBD_POOL_MAP` tra theo volume type của bước 2 | `RBD_POOL` |
+| 1 | compute AZ (cả VM) | `--az` gõ trong lệnh → `MIG_AZ` trong conf → `--az` trong `MIG_DEFAULT_OPTS` | Nova tự chọn AZ, và bước 2 **không** tra `AZ_TYPE_MAP` |
+| 2 | volume type (từng volume) | `--volume-type` gõ trong lệnh (mọi volume, bỏ qua `VOLUME_TYPE_MAP`) → `VOLUME_TYPE_MAP` tra theo **tên type nguồn** của volume → `VOLUME_TYPE_MAP` khóa `__DEFAULT__` → `AZ_TYPE_MAP` tra theo compute AZ của bước 1 → `--volume-type` trong `MIG_DEFAULT_OPTS` | type mặc định của Cinder đích |
+| 3 | pool RBD (từng volume) | `RBD_POOL_MAP` tra theo volume type của bước 2 | `RBD_POOL` |
+
+Ba nguồn cuối của bước 2 (`AZ_TYPE_MAP`, `MIG_DEFAULT_OPTS`, default) gọi chung là **type của lần chạy**: header plan `type=… pool=…` và `effective.volume_type`/`effective.pool` luôn in type/pool này; type/pool thật của từng volume nằm ở dòng INFO từng volume và `effective.volume_types`.
 
 Ví dụ với conf `MIG_AZ=AZ1`, `AZ_TYPE_MAP="AZ1:rbd-az1,AZ2:rbd-az2"`, `RBD_POOL_MAP="rbd-az1:volumes-az1,rbd-az2:volumes-az2"`:
 
@@ -271,6 +274,19 @@ Ví dụ với conf `MIG_AZ=AZ1`, `AZ_TYPE_MAP="AZ1:rbd-az1,AZ2:rbd-az2"`, `RBD_
 - **`--dst-host` mà không `--az`:** nếu zone của host có trong `AZ_TYPE_MAP`, preflight FAIL và yêu cầu `--az <zone>` hoặc `--volume-type`, để không chọn nhầm pool.
 - **`MIG_VOLUME_AZ`/`--volume-az`** chỉ đổi AZ của Cinder volume, không đổi type. Map tra theo **compute AZ**.
 - **Volume rời** (`migrate volume`) dùng cùng chuỗi suy ra với `--az` của lệnh đó.
+
+**VOLUME_TYPE_MAP: type đích theo type nguồn.** `VOLUME_TYPE_MAP="type-nguồn:type-đích,type-nguồn:type-đích[,__DEFAULT__:type-đích]"`, cùng định dạng hai map trên. Khóa là **tên** volume type nguồn như `openstack volume show` in (trường `type`). `__DEFAULT__` áp cho volume có type nguồn không có trong map, volume nguồn không có type, và root disk của VM ephemeral (không có volume nguồn). Không có `__DEFAULT__` thì các volume đó dùng type của lần chạy và preflight in `WARN source type <s> has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on <type>`. Map sai dạng (cặp thiếu `:`, thiếu một vế, type nguồn ghi hai lần) thì mọi lệnh dừng `VOLUME_TYPE_MAP: …` trước khi gọi cloud. Map rỗng: như bản trước, một type cho cả lần chạy.
+
+Ví dụ: conf `VOLUME_TYPE_MAP="ps-gold:rbd-ssd,ps-silver:rbd-hdd"`, `RBD_POOL_MAP="rbd-ssd:volumes-ssd,rbd-hdd:volumes"`, `RBD_POOL=volumes`; VM có root type `ps-gold` 10 GB, data type `ps-silver` 2 GB, data2 type `ps-bronze` 1 GB.
+
+| Lệnh / conf | root | data | data2 | Preflight |
+|---|---|---|---|---|
+| `migrate plan app01` | `rbd-ssd` / `volumes-ssd` | `rbd-hdd` / `volumes` | type của lần chạy (default) / `volumes` | `WARN source type ps-bronze has no entry …`; Ceph `volumes-ssd` 10 GB, `volumes` 3 GB; hai dòng `RBD access to pool` |
+| `migrate plan app01 --volume-type rbd-hdd` | `rbd-hdd` / `volumes` | `rbd-hdd` / `volumes` | `rbd-hdd` / `volumes` | Một dòng `INFO volume type rbd-hdd from cli overrides VOLUME_TYPE_MAP` |
+| thêm `__DEFAULT__:rbd-hdd` vào map | `rbd-ssd` / `volumes-ssd` | `rbd-hdd` / `volumes` | `rbd-hdd` / `volumes` | Không WARN |
+| map `ps-gold:rbd-nvme` mà đích không có `rbd-nvme` | — | — | — | `FAIL destination volume type rbd-nvme (VOLUME_TYPE_MAP (ps-gold)) does not exist`; migrate dừng trước khi tạo gì, chưa đụng nguồn |
+
+Plan in mỗi volume một dòng `INFO volume <id> (<tên>) source type <s> -> destination type <t> pool <p> (<nguồn>)` (nguồn: `VOLUME_TYPE_MAP (<s>)`, `VOLUME_TYPE_MAP (__DEFAULT__)`, `cli`, `AZ_TYPE_MAP (<AZ>)`, `MIG_DEFAULT_OPTS` hoặc `default`), sau header một dòng `INFO VOLUME_TYPE_MAP in use: <n> volume(s) mapped`, kiểm `volume type show` một lần cho mỗi type đích, dung lượng Ceph và `RBD access` cho mỗi pool, quota `volumes_<type>`/`gigabytes_<type>` theo type đã map. `options.json` và `plan --json` có `effective.volume_types` (`{"value": {<id volume nguồn>|"ephemeral-root": {"type", "pool", "from"}}, "from": "conf", "detail": "VOLUME_TYPE_MAP"}`); thư mục state có file `volume-types` (`<id nguồn> <type|-> <pool>` mỗi dòng). `migrate doctor` kiểm mỗi type đích của map có trong `volume type list` ở đích (một dòng OK/FAIL mỗi type) và báo INFO khi `RBD_POOL_MAP` có đặt mà không có dòng cho type đó (dùng `RBD_POOL`). Rollback không đổi: xóa theo `volume-map`, không cần pool.
 
 ### 4.3. FLAVOR_MAP_FILE — flavor đích khi không có flavor cùng tên
 
@@ -360,7 +376,9 @@ Hai lệnh cuối dừng VM nguồn, không tạo VM đích. Kiểm `volume-map`
 
 Rollback hỏi nguồn trước khi xóa gì ở đích (A20): nguồn trả not found (`source_status` = `GONE` trong dry-run: VM/volume đã bị xóa, credentials/`SRC_PROJECT` nguồn không thấy nó, hoặc sai endpoint/region) thì rollback từ chối, exit 1, không xóa gì ở đích vì đích có thể là bản sao duy nhất còn lại; kiểm scope và endpoint nguồn trước; muốn bỏ state đó thì xóa thư mục state bằng tay (`prune` không đụng state sống). Không đọc được nguồn (`source_status` = `null`) thì cũng từ chối: sửa credentials/`SRC_PROJECT` rồi chạy lại. Rollback chạy lại sau khi lỗi giữa chừng vẫn qua khi nguồn vẫn đọc được.
 
-Rollback cũng phải đọc được đích trước lệnh xóa đầu tiên (A21, 1.1.1): `server show` server đích đã ghi (không có thì volume đích đầu tiên) trả đúng object hoặc not found nêu đúng ID thì đi tiếp; lỗi không nêu object (ví dụ `public endpoint for compute service in RegionOne region not found` khi sai `OS_REGION_NAME`/`OS_INTERFACE` hoặc catalog đích đổi, `(HTTP 404)` trần) thì dừng `cannot read destination ...`, không xóa gì, không đụng nguồn (`dst_server_status` = `null`, `dst_error` trong dry-run); sửa credentials/endpoint/`DST_PROJECT` rồi chạy lại. Scope: rollback tự lấy `SRC_PROJECT`/`DST_PROJECT` từ `options.json` của state khi môi trường không đặt (log `INFO scope ... (from the state's options.json)`); đặt khác record thì dừng `scope mismatch`, không làm gì; bỏ hai biến đó hoặc đặt đúng giá trị của state rồi chạy lại. Rollback dùng cùng loại openrc với lần migrate: state ghi bằng password openrc (record có project) rollback bằng application credential bị từ chối `needs a password openrc`, vì application credential không rescope được.
+Rollback cũng phải đọc được đích trước lệnh xóa đầu tiên (A21, 1.1.1): `server show` server đích đã ghi (không có thì volume đích đầu tiên) trả đúng object hoặc not found nêu đúng ID thì đi tiếp; lỗi không nêu object (ví dụ `public endpoint for compute service in RegionOne region not found` khi sai `OS_REGION_NAME`/`OS_INTERFACE` hoặc catalog đích đổi, `(HTTP 404)` trần) thì dừng `cannot read destination ...`, không xóa gì, không đụng nguồn (`dst_server_status` = `null`, `dst_error` trong dry-run); sửa credentials/endpoint/`DST_PROJECT` rồi chạy lại. Scope: rollback tự lấy `SRC_PROJECT`/`DST_PROJECT` từ `options.json` của state khi môi trường không đặt (log `INFO scope ... (from the state's options.json)`); đặt khác record thì dừng `scope mismatch`, không làm gì; bỏ hai biến đó hoặc đặt đúng giá trị của state rồi chạy lại. Rollback dùng cùng loại openrc với lần migrate: state ghi bằng password openrc (record có project) rollback bằng application credential bị từ chối `this state was written by a run scoped with SRC_PROJECT=<A> DST_PROJECT=<B> (a password openrc); <openrc> is an application credential, which cannot be rescoped`, không làm gì; chạy lại bằng đúng password openrc đã migrate.
+
+Port đích hoặc image tạm mà rollback không đọc/xóa được (lỗi quyền, endpoint) không làm rollback dừng: dòng `WARN cannot read destination port <id> (…): left, check it by hand`, `WARN cannot delete destination port <id> (…): delete it by hand` hoặc `WARN cannot list destination images named mig-snap-<vm>: skipped`, rollback vẫn trả nguồn; sau đó kiểm và xóa tay ở đích. Port đã mất in `INFO destination port <id> already gone`.
 
 Rollback xóa server/port/volume/image đích của lần chạy, dọn clone, trả port và trạng thái điện nguồn lúc export. SG/server group copy được giữ. Nguồn vốn `SHUTOFF` vẫn `SHUTOFF`; nguồn vốn chạy được start lại. **Không reverse sync**. RPO: mất toàn bộ ghi chỉ có ở đích sau cutover. `t_stop` là thời gian marker, không phải thời gian ứng dụng chạy ở đích.
 
