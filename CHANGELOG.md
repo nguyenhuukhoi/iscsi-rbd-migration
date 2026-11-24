@@ -13,6 +13,28 @@ Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit 
 Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
 [archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
 
+## [1.2.1] — 2026-11-25 · branch `type-map-star` · VOLUME_TYPE_MAP fallback key `*`; `__DEFAULT__` is a real type name
+
+Thiết kế: phụ lục 1.2.1 của thiết kế 1.2 (từ L2 của review độc lập 1.2.0: Cinder đặt tên type mặc định thật là `__DEFAULT__`, trùng khóa fallback của 1.2.0, trong khi `RBD_POOL_MAP` đã hiểu `__DEFAULT__` là tên type thật). Test: `bash tests/unit/run.sh --parity` (`tests/unit/v13unit.py` T3/T7/T23 đổi sang `*`, thêm T25–T28): trên mig-host `ALL pass=1081 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 75, ui 193, parity 205); UI guards 130/0. Parity không đổi (`v13_rule` không khớp câu WARN). Báo cáo: `TEST-REPORT-1.2.1.md` (labkit). Commit chính: `1cb9107` (map), `3dd3ff2` (test), `372a6c1` (docs).
+
+### Thêm
+
+- `VOLUME_TYPE_MAP` khóa `*`: `*:type-đích` là fallback cho volume nguồn có type không có trong map, volume nguồn không có type và root disk ephemeral. Nhãn nguồn của dòng INFO và `effective.volume_types[...].from`: `VOLUME_TYPE_MAP (*)`. `doctor` liệt kê `*` trong các nguồn của type đích (`OK VOLUME_TYPE_MAP destination type rbd-hdd (for ps-silver, *)`).
+- `*` ở vế đích (`a:*`) dừng mọi lệnh `VOLUME_TYPE_MAP: '*' is only a source key` trước khi gọi cloud; `doctor` FAIL dòng conf với câu đó.
+
+### Đổi hành vi
+
+- **Không tương thích ngược có chủ đích, không có shim:** trong `VOLUME_TYPE_MAP`, `__DEFAULT__` giờ là **tên type thật** (type mặc định của Cinder), khớp đúng chuỗi như mọi tên khác và như trong `RBD_POOL_MAP`; không còn là fallback. Conf viết `__DEFAULT__:x` với ý fallback (cách viết của 1.2.0) giờ chỉ đổi type của volume nguồn mang type `__DEFAULT__`; các type nguồn khác không có trong map về type của lần chạy kèm WARN. Đổi thành `*:x`. Ví dụ: map `__DEFAULT__:rbd-hdd,*:rbd-ssd` đưa volume type `__DEFAULT__` về `rbd-hdd` (`VOLUME_TYPE_MAP (__DEFAULT__)`), volume `ps-silver` và volume không có type về `rbd-ssd` (`VOLUME_TYPE_MAP (*)`).
+- Câu WARN preflight: `source type <s> has no entry in VOLUME_TYPE_MAP and no '*' entry: lands on <type>` (1.2.0: `… and no __DEFAULT__: …`).
+
+### Sửa
+
+- **L2** Không map riêng được volume nguồn type `__DEFAULT__` khác với fallback, và nhãn `VOLUME_TYPE_MAP (__DEFAULT__)` không nói khớp theo tên hay theo fallback: nay `(__DEFAULT__)` luôn là khớp tên, `(*)` luôn là fallback.
+
+### Biết trước
+
+- Như 1.2.0 (map chỉ theo tên type nguồn; `--verify readback` qua cùng handle librbd; canary 2023.1 + PowerStore chưa chạy). Đường copy và rollback không đổi so với 1.2.0.
+
 ## [1.2.0] — 2026-11-24 · branch `volume-type-map` · VOLUME_TYPE_MAP (type and pool per volume), rollback WARNs instead of silence, README upgrade
 
 Thiết kế: xem review 1.1.0 backlog (việc 1–5; ngoài phạm vi: rbd_cache readback, scrub `source_error` ngoài scrub value hiện có, canary PowerStore/2023.1). Test: `bash tests/unit/run.sh --parity` (bộ mới `tests/unit/v13unit.py`, `tests/ui/v13ui.py`, case `source_error` trong `tests/ui/guards.mjs`): trên mig-host `ALL pass=1072 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 66, ui 193, parity 205); UI guards 130/0. Parity không đặt map: map rỗng giữ hành vi 1.1.1 (quy tắc `v13_rule`). Báo cáo: `TEST-REPORT-1.2.0.md` (labkit). Commit chính: `1d22035` (map), `33ada51` (R1), `f205203` (R3), `9c81ad2` (lời từ chối application credential), `341178c` (test), `5adcd93`/`e006de6` (docs).
