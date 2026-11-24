@@ -549,6 +549,7 @@ def run_rollback(target, yes=True, dry_run=False, as_json=False, ask=False):
         note = ("INFO scope: %s is looked up through the source cloud: using SRC_PROJECT/DST_PROJECT of this "
                 "environment" % target)
         origin = "env" if (cfg.SRC_PROJECT or cfg.DST_PROJECT) else "none"
+    cfg.scope_origin = origin  # 1.2.0: check_project_scope words its refusal by where the scope came from
     if note:
         if dry_run and as_json:
             print(note, file=sys.stderr, flush=True)

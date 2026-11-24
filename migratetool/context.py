@@ -56,6 +56,13 @@ class Run:
         """An application credential cannot be rescoped: fail before touching anything."""
         for project, cloud in ((self.cfg.SRC_PROJECT, self.src), (self.cfg.DST_PROJECT, self.dst)):
             if project and "applicationcredential" in cloud.auth_type():
+                if getattr(self.cfg, "scope_origin", None) == "record":
+                    # 1.2.0: a rollback whose scope came from the state (cli.rollback_scope): the openrc is the
+                    # problem, not SRC_PROJECT/DST_PROJECT (this run did not set them, or set them as recorded).
+                    raise Die("this state was written by a run scoped with SRC_PROJECT=%s DST_PROJECT=%s (a password "
+                              "openrc); %s is an application credential, which cannot be rescoped: run the rollback "
+                              "with the password openrc that wrote the state; nothing was done"
+                              % (self.cfg.SRC_PROJECT or "none", self.cfg.DST_PROJECT or "none", cloud.rc))
                 raise Die("SRC_PROJECT/DST_PROJECT needs a password openrc: an application credential "
                           "is bound to one project (%s)" % cloud.rc)
         # B3: two openrcs of one Keystone are almost always a copy-paste mistake ('migrate doctor' FAILs on it).
