@@ -214,20 +214,21 @@ def root_volume_from_image(r, st, sid, dimg, size):
     """A9: the destination root disk as a volume made from the uploaded image (Cinder copies the image into it),
     recorded in volume-map as 'ephemeral-root <id>' before the wait (rollback deletes it); the image is deleted once
     the volume is available (rollback still deletes either)."""
+    from .copyvol import check_in_pool, record_volume
     from .server import EPHEMERAL_ROOT
+    # 1.2.0: no source volume, so no source type: VOLUME_TYPE_MAP's __DEFAULT__ when it has one, else the run's type.
+    vtype, pool, _frm = r.opts.target("", r.cfg)
     name = "%s-vda" % jqs(st.json("server.json").get("name"))
     args = ["volume", "create", name, "--image", dimg, "--size", str(size)]
-    if r.opts.volume_type:
-        args += ["--type", r.opts.volume_type]
+    if vtype:
+        args += ["--type", vtype]
     if r.opts.volume_az:
         args += ["--availability-zone", r.opts.volume_az]
     args += ["--description", "migrated from %s (ephemeral root disk)" % sid, "-f", "value", "-c", "id"]
     dvid = r.dst.value(*args)
-    st.append("volume-map", "%s %s" % (EPHEMERAL_ROOT, dvid))
+    record_volume(r, st, EPHEMERAL_ROOT, dvid, vtype, pool)
     r.wait_volume(r.dst, dvid, "available")
-    if not r.rbd("-p", r.pool, "info", "volume-" + dvid):
-        raise Die("volume-%s not visible in pool %s: wrong RBD_POOL_MAP for type '%s', or %s lacks caps on that pool"
-                  % (dvid, r.pool, r.opts.volume_type or "default", r.cfg.RBD_USER))
+    check_in_pool(r, dvid, vtype, pool)
     if r.dst.run("image", "delete", dimg, stderr=proc.CAPTURE).rc == 0:
         log("root disk copied into destination volume %s (%s GB); image %s deleted" % (dvid, size, dimg))
     else:

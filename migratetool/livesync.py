@@ -15,7 +15,7 @@ import sys
 import time
 
 from . import proc, progress
-from .copyvol import attach_clone, drop_clone
+from .copyvol import attach_clone, dest_pool, drop_clone
 from .util import Die, log
 
 BLOCKSYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blocksync.py")
@@ -27,9 +27,10 @@ BLOCKSYNC_LINE = re.compile(r"^\[blocksync\] (\d+)% .*changed (\d+) MiB")
 def sync_volume_pass(r, vid, dvid, st, pass_no, first, final):
     """One blocksync pass from a fresh clone; returns the pass delta in MB (bash CHANGED_MB)."""
     vflag = ["--verify", "none"] if r.opts.verify == "none" else ["--verify", "readback"]
+    pool = dest_pool(r, st, vid)  # 1.2.0: the pool of this volume (VOLUME_TYPE_MAP), not the run's
     attach_clone(r, vid, st)
     # -I: the script's own directory (this package) must not shadow the modules blocksync and librbd import.
-    cmd = [r.cfg.SYS_PY, "-I", BLOCKSYNC, "--device", r.device, "--pool", r.pool, "--image", "volume-" + dvid,
+    cmd = [r.cfg.SYS_PY, "-I", BLOCKSYNC, "--device", r.device, "--pool", pool, "--image", "volume-" + dvid,
            "--id", r.cfg.RBD_USER, "--conf", r.cfg.CEPH_CONF, "--state", st.p("hash-%s.bin" % vid)]
     if first:
         cmd.append("--first")
@@ -68,7 +69,7 @@ def sync_volume_pass(r, vid, dvid, st, pass_no, first, final):
     if final and r.opts.verify == "full":
         log("full compare (cutover, --verify full)")
         progress.emit("phase", name="verify", volume=vid)
-        img = "rbd:%s/volume-%s:id=%s:conf=%s" % (r.pool, dvid, r.cfg.RBD_USER, r.cfg.CEPH_CONF)
+        img = "rbd:%s/volume-%s:id=%s:conf=%s" % (pool, dvid, r.cfg.RBD_USER, r.cfg.CEPH_CONF)
         t0 = time.monotonic()
         rc = proc.run(["qemu-img", "compare", "-f", "raw", "-F", "raw", r.device, img], env=r.env, capture=False).rc
         r.t_verify += time.monotonic() - t0

@@ -34,8 +34,9 @@ VM_OPTIONS = (
     ("--mode", "cold|live", "cold (default): stop the VM, qemu-img copy + full compare (unless --verify none). "
                             "live: hash-cached pre-sync passes while the VM runs; the cutover only syncs the "
                             "final delta (blocksync, run by SYS_PY)."),
-    ("--volume-type", "TYPE", "Cinder volume type for every destination volume (default: cloud default, or the "
-                              "AZ's entry in AZ_TYPE_MAP). RBD_POOL_MAP maps types to RBD pools."),
+    ("--volume-type", "TYPE", "Cinder volume type for every destination volume, VOLUME_TYPE_MAP included (default: "
+                              "per volume VOLUME_TYPE_MAP by its source type, else the AZ's entry in AZ_TYPE_MAP, else "
+                              "the cloud default). RBD_POOL_MAP maps types to RBD pools."),
     ("--az", "ZONE", "destination availability zone of the server, and of the volumes unless --volume-az (default: "
                      "MIG_AZ, else the destination schedulers pick). Also the <AZ> of the copied group names (without "
                      "--az and MIG_AZ: the destination's only compute AZ)."),

@@ -7,7 +7,7 @@ One '  OK    ' / '  FAIL  ' / '  WARN  ' / '  INFO  ' line per item, exit 1 when
   4. the conf file parses, both openrcs are readable, OS_AUTH_TYPE is one brick understands;
   5. a token on each side; 6. the admin role (--ip same creates ports with --mac-address);
   7. RBD access to RBD_POOL and every pool of RBD_POOL_MAP, iscsid (and multipathd) running, MIG_ISCSI_IP set to an
-     address of this host;
+     address of this host; 1.2.0: every destination type of VOLUME_TYPE_MAP exists at the destination;
   8. the state and log directories can be created and written;
   9. the openrcs are root-owned 0600 (WARN) and name two different Keystones (B3); brick gets a token with the source
      openrc's TLS/interface/region (C7); root, or 'sudo -n' works (B9);
@@ -183,6 +183,39 @@ def check_storage(c, cfg, env):
     if cfg.MIG_MULTIPATH == "1":
         c.check("multipathd on transfer host", lambda: systemctl_ok("is-active", "multipathd", env))
     check_iscsi_ip(c, cfg, env)
+
+
+def check_type_map(c, cfg, dst):
+    """1.2.0: every destination type VOLUME_TYPE_MAP names is a volume type of the destination ('volume type list'), one
+    OK/FAIL line per type; with RBD_POOL_MAP set, a type it does not name lands in RBD_POOL (INFO). Nothing when
+    VOLUME_TYPE_MAP is empty (or did not parse: the conf line said so)."""
+    try:
+        tmap = config.parse_type_map(cfg.values.get("VOLUME_TYPE_MAP", ""))
+    except Die:
+        return
+    if not tmap:
+        return
+    wanted = {}
+    for src, dst_type in tmap.items():
+        wanted.setdefault(dst_type, []).append(src)
+    try:
+        res = dst.run("volume", "type", "list", "-f", "value", "-c", "Name", stderr=proc.CAPTURE)
+    except Die as e:  # an openrc that cannot be sourced: check_side said so already
+        return c.failed("VOLUME_TYPE_MAP not checked: cannot list the destination volume types (%s)" % e)
+    if res.rc != 0:
+        return c.failed("VOLUME_TYPE_MAP not checked: cannot list the destination volume types (%s)"
+                        % (res.stderr.strip().splitlines() or ["exit %d" % res.rc])[-1])
+    there = set(lines(res.stdout))
+    pool_map = {e.split(":", 1)[0] for e in ifs_split(cfg.RBD_POOL_MAP, ",")}
+    for dst_type, srcs in wanted.items():
+        if dst_type in there:
+            out("  OK    VOLUME_TYPE_MAP destination type %s (for %s)" % (dst_type, ", ".join(srcs)))
+        else:
+            c.failed("VOLUME_TYPE_MAP destination type %s (for %s) is not a volume type of the destination"
+                     % (dst_type, ", ".join(srcs)))
+        if cfg.RBD_POOL_MAP and dst_type not in pool_map:
+            out("  INFO  VOLUME_TYPE_MAP destination type %s has no RBD_POOL_MAP entry: uses RBD_POOL %s"
+                % (dst_type, cfg.RBD_POOL))
 
 
 def local_addresses(env):
@@ -402,6 +435,7 @@ def run_doctor(readonly=False, write_check=False):
     check_privileges(c, env)
     check_nova_api(dst)
     check_storage(c, cfg, env)
+    check_type_map(c, cfg, dst)
     if write_check:
         write_check_pools(c, cfg, env)
     check_dirs(c)

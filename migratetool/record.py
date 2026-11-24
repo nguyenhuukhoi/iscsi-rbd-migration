@@ -10,8 +10,8 @@ from . import __version__
 from .jsonout import check_argv, utc, write_private_json
 
 # SEC-2: the only configuration keys a JSON answer carries (never SRC_RC/DST_RC, CEPH_*, OS_*).
-CONF_KEYS = ("MIG_DEFAULT_OPTS", "MIG_AZ", "MIG_VOLUME_AZ", "AZ_TYPE_MAP", "RBD_POOL_MAP", "RBD_POOL",
-             "PROJECT_MAP_FILE", "FLAVOR_MAP_FILE", "SRC_PROJECT", "DST_PROJECT")
+CONF_KEYS = ("MIG_DEFAULT_OPTS", "MIG_AZ", "MIG_VOLUME_AZ", "AZ_TYPE_MAP", "VOLUME_TYPE_MAP", "RBD_POOL_MAP",
+             "RBD_POOL", "PROJECT_MAP_FILE", "FLAVOR_MAP_FILE", "SRC_PROJECT", "DST_PROJECT")
 
 
 def conf_view(cfg):

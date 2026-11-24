@@ -89,6 +89,15 @@
 # Volume type theo AZ, áp khi có AZ hiệu lực mà không truyền --volume-type; --volume-type trên CLI
 # thắng. AZ không có trong map thì như không có map. Mặc định: rỗng
 #AZ_TYPE_MAP="AZ1:nvme-az1,AZ2:nvme-az2"
+# (1.2.0) Volume type đích theo TÊN volume type nguồn, dạng "type-nguồn:type-đích,...", không có khoảng trắng.
+# Mỗi volume của VM lấy type riêng theo type nguồn của nó (pool theo RBD_POOL_MAP của type đó, không có thì RBD_POOL).
+#   - Thứ tự: --volume-type gõ tay (mọi volume, bỏ qua map) > VOLUME_TYPE_MAP[type nguồn] > VOLUME_TYPE_MAP[__DEFAULT__]
+#     > type của lần chạy (AZ_TYPE_MAP, --volume-type trong MIG_DEFAULT_OPTS, default Cinder).
+#   - __DEFAULT__ áp cho type nguồn không có trong map, volume nguồn không có type, và root disk ephemeral.
+#   - Type nguồn không có trong map và không có __DEFAULT__: preflight WARN, volume về type của lần chạy.
+#   - Sai dạng (thiếu ':', thiếu một vế, type nguồn ghi hai lần): tool dừng ngay, chưa gọi cloud.
+#   - Type đích không có ở đích: preflight FAIL; `migrate doctor` cũng kiểm. Mặc định: rỗng (như cũ, một type cho cả lần chạy)
+#VOLUME_TYPE_MAP="ps-gold:rbd-ssd,ps-silver:rbd-hdd,__DEFAULT__:rbd-hdd"
 
 # ---- Option mặc định (v4) ----------------------------------------------------------------------
 # Option luôn muốn có, khỏi gõ mỗi lần. Chuỗi được parse TRƯỚC option CLI của plan/migrate/

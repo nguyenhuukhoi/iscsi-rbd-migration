@@ -6,7 +6,8 @@ pool_for_type of migrate-vm.sh, including every message and the origin tracking.
 import ipaddress
 import re
 
-from .util import Die, ifs_split
+from .config import DEFAULT_TYPE_KEY, parse_type_map
+from .util import Die, ifs_split, jq_alt, jqs
 
 # 7.1 removed --keep-server-group (following the source server group is the default): it is an unknown
 # option now, on the command line and in MIG_DEFAULT_OPTS alike.
@@ -16,6 +17,29 @@ VALUE_OPTS = ("--mode", "--volume-type", "--az", "--volume-az", "--ip", "--flavo
               "--server-group", "--max-passes", "--delta-limit", "--verify", "--dst-host")
 # 7.3 (SEC-5): a hypervisor host name as Nova and 'compute service list' print it
 DST_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+# 1.2.0: the key of the ephemeral root disk in effective.volume_types and in the state file volume-types (the same
+# word volume-map uses for it, server.EPHEMERAL_ROOT)
+EPHEMERAL_ROOT_KEY = "ephemeral-root"
+
+
+def map_pool(vtype, rbd_pool, rbd_pool_map):
+    """(pool, named by RBD_POOL_MAP) of destination type vtype ('' = the Cinder default type: RBD_POOL)."""
+    if vtype and rbd_pool_map:
+        for e in ifs_split(rbd_pool_map, ","):
+            if e.split(":", 1)[0] == vtype:
+                return (e.split(":", 1)[1] if ":" in e else e), True
+    return rbd_pool, False
+
+
+def type_map(cfg):
+    """VOLUME_TYPE_MAP of cfg, parsed ({} when unset; config.load already refused a malformed one)."""
+    return parse_type_map(cfg.values.get("VOLUME_TYPE_MAP", ""))
+
+
+def source_type(v):
+    """The source volume type of a 'volume show -f json' object: its type (or volume_type) field, '' when none."""
+    t = jq_alt(v.get("type"), v.get("volume_type")) if isinstance(v, dict) else None
+    return "" if t is None else jqs(t)
 
 
 class Options:
@@ -222,12 +246,68 @@ class Options:
                 return
 
     def pool_for_type(self, rbd_pool, rbd_pool_map):
-        if self.volume_type and rbd_pool_map:
-            for e in ifs_split(rbd_pool_map, ","):
-                if e.split(":", 1)[0] == self.volume_type:
-                    self.pool_from = "RBD_POOL_MAP"
-                    return e.split(":", 1)[1] if ":" in e else e
-        return rbd_pool
+        """The pool of the run's volume type (r.pool); pool_from records that RBD_POOL_MAP named it."""
+        pool, mapped = map_pool(self.volume_type, rbd_pool, rbd_pool_map)
+        if mapped:
+            self.pool_from = "RBD_POOL_MAP"
+        return pool
+
+    # --- 1.2.0: VOLUME_TYPE_MAP, the type and pool of each volume -------------------------------------------
+    def run_type_from(self):
+        """Where the run's type (step 4 of type_for) comes from: cli, AZ_TYPE_MAP (<zone>), MIG_DEFAULT_OPTS, default."""
+        if self.type_cli:
+            return "cli"
+        if self.type_from:
+            return self.type_from
+        if self.origin("--volume-type") == "MIG_DEFAULT_OPTS":
+            return "MIG_DEFAULT_OPTS"
+        return "default"
+
+    def type_for(self, src_type, cfg):
+        """(destination type, from) of one destination volume whose source volume type is src_type ('' when the
+        source volume has none, and for the root disk of an ephemeral VM, which has no source volume):
+        1. --volume-type typed on the command line, for every volume; 2. VOLUME_TYPE_MAP[src_type];
+        3. VOLUME_TYPE_MAP[__DEFAULT__]; 4. the run's type (AZ_TYPE_MAP, --volume-type of MIG_DEFAULT_OPTS, else ''
+        for the Cinder default). With an empty map every volume gets the run's type, as up to 1.1.1."""
+        if self.type_cli:
+            return self.volume_type, "cli"
+        tmap = type_map(cfg)
+        if src_type and src_type in tmap:
+            return tmap[src_type], "VOLUME_TYPE_MAP (%s)" % src_type
+        if DEFAULT_TYPE_KEY in tmap:
+            return tmap[DEFAULT_TYPE_KEY], "VOLUME_TYPE_MAP (%s)" % DEFAULT_TYPE_KEY
+        return self.volume_type, self.run_type_from()
+
+    @staticmethod
+    def pool_for(vtype, cfg):
+        """The RBD pool of destination type vtype: RBD_POOL_MAP[vtype], else RBD_POOL."""
+        return map_pool(vtype, cfg.RBD_POOL, cfg.RBD_POOL_MAP)[0]
+
+    def target(self, src_type, cfg):
+        """(type, pool, from) of one destination volume (type_for, then pool_for)."""
+        t, frm = self.type_for(src_type, cfg)
+        return t, self.pool_for(t, cfg), frm
+
+    def volume_targets(self, r, st, kind="vm"):
+        """1.2.0: {source volume ID: (type, pool, from)} of every destination volume a run of st creates, in the
+        order of the export, plus 'ephemeral-root' for the root disk of an ephemeral VM that becomes a volume (A9).
+        kind vol: the one volume of volume.json. None while st holds no export (volumes.json / volume.json)."""
+        name = "volume.json" if kind == "vol" else "volumes.json"
+        if not st.exists(name):
+            return None
+        vols = [st.json(name)] if kind == "vol" else st.json(name)
+        got = {}
+        for v in vols:
+            if isinstance(v, dict):
+                got[jqs(v.get("id"))] = self.target(source_type(v), r.cfg)
+        if kind == "vm" and getattr(r, "ephemeral", False) and not self.ephemeral_as_image and not self.volumes_only:
+            got[EPHEMERAL_ROOT_KEY] = self.target("", r.cfg)
+        return got
+
+    @staticmethod
+    def type_map_set(cfg):
+        """VOLUME_TYPE_MAP has at least one entry (an empty map keeps every line of 1.1.1 as it was)."""
+        return bool(type_map(cfg))
 
     def conf_origin_info(self):
         lines = []
@@ -274,6 +354,15 @@ class Options:
         else:
             eff["volume_type"] = e(self.volume_type, "default")
         eff["pool"] = e(r.pool, "conf", "RBD_POOL_MAP") if self.pool_from else e(r.pool, "default", "RBD_POOL")
+        vtypes = self.volume_targets(r, st, kind) if st is not None else None
+        if vtypes is not None:
+            # 1.2.0: the type and pool of each destination volume (keyed by source volume ID, the root disk of an
+            # ephemeral VM by 'ephemeral-root'). Wrapped like every other key: {"value", "from"[, "detail"]}.
+            value = {k: {"type": t, "pool": p, "from": f} for k, (t, p, f) in vtypes.items()}
+            if any(f.startswith("VOLUME_TYPE_MAP") for _t, _p, f in vtypes.values()):
+                eff["volume_types"] = e(value, "conf", "VOLUME_TYPE_MAP")
+            else:
+                eff["volume_types"] = dict(eff["volume_type"], value=value)
         if self.az_cli:
             eff["az"] = e(self.dest_az, "cli")
         elif self.az_from == "MIG_AZ":

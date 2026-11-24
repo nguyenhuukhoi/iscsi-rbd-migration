@@ -9,6 +9,7 @@ import shutil
 
 from . import azname, config, proc, secgroups
 from .context import flavor_name
+from .options import EPHEMERAL_ROOT_KEY, source_type
 from .util import Die, ifs_split, jq_alt, jqs, lines, out, prog, re_escape
 from .vmdef import dest_volume_name
 
@@ -384,25 +385,72 @@ def _check_quota(c, side, table, needs, extra=()):
 
 
 def _vol_type(v):
-    t = jq_alt(v.get("type"), v.get("volume_type"))
-    return "" if t is None else jqs(t)
+    return source_type(v)
 
 
 def volume_type_lines(r, vols):
-    """P2-b (1.1.1): every volume of a VM lands on one destination volume type and one RBD pool (--volume-type /
-    AZ_TYPE_MAP, RBD_POOL_MAP): an INFO line per volume says where each goes, a WARN when the source volumes have
-    two types or more (they are flattened to one). Information only: never a FAIL, the exit code does not change."""
-    t_dst = r.opts.volume_type or "default"
-    seen = []
+    """P2-b (1.1.1): an INFO line per volume says which destination type and RBD pool it lands on. 1.2.0: each volume
+    gets its own (Options.type_for: --volume-type typed, VOLUME_TYPE_MAP by its source type, else the run's type),
+    and with VOLUME_TYPE_MAP set the line names where the type came from; a source type the map neither names nor
+    covers with __DEFAULT__ gets a WARN (it lands on the run's type). With VOLUME_TYPE_MAP empty every volume lands on
+    the run's type and pool, as in 1.1.1: the same lines, and a WARN when the source volumes have two types or more
+    (they are flattened to one). Information only: never a FAIL, the exit code does not change."""
+    o, cfg = r.opts, r.cfg
+    mapped = o.type_map_set(cfg)
+    seen, unmapped = [], []
     for v in vols:
-        t = _vol_type(v)
-        if t and t not in seen:
-            seen.append(t)
-        out("  INFO  volume %s (%s) source type %s -> destination type %s pool %s"
-            % (jqs(v.get("id")), jqs(v.get("name")) or "no name", t or "unknown", t_dst, r.pool))
-    if len(seen) >= 2:
+        s = _vol_type(v)
+        t, pool, frm = o.target(s, cfg)
+        if s and s not in seen:
+            seen.append(s)
+        out("  INFO  volume %s (%s) source type %s -> destination type %s pool %s%s"
+            % (jqs(v.get("id")), jqs(v.get("name")) or "no name", s or "unknown", t or "default", pool,
+               (" (%s)" % frm) if mapped else ""))
+        if mapped and not o.type_cli and not frm.startswith("VOLUME_TYPE_MAP") and (s or "unknown") not in unmapped:
+            unmapped.append(s or "unknown")
+    for s in unmapped:
+        out("  WARN  source type %s has no entry in VOLUME_TYPE_MAP and no __DEFAULT__: lands on %s"
+            % (s, o.volume_type or "default"))
+    if not mapped and len(seen) >= 2:
         out("  WARN  %d source volume types (%s) all land on destination type %s: pass --volume-type per run if they "
-            "must differ" % (len(seen), ", ".join(seen), t_dst))
+            "must differ" % (len(seen), ", ".join(seen), o.volume_type or "default"))
+
+
+def type_map_lines(r, targets):
+    """1.2.0, right after the preflight header: a typed --volume-type wins over VOLUME_TYPE_MAP (said once), and how
+    many destination volumes the map placed. targets: Options.volume_targets. Nothing when VOLUME_TYPE_MAP is empty."""
+    o = r.opts
+    if not o.type_map_set(r.cfg):
+        return
+    if o.type_cli:
+        out("  INFO  volume type %s from cli overrides VOLUME_TYPE_MAP" % (o.volume_type or "default"))
+    n = sum(1 for _t, _p, frm in (targets or {}).values() if frm.startswith("VOLUME_TYPE_MAP"))
+    if n:
+        out("  INFO  VOLUME_TYPE_MAP in use: %d volume(s) mapped" % n)
+
+
+def dest_type_checks(r, c, pairs):
+    """The destination volume types exist ('volume type show'). VOLUME_TYPE_MAP empty: the run's type once, when one
+    is set (as up to 1.1.1). Set: once per different type of pairs [(type, from)], a missing one a FAIL that names
+    where it came from."""
+    o = r.opts
+    if not o.type_map_set(r.cfg):
+        if o.volume_type:
+            c.check("volume type " + o.volume_type, lambda: r.dst.ok("volume", "type", "show", o.volume_type))
+        return
+    done = []
+    for t, frm in pairs:
+        if not t or t in done:
+            continue
+        done.append(t)
+        try:
+            there = r.dst.ok("volume", "type", "show", t)
+        except (Die, OSError, ValueError):
+            there = False
+        if there:
+            out("  OK    volume type %s (%s)" % (t, frm))
+        else:
+            c.failed("destination volume type %s (%s) does not exist" % (t, frm))
 
 
 def source_needs(vols):
@@ -436,13 +484,24 @@ def quota_needs(r, ports, vols, flavor_json, server=True):
     # --ephemeral-as-image keeps it an image.
     gb = sum(_whole(v.get("size")) or 0 for v in vols)
     n = len(vols)
+    # 1.2.0: the per-type quota of the type each volume lands on (Options.type_for: --volume-type, VOLUME_TYPE_MAP,
+    # AZ_TYPE_MAP); with an empty map that is the run's type for all of them, one pair of lines as up to 1.1.1.
+    per_type = {}
+    for v in vols:
+        t = r.opts.type_for(_vol_type(v), r.cfg)[0]
+        tn, tgb = per_type.get(t, (0, 0))
+        per_type[t] = (tn + 1, tgb + (_whole(v.get("size")) or 0))
     root_gb = getattr(r, "root_gb", None)
     if server and r.ephemeral and not r.opts.ephemeral_as_image:
         n += 1
         gb += root_gb or 0
+        t = r.opts.type_for("", r.cfg)[0]
+        tn, tgb = per_type.get(t, (0, 0))
+        per_type[t] = (tn + 1, tgb + (root_gb or 0))
     need += [("volumes", n), ("gigabytes", gb)]
-    if r.opts.volume_type:  # per-type quota of the type chosen (--volume-type, AZ_TYPE_MAP)
-        need += [("volumes_" + r.opts.volume_type, n), ("gigabytes_" + r.opts.volume_type, gb)]
+    for t, (tn, tgb) in per_type.items():
+        if t:  # the Cinder default type ('') has no named per-type quota here
+            need += [("volumes_" + t, tn), ("gigabytes_" + t, tgb)]
     if server:
         need.append(("ports", len(ports)))
         made = [g for g in r.sgplan.groups.values() if g.create] if r.sgplan is not None else []
@@ -538,26 +597,37 @@ def free_address_preflight(r, ports, c):
 def ceph_capacity_preflight(r, vols, c):
     """The destination RBD pool must hold what is copied into it: 'ceph df detail' (MAX AVAIL, and the pool
     quota when one is set). FAIL when it does not fit, WARN when under 10% of the pool is left after the copy.
-    The transfer user may lack the caps to ask: then an INFO line only."""
-    need = sum(_whole(v.get("size")) or 0 for v in vols)
-    if need <= 0:
+    The transfer user may lack the caps to ask: then an INFO line only. 1.2.0: per pool, the volumes summed by the pool
+    each lands on (VOLUME_TYPE_MAP, RBD_POOL_MAP): one line per pool, one 'ceph df' for all of them."""
+    by_pool = {}
+    for v in vols:
+        pool = r.opts.target(_vol_type(v), r.cfg)[1]
+        by_pool[pool] = by_pool.get(pool, 0) + (_whole(v.get("size")) or 0)
+    by_pool = {p: n for p, n in by_pool.items() if n > 0}
+    if not by_pool:
         return
     res = proc.run(["ceph", "-c", r.cfg.CEPH_CONF, "--id", r.cfg.RBD_USER, "df", "detail", "-f", "json"],
                    env=r.env, capture=True, stderr=proc.CAPTURE)
-    why, stats = "", None
     if res.rc != 0:
-        why = (res.stderr.strip().splitlines() or ["ceph df exited %d" % res.rc])[-1]
-    else:
-        try:
-            stats = next(p.get("stats") or {} for p in json.loads(res.stdout).get("pools") or []
-                         if p.get("name") == r.pool)
-        except (ValueError, AttributeError, StopIteration):
-            why = "pool %s is not in the 'ceph df' output" % r.pool
-    if stats is None:
-        return out("  INFO  Ceph pool capacity not checked: %s" % why)
+        return out("  INFO  Ceph pool capacity not checked: %s"
+                   % (res.stderr.strip().splitlines() or ["ceph df exited %d" % res.rc])[-1])
+    try:
+        rows = json.loads(res.stdout).get("pools") or []
+    except (ValueError, AttributeError):
+        rows = None
+    for pool, need in by_pool.items():
+        _pool_capacity(c, pool, need, rows)
+
+
+def _pool_capacity(c, pool, need, rows):
+    """One pool's line of ceph_capacity_preflight: rows are the 'pools' of 'ceph df detail -f json' (None: unparsable)."""
+    try:
+        stats = next(p.get("stats") or {} for p in rows if p.get("name") == pool)
+    except (TypeError, AttributeError, StopIteration):
+        return out("  INFO  Ceph pool capacity not checked: pool %s is not in the 'ceph df' output" % pool)
     avail = _whole(stats.get("max_avail"))
     if avail is None:
-        return out("  INFO  Ceph pool capacity not checked: no max_avail for pool %s" % r.pool)
+        return out("  INFO  Ceph pool capacity not checked: no max_avail for pool %s" % pool)
     stored = _whole(stats.get("stored"))
     stored = _whole(stats.get("bytes_used")) or 0 if stored is None else stored
     room, what = avail, "MAX AVAIL"
@@ -566,11 +636,11 @@ def ceph_capacity_preflight(r, vols, c):
         room, what = max(quota - stored, 0), "pool quota"
     need_b = need * GiB
     if room < need_b:
-        return c.failed("Ceph pool %s: %d GB needed, %d GB left (%s)" % (r.pool, need, room // GiB, what))
+        return c.failed("Ceph pool %s: %d GB needed, %d GB left (%s)" % (pool, need, room // GiB, what))
     if (room - need_b) * 10 < stored + room:
         return out("  WARN  Ceph pool %s: %d GB needed, %d GB left (%s): under 10%% of the pool free after the copy"
-                   % (r.pool, need, room // GiB, what))
-    out("  OK    Ceph pool %s: %d GB needed, %d GB left (%s)" % (r.pool, need, room // GiB, what))
+                   % (pool, need, room // GiB, what))
+    out("  OK    Ceph pool %s: %d GB needed, %d GB left (%s)" % (pool, need, room // GiB, what))
 
 
 def quota_preflight(r, st, c, ports, vols, flavor_json, server=True, clone_vols=None):
@@ -683,6 +753,9 @@ def preflight(r, st):
     flavor_json = None  # the destination flavor's fields, for the quota check
     for line in o.conf_origin_info() + o.default_opts_info():
         out(line)
+    # 1.2.0: (type, pool, from) of every destination volume (VOLUME_TYPE_MAP), the root disk of an ephemeral VM too
+    targets = o.volume_targets(r, st, "vm") or {}
+    type_map_lines(r, targets)
 
     def az_listed(kind, zone):
         res = r.dst.run("availability", "zone", "list", kind, "-f", "value", "-c", "Zone Name", stderr=proc.DEVNULL)
@@ -759,8 +832,7 @@ def preflight(r, st):
         if not o.server_group and not o.no_server_group:
             server_group_preflight(r, st, c)
 
-    if o.volume_type:
-        c.check("volume type " + o.volume_type, lambda: r.dst.ok("volume", "type", "show", o.volume_type))
+    dest_type_checks(r, c, [(t, frm) for t, _p, frm in targets.values()])
 
     def check_sg(label, name):
         """Exactly one group of that name in the destination project."""
@@ -864,12 +936,22 @@ def preflight(r, st):
         if not o.ephemeral_as_image and not o.volumes_only:  # A9
             out("  INFO  the destination VM boots from a volume made from that snapshot (%s GB); "
                 "--ephemeral-as-image boots it from the image instead" % (r.root_gb if r.root_gb else "image-sized"))
+            if o.type_map_set(r.cfg) and EPHEMERAL_ROOT_KEY in targets:  # 1.2.0
+                t, pool, frm = targets[EPHEMERAL_ROOT_KEY]
+                out("  INFO  root disk volume -> destination type %s pool %s (%s)" % (t or "default", pool, frm))
     gb = sum(_whole(v.get("size")) or 0 for v in vols)
     if o.mode == "cold" and gb > int(r.cfg.MIG_COLD_WARN_GB):  # A8
         out("  WARN  cold copy of %d GB (more than MIG_COLD_WARN_GB=%s): a failure mid-copy starts it again from zero "
             "inside the downtime window; consider --mode live" % (gb, r.cfg.MIG_COLD_WARN_GB))
     quota_preflight(r, st, c, ports, vols, flavor_json, server=not o.volumes_only)
-    c.check("RBD access to pool " + r.pool, lambda: r.rbd("-p", r.pool, "ls"))
+    # 1.2.0: every pool a volume of this VM lands on (one line each); with an empty map the run's pool, as before.
+    pools = []
+    if o.type_map_set(r.cfg):
+        for _t, p, _f in targets.values():
+            if p not in pools:
+                pools.append(p)
+    for pool in pools or [r.pool]:  # c.check calls the lambda at once: pool is this iteration's
+        c.check("RBD access to pool " + pool, lambda: r.rbd("-p", pool, "ls"))
     iscsid_preflight(r, c)
     if r.cfg.MIG_MULTIPATH == "1":
         c.check("multipathd on transfer host", lambda: systemctl_ok("is-active", "multipathd", r.env))

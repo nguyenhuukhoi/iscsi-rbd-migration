@@ -14,7 +14,8 @@ class Run:
         self.env = base_env(cfg)
         self.src = Cloud("source", cfg.SRC_RC, cfg.SRC_PROJECT, self.env)
         self.dst = Cloud("destination", cfg.DST_RC, cfg.DST_PROJECT, self.env)
-        self.pool = cfg.RBD_POOL
+        self.pool = cfg.RBD_POOL  # the pool of the run's volume type (header, 'options' line, doctor)
+        self.dpool = ""  # 1.2.0: the pool of the destination volume being created or copied (VOLUME_TYPE_MAP)
         self.ephemeral = False
         self.flavor_map = {}
         # the source server group, recreated at the destination (default since 7.1; 7.0: --keep-server-group)

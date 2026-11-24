@@ -139,3 +139,14 @@ class StateDir:
     def dst_volume_of(self, svid):
         """awk -v s=<svid> '$1==s {print $2}' volume-map"""
         return "\n".join(d for s, d in self.volume_map() if s == svid)
+
+    # --- 1.2.0 volume-types: '<source-volume-id|ephemeral-root> <type|-> <pool>' per line ---------------------
+    # Written by the app only, next to volume-map (which keeps its two columns: rollback reads it, the bash build
+    # too). Rollback never needs it: a volume is deleted by its ID, whatever its pool.
+    def volume_pool_of(self, svid):
+        """The RBD pool the destination volume of svid was created in ('' when volume-types does not name it)."""
+        for line in self.read("volume-types").splitlines():
+            f = line.split()
+            if len(f) >= 3 and f[0] == svid:
+                return f[2]
+        return ""

@@ -11,8 +11,10 @@ import re
 import sys
 
 from . import config, proc, progress, record
-from .copyvol import brick, cleanup_attach, copy_volume_cold, copy_volume_props
-from .preflight import Checker, iscsid_preflight, quota_preflight, systemctl_ok
+from .copyvol import brick, check_in_pool, cleanup_attach, copy_volume_cold, copy_volume_props, record_volume
+from .options import source_type
+from .preflight import (Checker, dest_type_checks, iscsid_preflight, quota_preflight, systemctl_ok, type_map_lines,
+                        volume_type_lines)
 from .rollback import drop_volume, no_source_id, recorded_source_id, require_destination, require_source
 from .state import StateDir
 from .util import UUID_RE, Die, Exit, jq_alt, jqs, lines, log, out, prog
@@ -70,11 +72,16 @@ def volume_preflight(r, st):
     c = Checker()
     vol = st.json("volume.json")
     vid = jqs(vol.get("id"))
+    # 1.2.0: the type and pool of this volume (VOLUME_TYPE_MAP by its source type; with an empty map the run's)
+    vtype, pool, frm = o.target(source_type(vol), cfg)
     out("Destination preflight (migrate-volume type=%s pool=%s%s%s):"
-        % (o.volume_type or "default", r.pool, (" az=" + o.dest_az) if o.dest_az else "",
+        % (vtype or "default", pool, (" az=" + o.dest_az) if o.dest_az else "",
            (" volume-az=" + o.volume_az) if o.volume_az != o.dest_az else ""))
     for line in o.conf_origin_info() + o.default_opts_info():
         out(line)
+    if o.type_map_set(cfg):  # 1.2.0: where this volume lands and why (nothing new with an empty map)
+        type_map_lines(r, o.volume_targets(r, st, "vol"))
+        volume_type_lines(r, [vol])
     if o.in_use:
         if jqs(vol.get("status")) == "available":
             out("  INFO  --in-use ignored: %s is available, copied as usual" % vid)
@@ -85,8 +92,7 @@ def volume_preflight(r, st):
     if o.volume_az:
         c.check("volume AZ " + o.volume_az, lambda: o.volume_az in r.dst.run(
             "availability", "zone", "list", "--volume", "-f", "value", "-c", "Zone Name", stderr=proc.DEVNULL).stdout.split("\n"))
-    if o.volume_type:
-        c.check("volume type " + o.volume_type, lambda: r.dst.ok("volume", "type", "show", o.volume_type))
+    dest_type_checks(r, c, [(vtype, frm)])
     c.check("volume not encrypted", lambda: vol.get("encrypted") is not True)
     dids = dst_volumes_described(r, "migrated from " + vid)
     if dids is None:
@@ -97,7 +103,7 @@ def volume_preflight(r, st):
     else:
         out("  OK    no earlier copy of %s at the destination" % vid)
     quota_preflight(r, st, c, [], [vol], None, server=False)
-    c.check("RBD access to pool " + r.pool, lambda: r.rbd("-p", r.pool, "ls"))
+    c.check("RBD access to pool " + pool, lambda: r.rbd("-p", pool, "ls"))
     iscsid_preflight(r, c)
     if cfg.MIG_MULTIPATH == "1":
         c.check("multipathd on transfer host", lambda: systemctl_ok("is-active", "multipathd", r.env))
@@ -112,9 +118,10 @@ def create_volume_copy(r, st):
         raise no_source_id(st, "volume.json")
     name = jq_alt(vj.get("name"))
     name = "" if name is None else jqs(name)
+    vtype, pool, _frm = r.opts.target(source_type(vj), r.cfg)  # 1.2.0: VOLUME_TYPE_MAP by the source type
     args = ["--size", jqs(vj.get("size")), "--description", "migrated from " + vid, "-f", "value", "-c", "id"]
-    if r.opts.volume_type:
-        args += ["--type", r.opts.volume_type]
+    if vtype:
+        args += ["--type", vtype]
     if r.opts.volume_az:
         args += ["--availability-zone", r.opts.volume_az]
     # The source name verbatim, an empty one included (Cinder accepts it); the ID only as fallback.
@@ -130,11 +137,9 @@ def create_volume_copy(r, st):
                 % (vid, last, vid))
             r.dvid = r.dst.value("volume", "create", vid, *args)
     # Recorded before the wait, so that rollback also removes a copy that never became available.
-    st.append("volume-map", "%s %s" % (vid, r.dvid))
+    record_volume(r, st, vid, r.dvid, vtype, pool)
     r.wait_volume(r.dst, r.dvid, "available")
-    if not r.rbd("-p", r.pool, "info", "volume-" + r.dvid):
-        raise Die("volume-%s not visible in pool %s: wrong RBD_POOL_MAP for type '%s', or %s lacks caps on that pool"
-                  % (r.dvid, r.pool, r.opts.volume_type or "default", r.cfg.RBD_USER))
+    check_in_pool(r, r.dvid, vtype, pool)
     copy_volume_props(r, vj, r.dvid)
 
 

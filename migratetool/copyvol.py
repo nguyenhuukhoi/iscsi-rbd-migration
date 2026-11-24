@@ -104,26 +104,49 @@ def cleanup_attach(r):
 
 
 # --- destination volume ----------------------------------------------------------------------
+def record_volume(r, st, key, dvid, vtype, pool):
+    """Right after 'volume create' returned its ID: volume-map '<key> <dvid>' (what rollback deletes) and, 1.2.0,
+    volume-types '<key> <type|-> <pool>' (where the copy writes). r.dpool: the pool of that volume."""
+    st.append("volume-map", "%s %s" % (key, dvid))
+    st.append("volume-types", "%s %s %s" % (key, vtype or "-", pool))
+    r.dpool = pool
+
+
+def check_in_pool(r, dvid, vtype, pool):
+    if not r.rbd("-p", pool, "info", "volume-" + dvid):
+        raise Die("volume-%s not visible in pool %s: wrong RBD_POOL_MAP for type '%s', or %s lacks caps on that pool"
+                  % (dvid, pool, vtype or "default", r.cfg.RBD_USER))
+
+
+def dest_pool(r, st, key):
+    """1.2.0: the RBD pool the destination volume of key was created in (volume-types), else the run's pool. Set as
+    r.dpool for the copy: a cold VM creates all its volumes first and copies them after the source stopped, a live
+    one copies each again at the cutover, so the pool is read back per volume, not kept from the last create."""
+    r.dpool = st.volume_pool_of(key) or r.pool
+    return r.dpool
+
+
 def create_dest_volume(r, vid, st):
-    """Sets r.dvid and appends to volume-map."""
+    """Sets r.dvid and appends to volume-map (and volume-types). 1.2.0: the type and pool are those of this volume
+    (Options.type_for its source type: --volume-type typed, VOLUME_TYPE_MAP, else the run's type)."""
+    from .options import source_type
     vj = r.src.json("volume", "show", vid, "-f", "json")
+    vtype, pool, _frm = r.opts.target(source_type(vj), r.cfg)
     # Named after the instance, not the source volume: BFV volumes usually have no name, and the
     # device tells several volumes of one VM apart.
     name = dest_volume_name(vid, st)
     size = jqs(vj.get("size"))
     args = ["volume", "create", name, "--size", size]
-    if r.opts.volume_type:
-        args += ["--type", r.opts.volume_type]
+    if vtype:
+        args += ["--type", vtype]
     if r.opts.volume_az:
         args += ["--availability-zone", r.opts.volume_az]
     args += ["--description", "migrated from " + vid, "-f", "value", "-c", "id"]
     r.dvid = r.dst.value(*args)
     # Recorded before the wait and the pool check, so that rollback also removes a volume that dies there.
-    st.append("volume-map", "%s %s" % (vid, r.dvid))
+    record_volume(r, st, vid, r.dvid, vtype, pool)
     r.wait_volume(r.dst, r.dvid, "available")
-    if not r.rbd("-p", r.pool, "info", "volume-" + r.dvid):
-        raise Die("volume-%s not visible in pool %s: wrong RBD_POOL_MAP for type '%s', or %s lacks caps on that pool"
-                  % (r.dvid, r.pool, r.opts.volume_type or "default", r.cfg.RBD_USER))
+    check_in_pool(r, r.dvid, vtype, pool)
     copy_volume_props(r, vj, r.dvid)
 
 
@@ -205,11 +228,12 @@ def _qemu(r, *args):
 
 
 def copy_volume_cold(r, vid, dvid, size, st):
+    pool = dest_pool(r, st, vid)
     attach_clone(r, vid, st)
     log("clone attached at " + r.device)
-    img = "rbd:%s/volume-%s:id=%s:conf=%s" % (r.pool, dvid, r.cfg.RBD_USER, r.cfg.CEPH_CONF)
+    img = "rbd:%s/volume-%s:id=%s:conf=%s" % (pool, dvid, r.cfg.RBD_USER, r.cfg.CEPH_CONF)
 
-    log("copy %s -> %s/volume-%s" % (r.device, r.pool, dvid))
+    log("copy %s -> %s/volume-%s" % (r.device, pool, dvid))
     t0 = time.monotonic()
     # The new RBD image is all zeros, so zero runs are skipped and stay unallocated.
     r.watcher = Watcher(r.device, size, "copy", vid).start()

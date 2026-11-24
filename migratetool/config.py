@@ -9,7 +9,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
-from .util import Die
+from .util import Die, ifs_split
 
 DEFAULT_CONF = "/opt/mig/migrate.conf"
 STATE_ROOT = "/var/lib/mig-migrate"
@@ -23,6 +23,8 @@ CONF_VARS = (
     "MIG_VOLUME_AZ", "AZ_TYPE_MAP", "MIG_DEFAULT_OPTS", "FLAVOR_MAP_FILE",
     # 1.0.0: the host lock (A7), the deadline of control-plane commands (C3), the cold-copy size warning (A8)
     "MIG_LOCK", "MIG_CMD_TIMEOUT", "MIG_COLD_WARN_GB",
+    # 1.2.0: the destination volume type of each volume, by the name of its source volume type
+    "VOLUME_TYPE_MAP",
 )
 DEFAULTS = {
     "SRC_RC": "/opt/mig/src/admin-openrc.sh",
@@ -32,6 +34,7 @@ DEFAULTS = {
     "MIG_AZ": "",
     "MIG_VOLUME_AZ": "",
     "AZ_TYPE_MAP": "",
+    "VOLUME_TYPE_MAP": "",
     "MIG_DEFAULT_OPTS": "",
     "FLAVOR_MAP_FILE": "",
     "RBD_USER": "mig-xfer",
@@ -128,6 +131,31 @@ def load(environ=None):
     for var in ("MIG_CMD_TIMEOUT", "MIG_COLD_WARN_GB"):
         if not cfg.values[var].isdigit():
             raise Die("%s takes a whole number, not %r" % (var, cfg.values[var]))
+    parse_type_map(cfg.values["VOLUME_TYPE_MAP"])  # 1.2.0: a malformed map stops here, before any cloud call
     from . import proc
     proc.CMD_TIMEOUT = int(cfg.MIG_CMD_TIMEOUT)  # C3: 0 turns the deadline off
     return cfg
+
+
+DEFAULT_TYPE_KEY = "__DEFAULT__"
+
+
+def parse_type_map(text):
+    """VOLUME_TYPE_MAP (1.2.0) as {source type name: destination type name}, in the order written; '' gives {}.
+    Same shape as AZ_TYPE_MAP and RBD_POOL_MAP: "src:dst,src:dst", split on ',' then once on ':'. The source key
+    '__DEFAULT__' names the destination type of a source volume whose type has no entry (or that has no type). Every
+    entry must have a source, a ':' and a destination, and a source type is named once: anything else is a Die."""
+    found = {}
+    for entry in ifs_split(text or "", ","):
+        if ":" not in entry:
+            raise Die("VOLUME_TYPE_MAP: entry %r has no ':' (write src_type:dst_type, entries separated by ',')"
+                      % entry)
+        src, dst = entry.split(":", 1)
+        if not src:
+            raise Die("VOLUME_TYPE_MAP: entry %r has no source type (write src_type:dst_type)" % entry)
+        if not dst:
+            raise Die("VOLUME_TYPE_MAP: entry %r has no destination type (write src_type:dst_type)" % entry)
+        if src in found:
+            raise Die("VOLUME_TYPE_MAP: source type %r is mapped twice (%s:%s and %s)" % (src, src, found[src], entry))
+        found[src] = dst
+    return found
