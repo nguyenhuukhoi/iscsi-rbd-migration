@@ -258,10 +258,46 @@ def delete_unrecorded_server(r, st):
               "the rollback again. Nothing was deleted." % (" ".join(foreign), name, " ".join(foreign)))
 
 
+def _port_unreadable(pid, res):
+    log("WARN cannot read destination port %s (%s): left, check it by hand"
+        % (pid, _last_line(res.stderr) or "exit %d" % res.rc))
+
+
+def _delete_dest_port(r, pid):
+    """R3 (1.2.0): 'port delete' whose failure is a WARN, not the end of the rollback: the destination server is
+    already deleted and the source is still stopped and locked, so stopping here would keep the service down for one
+    port. Gone meanwhile (the answer names it): an INFO."""
+    res = r.dst.run("port", "delete", pid, stderr=proc.CAPTURE)
+    if res.rc == 0:
+        log("deleted destination port " + pid)
+    elif gone(res.stderr, pid):
+        log("INFO destination port %s already gone" % pid)
+    else:
+        log("WARN cannot delete destination port %s (%s): delete it by hand"
+            % (pid, _last_line(res.stderr) or "exit %d" % res.rc))
+
+
+def drop_dest_port(r, pid):
+    """R3 (1.2.0): a destination port recorded in dst-ports. 'port show' answers: deleted. Not found naming it (A21
+    gone()): INFO already gone. Anything else (a 403, an endpoint missing from the catalog): a WARN that leaves it, and
+    the rollback goes on (up to 1.1.1 that read as 'not there' and the port kept its IP without a word)."""
+    res = r.dst.run("port", "show", pid, stderr=proc.CAPTURE)
+    if res.rc == 0:
+        return _delete_dest_port(r, pid)
+    if gone(res.stderr, pid):
+        return log("INFO destination port %s already gone" % pid)
+    _port_unreadable(pid, res)
+
+
 def _sweep_legacy_port(r, st, pname):
     """The mig-<arg>-<i> ports of state written before dst-ports existed: deleted only when the port carries this
-    state's owner description, or for state that predates the marks (the name was the only record then)."""
-    if not r.dst.ok("port", "show", pname):
+    state's owner description, or for state that predates the marks (the name was the only record then). R3 (1.2.0):
+    no such name (the usual answer: state written since dst-ports exists) is silent; a 'port show' that fails for
+    another reason is a WARN, not 'no such port'; a delete that fails is a WARN too."""
+    res = r.dst.run("port", "show", pname, stderr=proc.CAPTURE)
+    if res.rc != 0:
+        if not gone(res.stderr, pname):
+            _port_unreadable(pname, res)
         return
     if owner_marks_used(st):
         res = r.dst.run("port", "show", pname, "-f", "json", stderr=proc.DEVNULL)
@@ -272,7 +308,10 @@ def _sweep_legacy_port(r, st, pname):
         if desc != contract.PORT_OWNER_PREFIX + st.arg:
             log("INFO destination port %s is not marked as this run's (description %r): left alone" % (pname, desc))
             return
-    r.dst.out("port", "delete", pname)
+    res = r.dst.run("port", "delete", pname, stderr=proc.CAPTURE)
+    if res.rc != 0 and not gone(res.stderr, pname):
+        log("WARN cannot delete destination port %s (%s): delete it by hand"
+            % (pname, _last_line(res.stderr) or "exit %d" % res.rc))
 
 
 def drop_recorded_volumes(r, st):
@@ -304,8 +343,13 @@ def drop_images(r, st, vm):
     imgs = []
     if st.nonempty("dst-image-id"):
         imgs += words(st.read("dst-image-id"))
-    # A failing listing inside 'for img in $(...)' did not stop the bash build either.
-    imgs += words(r.dst.run("image", "list", "--name", "mig-snap-" + vm, "-f", "value", "-c", "ID").stdout)
+    # A failing listing inside 'for img in $(...)' did not stop the bash build either. R3 (1.2.0): it says so (as the
+    # source listing below does) instead of reading as "no image"; the recorded dst-image-id is still deleted.
+    res = r.dst.run("image", "list", "--name", "mig-snap-" + vm, "-f", "value", "-c", "ID")
+    if res.rc != 0:
+        log("WARN cannot list destination images named mig-snap-%s: skipped" % vm)
+    else:
+        imgs += words(res.stdout)
     for img in imgs:
         if r.dst.run("image", "delete", img, stderr=proc.DEVNULL).rc == 0:
             log("deleted destination image " + img)
@@ -460,11 +504,8 @@ def rollback_vm(r, st):
     # below also covers state written before dst-ports existed.
     if st.nonempty("dst-ports"):
         for pid in st.read("dst-ports").split("\n"):
-            if not pid:
-                continue
-            if r.dst.ok("port", "show", pid):
-                r.dst.out("port", "delete", pid)
-                log("deleted destination port " + pid)
+            if pid:
+                drop_dest_port(r, pid)  # R3 (1.2.0): unreadable or undeletable is a WARN, the rollback goes on
     for i in range(len(st.json("ports.json"))):
         _sweep_legacy_port(r, st, "mig-%s-%d" % (vm, i))
     if st.exists("volume-map"):

@@ -784,17 +784,20 @@ class Runner:
         """A5 / section 3: t_stop, dst_server_status, age_seconds and what the rollback deletes, from 'migrate rollback
         <ident> --dry-run --json' (read-only: one 'server show' of the destination server, and since 1.1.0 (A20) one
         of the source object: source_status, "GONE" when it is not found, None when it could not be read; since 1.1.1
-        (A21) dst_error, why the destination server could not be read, None when it was read or is gone); the status
-        entry when that fails (source_status None: not read). Not read at the destination is no 409 here: the engine
-        refuses at run time, and a destination server already gone is a valid rollback run again."""
+        (A21) dst_error, why the destination server could not be read, None when it was read or is gone; since 1.2.0
+        (R3) source_error, why the source object could not be read, None when it was read or is gone); the status
+        entry when that fails (source_status None: not read). Both texts are scrubbed with the rest of the answer
+        (cli_json). Not read at the destination is no 409 here: the engine refuses at run time, and a destination
+        server already gone is a valid rollback run again."""
         rc, data, _tail = self.cli_json(["rollback", ident, "--dry-run", "--json"], TIMEOUTS["status"])
         if rc == 0 and isinstance(data, dict):
             return {k: data.get(k) for k in ("t_stop", "dst_server_status", "age_seconds", "delete", "source_power",
-                                             "source_status", "dst_error")}
+                                             "source_status", "source_error", "dst_error")}
         vm = [x[1] for x in entry.get("volume_map") or [] if isinstance(x, list) and len(x) == 2]
         return {"t_stop": entry.get("t_stop"), "dst_server_status": None, "age_seconds": None,
                 "delete": {"server": entry.get("dst_server_id"), "ports": [], "volumes": vm, "images": []},
-                "source_power": entry.get("source_power"), "source_status": None, "dst_error": None}
+                "source_power": entry.get("source_power"), "source_status": None, "source_error": None,
+                "dst_error": None}
 
     def notify_event(self, event, ident, state, **extra):
         """C14: MIGUI_NOTIFY_CMD (a JSON list, never a shell) at the end of a job or a batch, with MIG_EVENT, MIG_JOB,

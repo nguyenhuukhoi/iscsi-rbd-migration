@@ -866,6 +866,15 @@ const invWith = (hosts, projects) => ({ data: { source: { hosts, projects }, des
     ok('A20 rollback dialog: source_status '+st+' shows "'+want+'", once',texts(t.$('dialog-body')).filter(x=>x.startsWith('Nguồn hiện tại: ')).length===1 && texts(t.$('dialog-body')).includes(want),texts(t.$('dialog-body')));
     await t.$('dialog-close').fire('click');
   }
+  // 1.2.0 (R3): why the source could not be read (original.source_error), as text, never as markup
+  for (const [orig,want] of [[{source_status:null,source_error:'<b>Service Unavailable</b> (HTTP 503)'},'Nguồn hiện tại: không đọc được (<b>Service Unavailable</b> (HTTP 503))'],
+                             [{source_status:null,source_error:null},'Nguồn hiện tại: không đọc được'],
+                             [{source_status:'SHUTOFF',source_error:'ignored'},'Nguồn hiện tại: SHUTOFF']]) {
+    h.openConfirm({...RB,at:Date.now(),original:{source_power:'ACTIVE',delete:null,...orig}},'instance');
+    const lines=texts(t.$('dialog-body'));
+    ok('R3 rollback dialog: '+JSON.stringify(orig)+' shows "'+want+'", once, as text',lines.filter(x=>x.startsWith('Nguồn hiện tại: ')).length===1 && lines.includes(want) && !find(t.$('dialog-body'),e=>String(e.tagName).toLowerCase()==='b'),lines);
+    await t.$('dialog-close').fire('click');
+  }
   // 1.1.1 (A21): the destination server now, next to the source line
   for (const [orig,want] of [[{dst_server_status:'ACTIVE',delete:{server:'srv-dst-0001'}},'Đích hiện tại: ACTIVE'],
                              [{dst_server_status:'GONE',delete:{server:'srv-dst-0001'}},'Đích hiện tại: đã xóa'],

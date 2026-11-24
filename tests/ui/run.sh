@@ -12,7 +12,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 PY=${PYTHON:-python3}
 pass=0 fail=0
-for t in security functional passwd install_audit v1ui v11ui v12ui; do
+for t in security functional passwd install_audit v1ui v11ui v12ui v13ui; do
   echo "--- $t"
   out=$("$PY" -I "$HERE/$t.py" "$REPO" 2>&1)
   printf '%s\n' "$out"
