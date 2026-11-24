@@ -41,6 +41,7 @@ Thiết kế: `ISCSI-RBD-MIGRATION-ROLLBACK-DEST-CHECK-DESIGN.md` (Lab), từ re
 - Volume metadata của Cinder, server `tags` và `config_drive` không được chép; thứ tự NIC ở đích theo `port list --server` (DESIGN mục 9).
 - `--verify readback` của live mode đọc lại qua cùng handle librbd (có `rbd_cache`): chứng minh ghi đúng offset, không chứng minh dữ liệu đã tới OSD; `--verify full` là kiểm độc lập.
 - Một volume type/pool cho mọi volume của VM (map theo từng volume: backlog 1.2).
+- Rollback dùng cùng loại openrc với lần migrate: state ghi bằng password openrc (record `effective.projects` có project, ví dụ mọi lần chạy qua selector) rollback bằng application credential bị từ chối ngay với lời `SRC_PROJECT/DST_PROJECT needs a password openrc` (scope khôi phục từ record, application credential không rescope được; 1.1.0 bỏ qua record nên chạy được). State ghi bằng application credential (record không có project) rollback bằng gì cũng được. Lời báo lỗi nêu rõ record: backlog 1.2. Ghi ở README, GUIDE mục 6.
 
 ## [1.1.0] — 2026-11-23 · branch `rollback-source-check` · rollback checks the source exists before it deletes anything (no data-path change)
 
