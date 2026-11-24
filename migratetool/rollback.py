@@ -32,7 +32,6 @@ from datetime import datetime
 from . import config, contract, proc
 from .copyvol import brick
 from .jsonout import read_json
-from .server import PORT_GONE_RE
 from .util import Die, jqs, lines, log, re_escape, words
 
 # A21 (1.1.1): how an API says that the object asked for is gone, on a line that names that object. "No Server found
@@ -311,14 +310,15 @@ def drop_images(r, st, vm):
 
 
 def _port_device(r, pid):
-    """A3: (gone, device_id) of a source port: gone only when Neutron says the port does not exist; another error is
-    asked again (PORT_RETRIES times, 2 s apart), then stops the rollback."""
+    """A3: (gone, device_id) of a source port: gone only when Neutron says that port does not exist (A21: gone(), the
+    answer names it; an endpoint missing from the catalog is not a deleted port); another error is asked again
+    (PORT_RETRIES times, 2 s apart), then stops the rollback."""
     last = ""
     for _ in range(PORT_RETRIES):
         res = r.src.run("port", "show", pid, "-f", "value", "-c", "device_id", stderr=proc.CAPTURE)
         if res.rc == 0:
             return False, res.stdout.rstrip("\n")
-        if PORT_GONE_RE.search(res.stderr):
+        if gone(res.stderr, pid):
             return True, ""
         last = _last_line(res.stderr) or "exit %d" % res.rc
         time.sleep(2)
@@ -469,8 +469,8 @@ def rollback_vm(r, st):
         if p["ID"] not in pids:
             pids.append(p["ID"])
     for pid in pids:
-        gone, dev = _port_device(r, pid)
-        if gone:
+        lost, dev = _port_device(r, pid)
+        if lost:
             log("port %s no longer exists (Nova deleted it; its reserve port is reattached instead)" % pid)
             continue
         if dev == sid:

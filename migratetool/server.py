@@ -1,16 +1,12 @@
 """Ports and servers on both sides (bash detach_source_ports, keep_sg_ensure, create_destination)."""
-import re
 import shlex
 import time
 
 from . import contract, proc
 from .preflight import dst_server_groups_named
+from .rollback import gone
 from .context import flavor_name
 from .util import Die, ifs_split, jq_alt, jqs, log
-
-# 7.2 (B1): what Neutron/openstackclient say when the port really is gone ("No Port found for <id>"). Any other
-# failure of 'port show' (Neutron 5xx, an unreachable endpoint, an expired token) proves nothing.
-PORT_GONE_RE = re.compile(r"no port found|not found|could not be found|404", re.I)
 
 EPHEMERAL_ROOT = "ephemeral-root"  # A9: the volume-map key of an ephemeral root disk's destination volume
 
@@ -63,12 +59,15 @@ def detach_source_ports(r, vm, st, sid):
     for i, p in enumerate(st.json("port-ids.json")):
         pid = p["ID"]
         r.src.out("server", "remove", "port", sid, pid)
-        gone, dev, last_err = False, "", ""
+        lost, dev, last_err = False, "", ""
         for _ in range(60):
             res = r.src.run("port", "show", pid, "-f", "value", "-c", "device_id", stderr=proc.CAPTURE)
             if res.rc != 0:
-                if PORT_GONE_RE.search(res.stderr):
-                    dev, gone, last_err = "", True, ""
+                # 7.2 (B1), A21 (1.1.1): gone only when Neutron says that port is not found ("No Port found for <id>",
+                # rollback.gone). Any other failure (Neutron 5xx, an endpoint missing from the catalog, an expired
+                # token) proves nothing.
+                if gone(res.stderr, pid):
+                    dev, lost, last_err = "", True, ""
                     break
                 # Not proof that Nova deleted it (re-creating its MAC+IP would fail anyway): ask again.
                 last_err = (res.stderr.strip().splitlines() or ["exit %d" % res.rc])[-1]
@@ -83,7 +82,7 @@ def detach_source_ports(r, vm, st, sid):
             raise Die("cannot read port %s after detach: %s" % (pid, last_err))
         if dev:
             raise Die("port %s still attached to %s" % (pid, dev))
-        if gone:
+        if lost:
             pid = _reserve_port(r, vm, st, ports[i], i)
         st.append("source-ports", pid)
 

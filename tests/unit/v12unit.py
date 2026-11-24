@@ -257,6 +257,36 @@ ok("A21 volume: the destination readable: one probe of the copy, then the rollba
    < after_mark(r.calls).index("dst\tvolume delete vol-dst-0001")
    and "vol-dst-0001" not in r.world["dst"]["volumes"] and retired(r, "vol-vol-src-data"), (r.rc, r.err[-300:]))
 
+# ================================ case 7/8: the source port at the end of the rollback ================================
+r = app(world(), [("migrate", "app01", PLAIN), edit(lambda x: x["src"].update(fail={"port show": MSG_NET})), mark,
+                  ROLL])
+ok("A21 'port show' of the source port answers 'public endpoint for network service ... not found': retried, then "
+   "exit 1 'cannot read source port port-src-1'; never taken as 'no longer exists'",
+   r.rc == [0, 1] and "cannot read source port port-src-1 (%s): its NIC was not given back" % MSG_NET in r.err
+   and "no longer exists" not in r.text, (r.rc, r.err[-500:]))
+ok("A21 ... no 'server add port', no start, the state not retired",
+   not [c for c in after_mark(r.calls) if c.startswith(("src\tserver add port", "src\tserver start"))]
+   and not retired(r, "app01"), give_back(r.calls))
+nova_port = edit(lambda x: x["src"]["ports"]["port-src-1"].update(nova_owned=True))
+r = app(world(), [nova_port, ("migrate", "app01", PLAIN), mark, ROLL])
+reserve = [c.split()[-1] for c in after_mark(r.calls) if c.startswith("src\tserver add port %s " % SID)]
+ok("A21 the source port is really gone ('No Port found for port-src-1', Nova deleted its own port): 'port port-src-1 "
+   "no longer exists', its reserve port reattached, exit 0, the state retired",
+   r.rc == [0, 0] and "port port-src-1 no longer exists (Nova deleted it; its reserve port is reattached instead)"
+   in r.out and reserve and reserve != ["port-src-1"] and retired(r, "app01")
+   and src_state(r) == ("ACTIVE", False), (r.rc, reserve, r.err[-500:]))
+
+# ================================ case 9: detach_source_ports reads the port with a broken catalog ================================
+r = app(world(), [edit(lambda x: x["src"].update(fail={"port show port-src-1 -f value -c device_id": MSG_NET})),
+                  ("migrate", "app01", PLAIN)])
+ok("A21 migrate: 'port show' after the detach answers 'endpoint ... not found': exit 4 'cannot read port port-src-1 "
+   "after detach', no reserve port created",
+   r.rc == [4] and "cannot read port port-src-1 after detach: %s" % MSG_NET in r.err
+   and not [c for c in r.calls if c.startswith("src\tport create")], (r.rc, r.err[-500:]))
+r = app(world(), [nova_port, ("migrate", "app01", PLAIN)])
+ok("A21 migrate: a port Nova really deleted ('No Port found for port-src-1') still gets its reserve port (as 1.1.0)",
+   r.rc == [0] and [c for c in r.calls if c.startswith("src\tport create mig-reserve-app01-0 ")], (r.rc, r.err[-300:]))
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
