@@ -287,6 +287,38 @@ r = app(world(), [nova_port, ("migrate", "app01", PLAIN)])
 ok("A21 migrate: a port Nova really deleted ('No Port found for port-src-1') still gets its reserve port (as 1.1.0)",
    r.rc == [0] and [c for c in r.calls if c.startswith("src\tport create mig-reserve-app01-0 ")], (r.rc, r.err[-300:]))
 
+# ================================ case 10: rollback --dry-run shows dst_error ================================
+DRY = ("cli", ["rollback", "app01", "--dry-run", "--json"])
+TEXT = ("cli", ["rollback", "app01", "--dry-run"])
+
+
+def dry_json(r, i):
+    try:
+        return json.loads(r.outs[i])
+    except ValueError:
+        return {}
+
+
+r = app(world(), [("migrate", "app01", PLAIN), edit(dst_catalog_broken), mark, DRY, TEXT])
+obj = dry_json(r, 1)
+ok("A21 --dry-run --json, the destination cannot be read: dst_server_status null, dst_error the reason, exit 0",
+   r.rc == [0, 0, 0] and "dst_server_status" in obj and obj["dst_server_status"] is None
+   and obj.get("dst_error") == MSG and obj.get("dst_server_id") == DSID, (r.rc, obj))
+ok("A21 --dry-run (text): a WARN line 'the destination server could not be read (<why>): the rollback refuses until "
+   "it can'",
+   "  WARN the destination server could not be read (%s): the rollback refuses until it can" % MSG in r.outs[2],
+   r.outs[2])
+ok("A21 the dry-runs deleted nothing and only read", not dst_deletes(r.calls) and not give_back(r.calls),
+   after_mark(r.calls))
+r = app(world(), [("migrate", "app01", PLAIN), DRY, TEXT, edit(server_gone), DRY, TEXT])
+a_, b_ = dry_json(r, 1), dry_json(r, 3)
+ok("A21 --dry-run, the destination read: dst_server_status ACTIVE, dst_error null, no destination WARN; once the "
+   "server is gone: GONE, dst_error null, no WARN",
+   r.rc == [0, 0, 0, 0, 0] and a_.get("dst_server_status") == "ACTIVE" and "dst_error" in a_
+   and a_["dst_error"] is None and b_.get("dst_server_status") == "GONE" and b_.get("dst_error") is None
+   and "WARN the destination server" not in r.outs[2] + r.outs[4]
+   and "  destination server %s (GONE) is deleted" % DSID in r.outs[4], (r.rc, a_, b_, r.outs[4]))
+
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

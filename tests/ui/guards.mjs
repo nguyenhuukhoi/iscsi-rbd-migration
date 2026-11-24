@@ -866,6 +866,17 @@ const invWith = (hosts, projects) => ({ data: { source: { hosts, projects }, des
     ok('A20 rollback dialog: source_status '+st+' shows "'+want+'", once',texts(t.$('dialog-body')).filter(x=>x.startsWith('Nguồn hiện tại: ')).length===1 && texts(t.$('dialog-body')).includes(want),texts(t.$('dialog-body')));
     await t.$('dialog-close').fire('click');
   }
+  // 1.1.1 (A21): the destination server now, next to the source line
+  for (const [orig,want] of [[{dst_server_status:'ACTIVE',delete:{server:'srv-dst-0001'}},'Đích hiện tại: ACTIVE'],
+                             [{dst_server_status:'GONE',delete:{server:'srv-dst-0001'}},'Đích hiện tại: đã xóa'],
+                             [{dst_server_status:null,dst_error:'public endpoint for compute service in RegionOne region not found',delete:{server:'srv-dst-0001'}},'Đích hiện tại: không đọc được'],
+                             [{dst_server_status:null,delete:{server:'srv-dst-0001'}},'Đích hiện tại: không đọc được'],
+                             [{dst_server_status:null,dst_error:null,delete:{server:null,volumes:['vol-dst-0001']}},'Đích hiện tại: không có server đích ghi nhận']]) {
+    h.openConfirm({...RB,at:Date.now(),original:{source_power:'ACTIVE',source_status:'SHUTOFF',...orig}},'instance');
+    const lines=texts(t.$('dialog-body'));
+    ok('A21 rollback dialog: '+JSON.stringify(orig)+' shows "'+want+'", once, right after "Nguồn hiện tại"',lines.filter(x=>x.startsWith('Đích hiện tại: ')).length===1 && lines.includes(want) && lines.indexOf(want)===lines.indexOf('Nguồn hiện tại: SHUTOFF')+1,lines);
+    await t.$('dialog-close').fire('click');
+  }
   await t.$('dialog-close').fire('click');h.state.session.features={write_check:true};await t.$('doctor-write').fire('click');
   ok('R2-2 write-check button names the action',t.$('dialog-accept').textContent==='Kiểm tra ghi RBD');
   await t.$('dialog-close').fire('click');await t.$('vm-paste').fire('click');

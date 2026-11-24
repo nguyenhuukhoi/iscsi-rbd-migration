@@ -529,7 +529,10 @@ def summary(r, st, kind):
     """A5: what a rollback of st would delete, read-only. kind vm|vol. dst_server_status: 'server show' at the
     destination (None when there is no server ID, 'GONE' when Nova no longer has it). A20 (1.1.0): source_status is
     the source object's status now, by the same probe the rollback makes ('GONE' when not found, None when it could
-    not be read; source_error then says why), next to source_power, its status when migrate exported it."""
+    not be read; source_error then says why), next to source_power, its status when migrate exported it. A21 (1.1.1):
+    dst_server_status comes from the probe the rollback makes at the destination (object_status: "GONE" only when Nova
+    names that server not found, None when it could not be read); dst_error then says why (None when read or gone).
+    The rollback refuses while it cannot read it."""
     now = int(time.time())
     try:
         t_stop = int(st.read("t-stop").strip())
@@ -537,7 +540,7 @@ def summary(r, st, kind):
         t_stop = None
     d = {"ident": st.arg, "kind": kind, "dir": st.path, "t_stop": None, "age_seconds": None,
          "dst_server_id": None, "dst_server_status": None, "source_power": None, "source_status": None,
-         "source_error": None,
+         "source_error": None, "dst_error": None,
          "delete": {"server": None, "ports": [], "volumes": [dv for _s, dv in st.volume_map()], "images": []}}
     if t_stop is not None:
         d["t_stop"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t_stop))
@@ -563,14 +566,8 @@ def summary(r, st, kind):
     dsid = st.read("dst-server-id").strip()
     if dsid:
         d["dst_server_id"] = d["delete"]["server"] = dsid
-        res = r.dst.run("server", "show", dsid, "-f", "json", "-c", "id", "-c", "status", stderr=proc.CAPTURE)
-        if res.rc == 0:
-            try:
-                d["dst_server_status"] = json.loads(res.stdout).get("status")
-            except (ValueError, AttributeError):
-                d["dst_server_status"] = None
-        elif gone(res.stderr, dsid):
-            d["dst_server_status"] = "GONE"
+        d["dst_server_status"], why = object_status(r.dst, "server", dsid)
+        d["dst_error"] = why or None
     d["delete"]["ports"] = [p for p in st.read("dst-ports").split("\n") if p]
     d["delete"]["images"] = words(st.read("dst-image-id"))
     return d
@@ -578,7 +575,8 @@ def summary(r, st, kind):
 
 def summary_lines(d):
     """The text of summary() shown before the prompt (one string per line). A20: the source's status now on the
-    first line; an ERROR line when it is gone (the rollback refuses), a WARN line when it could not be read."""
+    first line; an ERROR line when it is gone (the rollback refuses), a WARN line when it could not be read. A21:
+    a WARN line too when the recorded destination server could not be read."""
     noun = "VM" if d["kind"] == "vm" else "volume"
     src = d.get("source_status")
     now = ", now %s" % src if src and src != "GONE" else ""
@@ -591,6 +589,9 @@ def summary_lines(d):
     elif "source_status" in d and src is None:
         tail.append("  WARN the source %s could not be read (%s): the rollback refuses until it can"
                     % (noun, d.get("source_error") or "no answer"))
+    if d.get("dst_server_id") and d.get("dst_server_status") is None:
+        tail.append("  WARN the destination server could not be read (%s): the rollback refuses until it can"
+                    % (d.get("dst_error") or "no answer"))
     if d["kind"] == "vol":
         out.append("  destination volume(s) deleted: %s; the source volume was never modified"
                    % (" ".join(d["delete"]["volumes"]) or "none recorded"))

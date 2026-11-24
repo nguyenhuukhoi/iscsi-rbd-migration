@@ -350,8 +350,13 @@ def rollback():
         e = st["live"][target]
         # 1.1.0 (A20): control.json "source_status": {ident: "GONE" | null | status} (default ACTIVE)
         src = CONTROL.get("source_status") or {}
+        # 1.1.1 (A21): control.json "dst_server_status": {ident: "GONE" | null | status}, "dst_error": {ident: text}
+        dst = CONTROL.get("dst_server_status") or {}
+        dst_err = CONTROL.get("dst_error") or {}
         out(json.dumps({"ident": target, "kind": e.get("kind", "vm"), "t_stop": e.get("t_stop"), "age_seconds": 60,
-                        "dst_server_id": e.get("dst"), "dst_server_status": "ACTIVE" if e.get("dst") else None,
+                        "dst_server_id": e.get("dst"),
+                        "dst_server_status": dst[target] if target in dst else ("ACTIVE" if e.get("dst") else None),
+                        "dst_error": dst_err.get(target),
                         "source_power": "ACTIVE", "source_status": src[target] if target in src else "ACTIVE",
                         "delete": {"server": e.get("dst"), "ports": [], "volumes": [], "images": []}}, sort_keys=True))
         return 0

@@ -1916,6 +1916,7 @@
       el('p',{text:'Trạng thái server đích: ' + (o.dst_server_status || 'không ghi nhận')}),
       el('p',{text:'Nguồn đang ' + (o.source_power || 'không ghi nhận') + ' · ' + (o.source_power === 'SHUTOFF' ? 'nguồn sẽ được giữ SHUTOFF' : 'nguồn sẽ được bật lại')}),
       el('p',{text:'Nguồn hiện tại: ' + (o.source_status === 'GONE' ? 'không tìm thấy (đã xóa, hoặc credentials/scope/endpoint nguồn không thấy)' : o.source_status == null ? 'không đọc được' : o.source_status)}),
+      el('p',{text:'Đích hiện tại: ' + (o.dst_server_status === 'GONE' ? 'đã xóa' : o.dst_server_status != null ? o.dst_server_status : (scope.server || o.dst_error) ? 'không đọc được' : 'không có server đích ghi nhận')}),
       el('label',{class:'warning-ack'},ack,el('span',{text:'Tôi chấp nhận RPO: dữ liệu ghi ở đích từ ' + fmtTime(o.t_stop) + ' sẽ mất.'})),
       el('label',{class:'lbl'},'Gõ tên ' + b.names[0] + ' hoặc ID đầy đủ ' + (b.rule.ids || b.rule.alt || []).join(', '),typed),expiry);
     dialog('Rollback ' + b.names[0], content, async()=>{
