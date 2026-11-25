@@ -511,7 +511,7 @@ UI `confirmationMatches` so `expect`, `alt` và `ids` như server: tên hoặc i
 
 Doctor gate D3 chỉ nằm ở web cho inventory, list, plan và chạy batch VM/volume. Authenticated rollback/cancel/status/jobs/stream vẫn mở khi Doctor chưa xanh. Gate là trạng thái phiên, không thay preflight engine, không chứng minh write-check đã chạy. Login mới/restart web phải chạy Doctor lại; reload trang có session còn sống không tự tạo phiên mới.
 
-### 8.3. Mô hình đe dọa T1–T17
+### 8.3. Mô hình đe dọa T1–T18
 
 | ID / nguy cơ | Biện pháp thực tế | Giới hạn và điểm truy vết |
 |---|---|---|
@@ -532,6 +532,7 @@ Doctor gate D3 chỉ nằm ở web cho inventory, list, plan và chạy batch VM
 | T15 DoS | Body 64 KiB; API semaphore 8, chờ 10 s rồi 503; 2 SSE/phiên rồi 429; header 30 s; plan/item/log bounds | Login/SSE ngoài semaphore API; runner socket không có cùng semaphore; raw output/disk không cap (`web`, `Runner`) |
 | T16 Cache browser | Cache-Control no-store; không lưu credential ở localStorage | Chỉ theme `migui-theme` được giữ; máy/browser vẫn cần bảo vệ (`web`, app.js) |
 | T17 Dependency | UI Python stdlib + JS/CSS local, không build npm/CDN | Engine không ghim client: extra `host` của `pyproject.toml` cài theo upper-constraints của release OpenStack (DEPLOY 2.1), host mới phải nghiệm thu; bảo trì Python hệ thống và wheel |
+| T18 Bản ghi job đọc nửa chừng | Job kết thúc ⇔ bản ghi đầy đủ ⇔ seal: `run_job` tính `state`, `rc`, `exit_class`, `state_dir`, `effective` (vol: từ `options.json`, scrub), chạy hook notify, rồi gán cùng lúc mọi trường đó, `notify_rc`, `t_end` và `seal` trong `with j.cond`; SKIPPED và FAIL 127 cũng vậy; `op_status` và listing đọc `record()` trong `with j.cond` (`Job.published`) | Hook notify chạy khi job còn `RUNNING` (tối đa 30 s): lúc đó API chưa thấy kết quả, cancel trả 409 (process đã thu); đường reconcile LOST/DETACHED lúc khởi động chạy đơn luồng, không khóa (`run_job`, `op_status`) |
 
 Tài khoản trong `/var/lib/migui/users` root:migui 0640, tối đa 50 users/64 KiB. Password 12–128 ký tự printable, không bằng username; username lowercase tối đa 32. `migui-passwd` atomic replace và flock; không đưa password vào argv/env. Thay hash hoặc xóa user hủy phiên ở request không background kế tiếp. Background polling không revalidate credentials; stream kiểm cookie/expiry mỗi event. Đây không phải thu hồi tức thời mọi stream đang mở.
 
