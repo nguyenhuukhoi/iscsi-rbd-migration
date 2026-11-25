@@ -6,6 +6,9 @@
 # and root's capabilities. So PrivateNetwork=, ProtectSystem=strict, PrivateDevices=, IPAddressDeny=,
 # RestrictAddressFamilies= and CapabilityBoundingSet= would break every migration; only what leaves migrate whole
 # is set here. The runner's own exposure is its unix socket (0660 root:migui, SO_PEERCRED = migui) and 9 messages.
+# No ProtectClock= either (1.2.3, found on a real Ubuntu 22.04 host): on systemd <= 249 it adds DeviceAllow=char-rtc r,
+# and any DeviceAllow= turns DevicePolicy=auto into closed, so migrate and os-brick get EPERM opening /dev/sdX (the
+# source LUN) and the failed flush left the iSCSI session logged in. install.sh refuses a runner with a DeviceAllow=.
 [Unit]
 Description=migrate web UI runner (root; starts migrate for migui-web)
 Documentation=file:///opt/migui/DEPLOY.md
@@ -31,7 +34,6 @@ NoNewPrivileges=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-ProtectClock=yes
 ProtectHostname=yes
 SystemCallArchitectures=native
 # Operator settings for migrate (MIG_CONF=..., MIG_DEFAULT_OPTS=...): systemctl edit migui-runner

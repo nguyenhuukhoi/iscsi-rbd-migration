@@ -135,6 +135,15 @@ audit_setup /var/log/migui/audit.jsonl migui
 # units
 install -m 0644 -o root -g root "$HERE/migui-runner.service" "$HERE/migui-web.service" "$UNITS/"
 systemctl daemon-reload
+# 1.2.3: every migrate the runner starts must open /dev/sdX. A DeviceAllow= on the runner (a drop-in, or ProtectClock=
+# on systemd <= 249, which adds char-rtc) closes its device policy: refuse to (re)start it like that.
+devallow=$(systemctl show -p DeviceAllow --value migui-runner.service 2>/dev/null || true)
+if [ -n "$devallow" ]; then
+  echo "install.sh: migui-runner.service has DeviceAllow=$devallow (a drop-in, or ProtectClock= on systemd <= 249):" \
+    "every migrate it starts would get EPERM on /dev/sdX. Remove it (systemctl edit migui-runner;" \
+    "systemctl cat migui-runner) and run install.sh again (DEPLOY.md section 6)" >&2
+  exit 1
+fi
 if [ "$START" = 1 ]; then
   systemctl enable migui-runner.service migui-web.service
   systemctl restart migui-runner.service

@@ -40,8 +40,31 @@ def attrs(path):
     return p.stdout.split()[0] if p.returncode == 0 and p.stdout.split() else ""
 
 
+def directives(unit):
+    """The 'Key=value' lines of a unit file that are not comments."""
+    with open(os.path.join(H.REPO, "migui", "deploy", unit)) as fh:
+        return [ln.strip() for ln in fh if ln.strip() and not ln.lstrip().startswith(("#", ";", "["))]
+
+
+# 1.2.3 (real Ubuntu 22.04 host, systemd 249): ProtectClock= on the runner added DeviceAllow=char-rtc, which closed its
+# device policy, and every migrate started from the UI got EPERM on /dev/sdX. No root needed for these.
+runner = directives("migui-runner.service")
+bad = [d for d in runner if d.split("=", 1)[0] in ("ProtectClock", "DeviceAllow", "DevicePolicy", "PrivateDevices")]
+ok("INST-4 migui-runner.service sets none of ProtectClock=, DeviceAllow=, DevicePolicy=, PrivateDevices= (migrate "
+   "and os-brick must open /dev/sdX)", not bad, bad)
+web = directives("migui-web.service")
+ok("INST-5 migui-web.service keeps ProtectClock=yes and PrivateDevices=yes (it never touches a device)",
+   "ProtectClock=yes" in web and "PrivateDevices=yes" in web, web)
+with open(INSTALL) as fh:
+    inst = fh.read()
+ok("INST-6 install.sh reads 'systemctl show -p DeviceAllow --value migui-runner.service' after daemon-reload and "
+   "exits 1 when it is not empty",
+   "systemctl show -p DeviceAllow --value migui-runner.service" in inst
+   and inst.index("systemctl daemon-reload") < inst.index("systemctl show -p DeviceAllow")
+   < inst.index('if [ "$START" = 1 ]') and 'if [ -n "$devallow" ]' in inst, None)
+
 if os.getuid() != 0:
-    print("SKIP INST-* need root (chown, chattr): run on mig-host as root")
+    print("SKIP INST-1..3 need root (chown, chattr): run on mig-host as root")
     sys.exit(H.total())
 
 group = next(g for g in ("daemon", "nogroup", "bin") if has_group(g) is not None)
