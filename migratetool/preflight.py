@@ -594,15 +594,20 @@ def free_address_preflight(r, ports, c):
         out("  OK    free addresses for --ip new: " + ", ".join(shown))
 
 
-def ceph_capacity_preflight(r, vols, c):
+def ceph_capacity_preflight(r, vols, c, server=True):
     """The destination RBD pool must hold what is copied into it: 'ceph df detail' (MAX AVAIL, and the pool
     quota when one is set). FAIL when it does not fit, WARN when under 10% of the pool is left after the copy.
     The transfer user may lack the caps to ask: then an INFO line only. 1.2.0: per pool, the volumes summed by the pool
-    each lands on (VOLUME_TYPE_MAP, RBD_POOL_MAP): one line per pool, one 'ceph df' for all of them."""
+    each lands on (VOLUME_TYPE_MAP, RBD_POOL_MAP): one line per pool, one 'ceph df' for all of them.
+    1.2.2 (S1): the root disk of an ephemeral VM that becomes a volume (A9, the same rule as quota_needs) is added to
+    the pool of the root disk volume at its flavor's disk size (r.root_gb, set by ephemeral_space_preflight)."""
     by_pool = {}
     for v in vols:
         pool = r.opts.target(_vol_type(v), r.cfg)[1]
         by_pool[pool] = by_pool.get(pool, 0) + (_whole(v.get("size")) or 0)
+    if server and r.ephemeral and not r.opts.ephemeral_as_image:
+        pool = r.opts.target("", r.cfg)[1]
+        by_pool[pool] = by_pool.get(pool, 0) + (getattr(r, "root_gb", None) or 0)
     by_pool = {p: n for p, n in by_pool.items() if n > 0}
     if not by_pool:
         return
@@ -662,7 +667,7 @@ def quota_preflight(r, st, c, ports, vols, flavor_json, server=True, clone_vols=
         _check_quota(c, "destination", table, quota_needs(r, ports, vols, flavor_json, server), extra)
     if server and r.opts.ipmode == "new" and ports:
         free_address_preflight(r, ports, c)
-    ceph_capacity_preflight(r, vols, c)
+    ceph_capacity_preflight(r, vols, c, server)
 
 
 def ephemeral_glance_preflight(r, c):
