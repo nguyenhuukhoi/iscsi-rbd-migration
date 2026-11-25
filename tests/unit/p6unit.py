@@ -379,7 +379,7 @@ finally:
 ok("brick(): BRICK + action + id, environment still passed",
    seen and seen[0][0] == copyvol.BRICK + ["attach", "vol-1"] and seen[0][1].get("MIG_ISCSI_IP") == "192.0.2.20"
    and seen[0][1].get("OS_AUTH_URL") == "u", seen)
-ok("version 1.2.2", migratetool.__version__ == "1.2.2", migratetool.__version__)  # Intended: 7.2 D4, 7.3
+ok("version 1.2.3", migratetool.__version__ == "1.2.3", migratetool.__version__)  # Intended: 7.2 D4, 7.3
 scratch = tempfile.mkdtemp()
 env = dict(os.environ, PYTHONPATH=PKG_PARENT, MIG_CONF=os.path.join(scratch, "none.conf"))
 h = subprocess.run([sys.executable, "-m", "migratetool", "migrate", "--help"], env=env, capture_output=True, text=True,

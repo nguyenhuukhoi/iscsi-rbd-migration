@@ -606,13 +606,13 @@ for bad in ("a:*", "ps-gold:rbd-ssd,*:*"):
        and "VOLUME_TYPE_MAP: '*' is only a source key" in r.outs[4] and "Traceback" not in r.text,
        (r.rc, r.errs[:4], r.calls[:3], r.outs[4][-800:]))
 
-# ================================ T28: version 1.2.2 (T24 of 1.2.0 follows) ================================
+# ================================ T28: version 1.2.3 (T24 of 1.2.0 follows) ================================
 import migratetool  # noqa: E402
 import migui  # noqa: E402
 
-ok("T28 version 1.2.2: migratetool, migui and pyproject agree",
-   migratetool.__version__ == "1.2.2" and migui.__version__ == "1.2.2"
-   and 'version = "1.2.2"' in (read(os.path.join(REPO, "pyproject.toml")) or ""), migratetool.__version__)
+ok("T28 version 1.2.3: migratetool, migui and pyproject agree",
+   migratetool.__version__ == "1.2.3" and migui.__version__ == "1.2.3"
+   and 'version = "1.2.3"' in (read(os.path.join(REPO, "pyproject.toml")) or ""), migratetool.__version__)
 
 # ================================ T29: the Ceph capacity counts the ephemeral root disk (1.2.2, S1) ================================
 GB = 1 << 30

@@ -4,4 +4,4 @@ The Python successor of migrate-vm.sh / migrate-batch.sh. State files and the ou
 of the bash build (contract.py); what differs on purpose is listed in DESIGN.md and checked by tests/unit/parity.py.
 """
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"

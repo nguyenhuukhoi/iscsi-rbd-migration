@@ -3,4 +3,4 @@
 migui.runner  root, unix socket /run/migui/runner.sock: the only process that starts 'migrate'.
 migui.web     user migui, HTTP on 127.0.0.1:8787: login, CSRF, two-step confirmation, audit, static pages.
 """
-__version__ = "1.2.2"
+__version__ = "1.2.3"
