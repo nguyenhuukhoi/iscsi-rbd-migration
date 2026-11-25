@@ -338,7 +338,7 @@ Mỗi dòng có tiền tố chính xác `  OK    `, `  FAIL  `, `  WARN  `, `  I
 | `subnet ...: no free address in its allocation pools for --ip new` | FAIL | Không đủ IP cấp mới |
 | `free addresses for --ip new: ...` | OK | IP pool hiện đủ |
 | `Ceph pool capacity not checked: ...` | INFO | Không đọc được `ceph df detail`/max_avail |
-| `Ceph pool ...: ... GB needed, ... GB left ...` | OK/FAIL | Logical GB cần so với MAX AVAIL/quota; 1.2.0: một dòng mỗi pool, cộng size các volume về pool đó (một `ceph df` cho tất cả) |
+| `Ceph pool ...: ... GB needed, ... GB left ...` | OK/FAIL | Logical GB cần so với MAX AVAIL/quota; 1.2.0: một dòng mỗi pool, cộng size các volume về pool đó (một `ceph df` cho tất cả); 1.2.2: root ephemeral thành volume (A9, không `--ephemeral-as-image`) cộng flavor disk vào pool của root, cùng quy tắc với quota |
 | `Ceph pool ...: ... under 10% of the pool free after the copy` | WARN | Headroom nhỏ |
 | `RBD access to pool <pool>` | OK/FAIL | `rbd ls`, chỉ chứng minh đọc/list; 1.2.0: map có đặt thì một dòng mỗi pool các volume của VM về |
 | `iSCSI daemon on transfer host`; `multipathd on transfer host` | OK/FAIL | Daemon hoạt động |
@@ -363,7 +363,7 @@ Mỗi dòng có tiền tố chính xác `  OK    `, `  FAIL  `, `  WARN  `, `  I
 
 Các dòng `INFO` nguồn option do `Options.conf_origin_info`/`default_opts_info` sinh mô tả MIG_AZ, MIG_VOLUME_AZ, AZ_TYPE_MAP và MIG_DEFAULT_OPTS đã áp dụng. Lỗi resolve/source export, xung đột port-security override, map sai hoặc thiếu image endpoint có thể là `ERROR:` thay vì check line; vẫn chặn plan. Không parse phần tiếng Anh động thay cho `checks` JSON.
 
-Quota gồm instances/cores/ram, volumes/gigabytes theo type, ports, SG/rules và members của server group khi cần. Không có reservation cho toàn batch; số group Nova mới không được cộng thành resource riêng trong `quota_needs`. Nguồn cần chỗ cho một clone tại một thời điểm, với volume lớn nhất. Mục thiếu trong quota hoặc limit -1 bị bỏ; missing usage WARN. `free_address_preflight` có nhánh không kiểm khi lookup lỗi. Quota Cinder có cộng root BFV theo flavor disk, nhưng không biết virtual size lớn hơn cho tới download. Ceph capacity chỉ cộng Cinder volume nguồn, không cộng root ephemeral. Phải bổ sung các phần này khi duyệt.
+Quota gồm instances/cores/ram, volumes/gigabytes theo type, ports, SG/rules và members của server group khi cần. Không có reservation cho toàn batch; số group Nova mới không được cộng thành resource riêng trong `quota_needs`. Nguồn cần chỗ cho một clone tại một thời điểm, với volume lớn nhất. Mục thiếu trong quota hoặc limit -1 bị bỏ; missing usage WARN. `free_address_preflight` có nhánh không kiểm khi lookup lỗi. Quota Cinder có cộng root BFV theo flavor disk, nhưng không biết virtual size lớn hơn cho tới download. Ceph capacity cộng Cinder volume nguồn và (từ 1.2.2) root ephemeral thành volume theo flavor disk, vào pool của root; cũng như quota, không biết virtual size lớn hơn cho tới download. Phải bổ sung các phần này khi duyệt.
 
 ### 6.3. Catalog Doctor
 
@@ -373,6 +373,7 @@ Doctor tiếp tục các nhóm kiểm sau FAIL. `Doctor found problems: fix the 
 |---|---|---|
 | `conf <path>` | OK | Parse thành công (`check_conf`) |
 | `conf <path>: ...` | FAIL | Parse lỗi; các kiểm sau dùng env/default |
+| `conf <path> not loaded: the checks below use the environment and the built-in defaults only; fix the conf first` | INFO | 1.2.2: in ngay sau FAIL parse; object trả về có `conf_failed = True` |
 | `conf <path> not found: defaults and environment only` | INFO | Chưa có conf |
 | `<program>: <version>` | OK | openstack/qemu-img/rbd/iscsiadm, thêm multipath nếu bật (`check_programs`) |
 | `<program>: not found on PATH` | FAIL | Thiếu executable |
@@ -406,6 +407,7 @@ Doctor tiếp tục các nhóm kiểm sau FAIL. `Doctor found problems: fix the 
 | `MIG_ISCSI_IP <ip> is an address of this host` | OK | Địa chỉ connector gửi cho Cinder là của host này (`check_iscsi_ip`, so với `ip -o addr show`) |
 | `MIG_ISCSI_IP is not set: ...`; `MIG_ISCSI_IP <ip> is not an address of this host (...)` | FAIL | Không có mặc định; giá trị chép từ host khác bị bắt |
 | `MIG_ISCSI_IP <ip> not compared with this host's addresses: ...` | INFO | Không chạy được `ip` |
+| `MIG_ISCSI_IP not checked: conf not loaded` | INFO | 1.2.2: conf không parse được và env không có `MIG_ISCSI_IP` (giá trị có thể nằm trong conf); có trong env thì kiểm như thường |
 | `start it: systemctl enable --now iscsid` | INFO | Hướng dẫn bật daemon |
 | `RBD write check pool ... as ...: 4 MiB written, read back, discarded, removed` | OK | Đường thử không đặt lý do fail (`write_check_pools`) |
 | `RBD write check pool ... as ...: write (rbd import): ...` | FAIL | Ghi thử lỗi |
@@ -562,6 +564,6 @@ Plan events touch idle; batch của phiên đang chạy touch mỗi 60 s. Pollin
 | Thứ tự NIC | VM nhiều port: thứ tự gắn ở đích theo `port list --server` (`vmdef.export_definition`), Neutron không bảo đảm trùng thứ tự ở nguồn; guest cấu hình theo tên interface có thể đảo eth0/eth1. Canary kiểm `ip -o link` theo MAC |
 | `config_drive` | Không chép; guest chỉ dùng datasource ConfigDrive sẽ không có metadata ở đích. Kiểm `config_drive` trong `server.json` của state |
 | Tags và volume metadata | Server `tags` và Cinder volume metadata (không phải image metadata) không chép |
-| Volume type/pool | 1.2.0: type theo **tên type nguồn** (`VOLUME_TYPE_MAP`, fallback `*` từ 1.2.1; `__DEFAULT__` là tên type thật), pool theo type đó; không map theo volume ID, không đổi type sau khi volume đích đã tạo, UI không chọn map (chỉ hiện output CLI). `VOLUME_TYPE_MAP` rỗng: một type và một pool cho mọi volume của VM như trước, preflight WARN khi nguồn có ≥ 2 type (mục 6.2). Dung lượng Ceph theo pool chỉ cộng volume được copy, chưa cộng root ephemeral |
+| Volume type/pool | 1.2.0: type theo **tên type nguồn** (`VOLUME_TYPE_MAP`, fallback `*` từ 1.2.1; `__DEFAULT__` là tên type thật), pool theo type đó; không map theo volume ID, không đổi type sau khi volume đích đã tạo, UI không chọn map (chỉ hiện output CLI). `VOLUME_TYPE_MAP` rỗng: một type và một pool cho mọi volume của VM như trước, preflight WARN khi nguồn có ≥ 2 type (mục 6.2). Dung lượng Ceph theo pool cộng volume được copy và, từ 1.2.2, root ephemeral thành volume (flavor disk, vào pool của root) |
 
 Các mục chưa được chứng minh trên hệ thật nằm trong [RELEASE-1.0.0.md](RELEASE-1.0.0.md). Không dùng tài liệu lưu trữ để suy thêm bảo đảm ngoài code hiện hành.
