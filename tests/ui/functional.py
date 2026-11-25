@@ -334,6 +334,59 @@ try:
 finally:
     s.stop()
 
+# ---------------------------------------------------------------- F-10d S4 (1.2.4): an ended job record is complete
+# The runner used to publish the ended state before the notify hook, state_dir, the effective options and t_end, so a
+# reader in that window saw state OK with t_end/effective None. A notify hook that marks its start then sleeps 0.5 s
+# widens the window; the job is read without a pause (one job, then the listing, in turn) until it has ended.
+mark = os.path.join(H.WORK, "f10d-notify-%d" % os.getpid())
+if os.path.exists(mark):
+    os.unlink(mark)
+os.environ["MIGUI_NOTIFY_CMD"] = json.dumps([H.PY, "-I", "-c", "import sys, time\nopen(sys.argv[1], 'a').close()\n"
+                                             "time.sleep(0.5)\n", mark])
+s = H.Stack()
+try:
+    s.ready()
+    s.post("/api/list", {"projects": ["admin"], "volumes": True, "scope": "available"})  # the runner's whitelist
+    b = s.plan([VOL1], {"az": "AZ1", "verify": "none"}, kind="vol").json.get("batch") or {}
+    r = s.post("/api/batches/%s/run" % b.get("id"), {"typed": "data-archive-01", "confirm_token": b.get("token")})
+    jid = ((r.json or {}).get("jobs") or [""])[0]
+    ENDED = ("OK", "FAIL", "CANCELLED", "SKIPPED", "LOST", "DETACHED")
+    seen, in_hook, bad, last = 0, [], [], {}
+    t0 = time.time()
+    while r.status == 202 and time.time() - t0 < 120:
+        hook = os.path.exists(mark)  # read before the record: a sample marked in_hook was taken after the hook began
+        if seen % 2:
+            rec = next((x for x in (s.get("/api/jobs").json or {}).get("jobs") or [] if x.get("id") == jid), {})
+        else:
+            rec = (s.get("/api/jobs/" + jid).json or {}).get("job") or {}
+        seen += 1
+        last = rec
+        st = rec.get("state")
+        if hook and st not in ENDED:
+            in_hook.append((st, rec.get("rc"), rec.get("t_end")))
+        if st in ENDED:
+            eff = rec.get("effective") or {}
+            if (rec.get("t_end") is None or rec.get("rc") is None or rec.get("state_dir") is None
+                    or rec.get("notify_rc") is None or not isinstance(rec.get("effective"), dict)
+                    or "verify" not in eff or "az" not in eff):
+                bad.append({k: rec.get(k) for k in ("state", "rc", "t_end", "state_dir", "notify_rc", "effective")})
+            if rec.get("t_end") is not None:  # complete: the end is published (an incomplete one is read again)
+                break
+    ok("F-10d S4 (1.2.4) every ended record read during the end of a volume job has rc, t_end, state_dir, notify_rc "
+       "and effective {verify, az}; the job ends OK, notify_rc 0",
+       r.status == 202 and not bad and last.get("state") == "OK" and last.get("notify_rc") == 0,
+       (r.status, seen, len(bad), bad[:2], {k: last.get(k) for k in ("state", "rc", "t_end", "notify_rc")}))
+    ok("F-10d S4 (1.2.4) reads landed inside the 0.5 s notify hook and the job still showed RUNNING there (rc, t_end "
+       "None): the hook runs before the end is published",
+       len(in_hook) > 0 and all(x == ("RUNNING", None, None) for x in in_hook), (seen, len(in_hook), in_hook[:3]))
+finally:
+    s.stop()
+    os.environ.pop("MIGUI_NOTIFY_CMD", None)
+    try:
+        os.unlink(mark)
+    except OSError:
+        pass
+
 # ---------------------------------------------------------------- F-11 one plan per session at a time
 s = H.Stack()
 try:

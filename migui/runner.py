@@ -267,6 +267,12 @@ class Job:
     def record(self):
         return {f: getattr(self, f) for f in self.FIELDS}
 
+    def published(self):
+        """record() under cond, for the readers of the socket (S4, 1.2.4): the end of a job publishes its ended state
+        and every end field (rc, t_end, state_dir, effective, notify_rc) at once under it, with the seal."""
+        with self.cond:
+            return self.record()
+
     @property
     def ended(self):
         return self.state in ("OK", "FAIL", "CANCELLED", "SKIPPED", "LOST", "DETACHED")
@@ -1066,8 +1072,10 @@ class Runner:
         try:
             for j in b.jobs:
                 if b.stop:
-                    j.state, j.t_end = "SKIPPED", utc()
-                    self.seal(j)
+                    with j.cond:  # S4 (1.2.4): an ended state is published with its end fields, under j.cond
+                        j.state, j.t_end = "SKIPPED", utc()
+                        self.seal(j)
+                        j.cond.notify_all()
                     self.audit("skip", session=j.session, job=j.id, why=b.stop_reason, operator=j.operator)
                     continue
                 self.run_job(b, j)
@@ -1104,9 +1112,11 @@ class Runner:
             finally:
                 os.close(fd)
         except OSError as e:
-            j.state, j.rc, j.t_end = "FAIL", 127, utc()
             self.add_line(j, "line", "migui-runner: cannot start migrate: %s" % e.strerror)
-            self.seal(j)
+            with j.cond:  # S4 (1.2.4): the end fields and the seal at once, never an ended state without them
+                j.state, j.rc, j.t_end = "FAIL", 127, utc()
+                self.seal(j)
+                j.cond.notify_all()
             self.audit("end", session=j.session, job=j.id, argv=j.argv, rc=127, operator=j.operator)
             return
         j.pid = j.pgid = p.pid  # start_new_session: the child leads its own process group
@@ -1133,37 +1143,46 @@ class Runner:
                     break
                 time.sleep(0.1)
         rc = p.wait()
-        j.rc = rc
+        # reaped: from here a cancel answers 409 "not running" (a signal to its process group would find nothing)
+        j.proc = None
+        # S4 (1.2.4): every end field is computed into locals first, the notify hook runs while the job still shows
+        # RUNNING, then all of them are published at once under j.cond with the seal. A reader of the record
+        # (op_status, the job listing, under j.cond too) never sees an ended state without rc, t_end, state_dir,
+        # effective or notify_rc: ended <=> complete record <=> sealed.
         result = j.progress.get("result")
+        late_exit = None
         if j.cancel.get("sigint_at") and isinstance(result, dict) and result.get("rc") == 0:
             # Review 23/11 #2: the cancel came after migrate had printed its result rc 0 (the VM is migrated; the
             # selector was still finishing and exited 130 on the SIGINT): the job is OK. sigint_at stays for the
             # audit, the batch still stops (b.stop), the exit code migrate really gave stays in cancel.exit.
-            j.state = "OK"
-            j.cancel["late"] = True
-            j.cancel["exit"] = rc
-            j.rc = rc = 0
+            state = "OK"
+            late_exit, rc = rc, 0
         elif j.cancel.get("sigint_at"):
-            j.state = "CANCELLED"
+            state = "CANCELLED"
         else:
-            j.state = "OK" if rc == 0 else "FAIL"
-        j.exit_class = rc if rc in EXIT_CLASSES else None  # C8
-        j.notify_rc = self.notify_event("job", j.id, j.state, batch=j.batch, name=j.name, rc=rc, operator=j.operator)
-        if j.kind in ("vm", "vol") and not j.state_dir:
-            j.state_dir = os.path.join(self.cfg.state_root, j.ident if j.kind == "vm" else "vol-" + j.ident)
-        if j.kind == "vol" and not isinstance(j.effective, dict):
+            state = "OK" if rc == 0 else "FAIL"
+        exit_class = rc if rc in EXIT_CLASSES else None  # C8
+        state_dir, effective = j.state_dir, j.effective
+        if j.kind in ("vm", "vol") and not state_dir:
+            state_dir = os.path.join(self.cfg.state_root, j.ident if j.kind == "vm" else "vol-" + j.ident)
+        if j.kind == "vol" and not isinstance(effective, dict):
             # a standalone volume is READY at plan time (no preflight, no effective options): the options it ran with
             # are those 'migrate volume' recorded in its own state, options.json (record.write_options_json)
-            opts = self.state_json(j.state_dir, "options.json")
+            opts = self.state_json(state_dir, "options.json")
             if isinstance(opts, dict) and isinstance(opts.get("effective"), dict):
-                j.effective = scrub_obj(opts["effective"])  # T9: as every other JSON of the CLI the runner hands out
-        j.t_end = utc()
-        j.proc = None
+                effective = scrub_obj(opts["effective"])  # T9: as every other JSON of the CLI the runner hands out
+        notify_rc = self.notify_event("job", j.id, state, batch=j.batch, name=j.name, rc=rc, operator=j.operator)
         with j.cond:
+            j.state, j.rc, j.exit_class = state, rc, exit_class
+            j.state_dir, j.effective, j.notify_rc = state_dir, effective, notify_rc
+            if late_exit is not None:
+                j.cancel["late"] = True
+                j.cancel["exit"] = late_exit
+            j.t_end = utc()
             self.seal(j)
             j.cond.notify_all()
-        late = {"exit": j.cancel.get("exit")} if j.cancel.get("late") else {}  # rc is the result's 0, exit what it gave
-        self.audit("end", session=j.session, job=j.id, argv=j.argv, rc=rc, state=j.state, operator=j.operator, **late)
+        late = {"exit": late_exit} if late_exit is not None else {}  # rc is the result's 0, exit what migrate gave
+        self.audit("end", session=j.session, job=j.id, argv=j.argv, rc=rc, state=state, operator=j.operator, **late)
 
     def on_line(self, j, raw):
         """One line of migrate's output: scrubbed (T9); '@@ {...}' becomes a progress event, the rest a log line."""
@@ -1262,18 +1281,18 @@ class Runner:
             frm = msg.get("from") or 0
             if isinstance(frm, bool) or not isinstance(frm, int) or frm < 0:
                 raise Reject(400, "from: a line number")
-            send({"job": j.record()})
+            send({"job": j.published()})
             if msg.get("follow") is True or msg.get("lines") is True:
                 self.stream(j, frm, send, follow=msg.get("follow") is True)
-            send({"job": j.record()})
+            send({"job": j.published()})
             return j.rc if j.rc is not None else 0
         flt = job_filter(msg)
         with self.mu:
             matched = [self.jobs[i] for i in reversed(self.order) if flt(self.jobs[i])]
             act = self.active.summary() if self.active else None
         off, lim = page_of(msg)
-        send({"jobs": [j.record() for j in matched[off:off + lim]], "total": len(matched), "offset": off, "limit": lim,
-              "active": act})
+        send({"jobs": [j.published() for j in matched[off:off + lim]], "total": len(matched), "offset": off,
+              "limit": lim, "active": act})
         rc = 0
         if msg.get("cli") is True:
             rc, data, tail = self.cli_json(["status", "--json"], TIMEOUTS["status"])
