@@ -13,26 +13,34 @@ Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit 
 Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
 [archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
 
-## [1.2.3] — 2026-11-25 · branch `install-constraints` · one install path: the `[host]` extra under OpenStack upper-constraints
+## [1.2.3] — 2026-11-25 · branch `install-constraints` · one install path under OpenStack upper-constraints; UI runner can open /dev/sdX on systemd 249
 
-Thiết kế: phụ lục 1.2.3 của thiết kế 1.2 (sự cố cài trên host Ubuntu 22.04/Python 3.10: `pip install -r requirements-host.txt` dừng ở `Could not find a version that satisfies the requirement cliff==4.17.0`, vì bộ pin đóng băng từ Python 3.12 mà cliff ≥ 4.15 đòi Python ≥ 3.11). Test: `bash tests/unit/run.sh --parity` trên mig-host `ALL pass=1088 fail=2` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 84, ui 191, parity 205): 2 FAIL là F-10b/F-10c, race đã biết của runner (S4, chưa sửa; `migui/runner.py` không đổi trong bản này); `tests/ui/run.sh` chạy ngay sau đó 193/0; UI guards 130/0; `./release.sh` build wheel OK. Gate lab thật với venv mới cài theo README bước 2 (constraints 2026.1, OSC 9.0.1): e2e 50/0, failure-injection 17/0. Báo cáo: `TEST-REPORT-1.2.3.md` (labkit). Commit chính: `3495bda` (cài đặt), `9ed68b2` (docs), `4ae29b8` (version). Mã migrate/rollback không đổi; chỉ đổi câu gợi ý của doctor khi brick không chạy.
+Thiết kế: phụ lục 1.2.3 của thiết kế 1.2 (sự cố cài trên host Ubuntu 22.04/Python 3.10: `pip install -r requirements-host.txt` dừng ở `Could not find a version that satisfies the requirement cliff==4.17.0`, vì bộ pin đóng băng từ Python 3.12 mà cliff ≥ 4.15 đòi Python ≥ 3.11), cộng ba lỗi gặp trên chính host 22.04 thật đó (`migrate` của sqlalchemy-migrate, `ProtectClock` của runner, session iSCSI sót). Test (HEAD code `992fbca`): `bash tests/unit/run.sh --parity` trên mig-host `ALL pass=1094 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 145, v11unit 36, v12unit 62, v13unit 84, ui 196, parity 205); `tests/ui/run.sh` 196/0 (install_audit 3 → 6); UI guards 130/0; `./release.sh` build wheel OK. Một lần trước đó (`4ae29b8`) `run.sh --parity` ra 1088/2 vì F-10b/F-10c (race S4 đã biết của runner, chưa sửa). Lab thật: venv mới cài đúng README bước 2 (constraints 2026.1, OSC 9.0.1), gate e2e 50/0 và failure-injection 17/0; một lần migrate cold + rollback `demo-vm` chạy qua web UI (runner), cả hai job OK. VM Ubuntu 22.04/systemd 249/Python 3.10: README bước 1–2, UI install, tái hiện và loại trừ lỗi `ProtectClock` (VM không tới được API cloud nên chưa migrate từ 22.04). Báo cáo: `TEST-REPORT-1.2.3.md` (labkit). Commit chính: `3495bda` (cài đặt), `9ed68b2` (docs), `4ae29b8` (version), `6ccf6af` (unit runner + installer), `4e8ee41` (brick), `992fbca`/`db67768` (docs).
 
 ### Đổi hành vi
 
 - **Một cách cài duy nhất**, dùng chung cho checkout và wheel: `pip install -c https://releases.openstack.org/constraints/upper/<release> "<checkout hoặc wheel>[host]"` rồi `pip check`; `<release>` là release OpenStack của cloud đích (README bước 2, DEPLOY mục 2 và 2.1). Bản client do file constraints của release quyết định, nên cài được trên mọi Python mà release đó hỗ trợ (DEPLOY 2.1 có bảng release ↔ Python tối thiểu: 2025.1–2026.1 ≥ 3.10, 2026.2 ≥ 3.11). Cách A (bộ pin cứng) và lựa chọn A/B bị bỏ.
-- Nâng cấp (README mục Nâng cấp, DEPLOY 7): `pip install --no-deps` chỉ thay tool, client trong venv giữ nguyên; đổi bộ client là cài venv mới theo bước 2 và nghiệm thu lại.
+- Nâng cấp (README mục Nâng cấp, DEPLOY 7): `pip install --no-deps` chỉ thay tool, client trong venv giữ nguyên; đổi bộ client là cài venv mới theo bước 2 và nghiệm thu lại. Host có UI phải chạy lại `install.sh` để thay unit systemd.
 - Sau `ln -sfn … /usr/local/bin/migrate`, README bước 2 và DEPLOY 2 chạy `hash -r` và `type -a migrate`: host OpenStack hay có `/usr/bin/migrate` của gói `python3-migrate` (sqlalchemy-migrate), và khi nó đứng trước thì `migrate --version` in `Invalid command --version` của sqlalchemy-migrate (gặp trên host 22.04 thật). DEPLOY 8 thêm dòng xử lý.
+- README bước 1 và DEPLOY 1: dòng repo Ceph Tentacle lấy codename của host (`$(. /etc/os-release; echo "$VERSION_CODENAME")`) thay cho `noble` cố định; trên 22.04 dòng cũ làm `apt-get install` dừng (gói noble đòi libc6 ≥ 2.38, python3 ≥ 3.12).
+- `install.sh` từ chối (exit 1, chưa restart unit) khi `systemctl show -p DeviceAllow --value migui-runner.service` không rỗng, ví dụ một drop-in thêm `ProtectClock=`.
 - `migrate doctor` khi brick không chạy: `brick cannot start (...): install the 'host' extra into this venv with the release constraints (DEPLOY.md section 2.1)`.
 
 ### Bỏ
 
 - `requirements-host.txt` (pip freeze của venv lab trên Python 3.12).
 - Pin `==` trong extra `host` của `pyproject.toml`: extra giờ chỉ liệt kê 7 gói (`python-openstackclient`, `openstacksdk`, `os-brick`, `python-cinderclient`, `keystoneauth1`, `oslo.concurrency`, `oslo.config`), là nơi duy nhất ghi danh sách này.
+- `ProtectClock=yes` trong `migui-runner.service` (web giữ).
+
+### Sửa
+
+- Migrate chạy từ web UI trên systemd ≤ 249 (Ubuntu 22.04) chết ở bước gắn clone: `PermissionError: [Errno 1] Operation not permitted: '/dev/sdX'` trong `brick-attach.err`. `ProtectClock=yes` của runner trên systemd 249 kéo theo `DeviceAllow=char-rtc r`, và có `DeviceAllow=` thì `DevicePolicy=auto` thành `closed`: mọi process con của runner bị từ chối mở block device. CLI chạy từ shell không bị; systemd 255 (lab) không thêm `DeviceAllow` nên gate không thấy. Bỏ dòng đó khỏi unit runner. DEPLOY 6 giải thích và cho lệnh kiểm unit đã cài; DEPLOY 8 có dòng cho lỗi này (chạy lại `install.sh` hoặc drop-in `ProtectClock=no`) và cách logout session iSCSI sót.
+- `brick attach`: khi không kiểm được device vừa gắn (ví dụ EPERM ở trên), `disconnect_volume` gọi không force nên flush lỗi theo và dừng trước bước logout, để lại session iSCSI và `/dev/sdX` trên host convert. Nay disconnect `force=True, ignore_errors=True` như đường A19, attachment vẫn xóa, lỗi đầu tiên được báo. Test v1unit mới (rớt trên mã cũ).
 
 ### Biết trước
 
 - Bộ client đi theo release constraints, nên host khác release/Python/OS có bộ client khác. Tool đọc chữ OSC in ra (ví dụ câu "không tìm thấy" của rollback), vì vậy **host mới phải nghiệm thu** (doctor, plan, migrate + rollback một VM thử) trước khi dùng thật (DEPLOY 2.1). Bộ đã chạy gate lab (DEPLOY 2.1): constraints 2026.1 trên Python 3.12.3, `python-openstackclient` 9.0.1, `openstacksdk` 4.10.0, `os-brick` 7.0.0, `python-cinderclient` 9.9.0, `keystoneauth1` 5.13.1, `oslo.concurrency` 7.4.1, `oslo.config` 10.3.0 (bộ pin cũ: OSC 10.5.0, SDK 4.22.0, os-brick 7.1.1).
-- Ubuntu 22.04 chưa chứng minh bằng cài thật: lab không có image 22.04. Chỉ kiểm mức resolve (`pip install --dry-run --python-version 3.10 --only-binary=:all:`): constraints 2026.1 resolve được cho Python 3.10, 2026.2 thì không (gói đòi Python ≥ 3.11), bộ pin cũ tái hiện đúng lỗi `cliff==4.17.0`.
+- Ubuntu 22.04: đã cài thật (README bước 1–2 với constraints 2026.1 trên Python 3.10.12, cùng bộ client như trên, `pip check` sạch, UI install, `DeviceAllow` rỗng) trên VM lab không tới được API cloud; **chưa chạy migrate thật từ 22.04**. Race S4 (F-10b/F-10c) vẫn mở.
 
 ## [1.2.2] — 2026-11-25 · branch `preflight-polish` · Ceph capacity counts the ephemeral root; doctor says when the conf did not load
 
