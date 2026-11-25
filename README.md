@@ -110,7 +110,7 @@ migrate --version && migrate doctor
 sudo /opt/mig-src/migui/deploy/install.sh     # UI, chỉ khi không còn job
 ```
 
-`--no-deps` chỉ thay tool: OpenStack CLI/SDK trong venv giữ nguyên bản đang chạy. Đổi bộ client (ví dụ theo release mới của cloud đích) là cài venv mới theo bước 2 rồi nghiệm thu lại ([DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). Conf `/opt/mig/migrate.conf`, openrc và thư mục state không đổi: state của bản cũ vẫn rollback được bằng bản mới. Sao lưu venv, hạ cấp và nâng cấp bằng wheel: [DEPLOY.md mục 7](DEPLOY.md#7-nâng-cấp-hạ-cấp-gỡ).
+`--no-deps` chỉ thay tool: OpenStack CLI/SDK trong venv giữ nguyên bản đang chạy. Host có UI thì nâng cấp UI luôn là chạy lại `install.sh` như trên: installer thay cả unit systemd (unit cũ của runner có `ProtectClock=yes`, làm migrate chạy từ UI không mở được `/dev/sdX` trên systemd ≤ 249; [DEPLOY.md mục 6](DEPLOY.md#6-cài-web-ui)). Đổi bộ client (ví dụ theo release mới của cloud đích) là cài venv mới theo bước 2 rồi nghiệm thu lại ([DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). Conf `/opt/mig/migrate.conf`, openrc và thư mục state không đổi: state của bản cũ vẫn rollback được bằng bản mới. Sao lưu venv, hạ cấp và nâng cấp bằng wheel: [DEPLOY.md mục 7](DEPLOY.md#7-nâng-cấp-hạ-cấp-gỡ).
 
 ## Đọc tài liệu
 

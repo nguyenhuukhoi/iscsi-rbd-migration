@@ -308,6 +308,13 @@ ssh -L 8787:127.0.0.1:8787 operator@192.0.2.20
 
 Mở `http://127.0.0.1:8787/`. Port local khác cần web `--origin-port` qua drop-in `ExecStart`; không nới bind ra public. Web sandbox chỉ cho loopback và socket; runner cần quyền network/devices cho child migrate, không áp sandbox PrivateDevices/PrivateNetwork của web lên runner.
 
+Runner cũng không có `ProtectClock=` (web vẫn có). Trên systemd ≤ 249 (Ubuntu 22.04), `ProtectClock=yes` tự thêm `DeviceAllow=char-rtc r`, và hễ có một dòng `DeviceAllow=` thì `DevicePolicy=auto` thành `closed`: mọi migrate chạy từ UI bị `PermissionError: [Errno 1] Operation not permitted: '/dev/sdX'` khi mở LUN nguồn (CLI chạy từ shell không bị). Unit của các bản trước có dòng này; nâng cấp UI phải chạy lại `install.sh` để thay unit. Installer từ chối khởi động runner khi `systemctl show -p DeviceAllow --value migui-runner` không rỗng (ví dụ một drop-in tự thêm). Kiểm sau khi cài:
+
+```bash
+systemctl show migui-runner -p DeviceAllow -p DevicePolicy   # DeviceAllow rỗng (không in ra), DevicePolicy=auto
+systemctl cat migui-runner | grep -E '^(ProtectClock|DeviceAllow|DevicePolicy|PrivateDevices)='   # không dòng nào
+```
+
 ### Hook thông báo
 
 Tạo executable root-owned `/opt/mig/notify` theo tích hợp nội bộ. Hook nhận env MIG_EVENT/MIG_JOB/MIG_STATE/MIG_BATCH/MIG_NAME/MIG_RC/MIG_OPERATOR; không tự gửi notification khi chưa cấu hình. Hook không chứa secret trong argv. Cấu hình bằng `systemctl edit migui-runner`:
@@ -357,6 +364,7 @@ Giữ jobs/accounts/audit để tra cứu. `--purge` xóa cả `/var/lib/migui`,
 | `No module named 'os_brick'` | Venv thiếu client: cài lại theo mục 2.1 (`[host]` với `-c` của release); Doctor lại |
 | Khi cài: `ResolutionImpossible` với `The user requested (constraint) <gói>===<bản>` và `no matching distributions available for your environment`, hoặc `Could not find a version that satisfies the requirement <gói>==<bản>` | Python của host thấp hơn mức release constraints đòi (marker `python_version` trong file constraints, `Requires-Python` của gói). Chọn release hỗ trợ Python đó (bảng mục 2.1); không tháo ghim từng gói |
 | `migrate --version` in `Invalid command --version` hoặc usage liệt kê `db_version`, `upgrade`, `version_control` | Đó là `/usr/bin/migrate` của sqlalchemy-migrate (gói `python3-migrate`), không phải tool này. `type -a migrate` xem thứ tự; `hash -r`; tạo lại symlink `ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate`; PATH đặt `/usr/bin` trước thì sửa PATH hoặc gọi `/opt/mig-venv/bin/migrate` |
+| `PermissionError: [Errno 1] Operation not permitted: '/dev/sdX'` trong `brick-attach.err` (thư mục state của VM), migrate chạy từ UI; CLI từ shell thì không bị | Unit `migui-runner` cũ còn `ProtectClock=yes`: trên systemd ≤ 249 nó thêm `DeviceAllow=char-rtc r`, device policy thành closed (`systemctl show migui-runner -p DeviceAllow` không rỗng). Sửa khi không còn job: chạy lại `install.sh` từ checkout mới (thay unit, mục 6), hoặc `systemctl edit migui-runner` thêm `[Service]` / `ProtectClock=no`, rồi `systemctl daemon-reload` và `systemctl restart migui-runner`. Tool cũ có thể để lại session iSCSI của LUN đó: `iscsiadm -m session -P 3` (tìm target có dòng `Attached scsi disk sdX`), rồi `iscsiadm -m node -T <iqn> -p <portal> -u` và `iscsiadm -m node -T <iqn> -p <portal> -o delete`; sau đó `iscsiadm -m session` không còn target đó |
 | `openstack: not found on PATH` | Venv thiếu OSC: cài lại theo mục 2.1, rồi kiểm `/opt/mig-venv/bin/openstack --version` |
 | `pip check` báo xung đột sau khi tự cài | Gói cài từ hai nguồn khác nhau (ví dụ cài đè lên venv của bộ client khác). Đổi tên venv, cài venv mới theo mục 2.1 |
 | Rollback chờ tới hết hạn (hoặc dừng `cannot read destination ...`) dù đối tượng đích đã bị xóa, sau khi đổi bản OSC | Tool nhận 4 dạng "không tìm thấy" có nêu đúng ID (`No <Kind> found for <id>`, `No <kind> with a name or ID of '<id>' exists`, `<id> could not be found`, dòng kết thúc bằng `(HTTP 404)`/`404`) và một dòng nêu đúng ID có `(HTTP 404)` ở bất kỳ đâu hoặc token `404` đứng riêng theo sau là `Not Found`/hết dòng. Bản OSC in dạng khác: cài lại venv theo release của bộ đã chạy gate lab (mục 2.1) và gửi dòng OSC in ra cùng `openstack --version` cho người bảo trì |
