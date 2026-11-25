@@ -526,6 +526,8 @@ def fake_modules():
 
         def disconnect_volume(self, conn, device, force=False, ignore_errors=False):
             CALLS.append(("disconnect", force))
+            if FLUSH_FAILS[0] and not force:  # os-brick: the flush fails and an unforced disconnect stops before logout
+                raise PermissionError(1, "Operation not permitted", "blockdev --flushbufs /dev/sdb")
 
     class NotFound(Exception):
         code = 404
@@ -586,7 +588,7 @@ def fake_modules():
     sys.modules["oslo_config"].cfg = sys.modules["oslo_config.cfg"]
 
 
-FAIL_COMPLETE, DELETE_404 = [False], [False]
+FAIL_COMPLETE, DELETE_404, FLUSH_FAILS = [False], [False], [False]
 fake_modules()
 from migratetool import brick  # noqa: E402
 brick.STATE_DIR = os.path.join(WORK, "attach")
@@ -604,6 +606,32 @@ ok("A19 attach: complete() fails -> the connected device is disconnected (forced
    raised and CALLS[-2:] == [("disconnect", True), "delete"] and not os.path.exists(brick.state_path("vol-1")), CALLS)
 ok("C7 brick's Cinder client: OS_INTERFACE, OS_REGION_NAME and OS_CACERT of the openrc",
    ("client", "internal", "RegionTwo", "/etc/ca.pem") in CALLS, CALLS)
+# 1.2.3: the device cannot be opened (EPERM on /dev/sdX under a unit with a closed device policy, real 22.04 host)
+# and os-brick's flush fails as well: the disconnect is forced so the session is still logged out, the attachment
+# goes, and the PermissionError of the device is the one raised.
+del CALLS[:]
+FAIL_COMPLETE[0] = False
+FLUSH_FAILS[0] = True
+real_device_size = brick.device_size
+
+
+def eperm_device(path):
+    raise PermissionError(1, "Operation not permitted", "/dev/sdb")
+
+
+brick.device_size = eperm_device
+err = None
+try:
+    with redirect_stderr(io.StringIO()):
+        brick.attach("vol-3")
+except PermissionError as e:
+    err = e
+brick.device_size = real_device_size
+FLUSH_FAILS[0] = False
+ok("1.2.3 attach: device_size EPERM and a failing flush -> disconnect forced (logout), then the attachment is "
+   "deleted; the device's PermissionError is raised, no state record",
+   err is not None and err.filename == "/dev/sdb" and CALLS[-2:] == [("disconnect", True), "delete"]
+   and ("disconnect", False) not in CALLS and not os.path.exists(brick.state_path("vol-3")), (err, CALLS))
 os.environ["OS_INSECURE"] = "true"
 del CALLS[:]
 FAIL_COMPLETE[0] = False

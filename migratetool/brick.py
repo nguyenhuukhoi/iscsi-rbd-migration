@@ -167,9 +167,12 @@ def attach(volume_id):
     try:
         path = verified_path(device, expected_bytes)
     except Exception as e:
-        # Never hand out a device we cannot vouch for, and leave nothing connected behind.
+        # Never hand out a device we cannot vouch for, and leave nothing connected behind. 1.2.3: forced, as A19: when
+        # the device cannot be opened (EPERM on /dev/sdX under a systemd unit with a closed device policy) os-brick's
+        # flush fails too, and an unforced disconnect then stops before the logout, leaving the session in place. The
+        # first error is the one raised; the attachment is deleted whatever happens.
         try:
-            connector.disconnect_volume(conn, device)
+            _quiet(connector.disconnect_volume, conn, device, force=True, ignore_errors=True)
         finally:
             api.attachments.delete(att["id"])
         if isinstance(e, WrongDevice):
