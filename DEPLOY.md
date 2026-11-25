@@ -20,7 +20,7 @@ Nếu hai cloud cùng VLAN, allocation pools phải được quy hoạch không 
 
 ```bash
 curl -fsSL https://download.ceph.com/keys/release.asc -o /usr/share/keyrings/ceph-release.asc
-echo "deb [signed-by=/usr/share/keyrings/ceph-release.asc] https://download.ceph.com/debian-tentacle noble main" \
+echo "deb [signed-by=/usr/share/keyrings/ceph-release.asc] https://download.ceph.com/debian-tentacle $(. /etc/os-release; echo "$VERSION_CODENAME") main" \
   > /etc/apt/sources.list.d/ceph-tentacle.list
 apt-get update
 apt-get install -y open-iscsi qemu-utils qemu-block-extra ceph-common python3-rbd jq \

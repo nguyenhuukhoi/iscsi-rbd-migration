@@ -17,13 +17,13 @@ Nova đích <----------------------- volume + port mới; state giữ để roll
 
 ## Cài và chạy thử
 
-Chạy bằng root trên host convert Ubuntu 24.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (23/11/2026; bước 2 theo upper-constraints: 25/11/2026).
+Chạy bằng root trên host convert Ubuntu 24.04 hoặc 22.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (23/11/2026; bước 2 theo upper-constraints: 25/11/2026). Bước 1–2 cũng đã chạy trên một VM Ubuntu 22.04/Python 3.10 (25/11/2026; VM đó không tới được API cloud nên chưa chạy migrate).
 
-1. Gói hệ thống. Client Ceph lấy từ repo Ceph Tentacle: `ceph-common` 19.x của Ubuntu không đọc được key `aes256k` của cụm Tentacle ≥ 20.2.4.
+1. Gói hệ thống. Client Ceph lấy từ repo Ceph Tentacle, đúng codename của host (`noble` cho 24.04, `jammy` cho 22.04; gói của codename khác không cài được): `ceph-common` 19.x của Ubuntu không đọc được key `aes256k` của cụm Tentacle ≥ 20.2.4.
 
 ```bash
 curl -fsSL https://download.ceph.com/keys/release.asc -o /usr/share/keyrings/ceph-release.asc
-echo "deb [signed-by=/usr/share/keyrings/ceph-release.asc] https://download.ceph.com/debian-tentacle noble main" \
+echo "deb [signed-by=/usr/share/keyrings/ceph-release.asc] https://download.ceph.com/debian-tentacle $(. /etc/os-release; echo "$VERSION_CODENAME") main" \
   > /etc/apt/sources.list.d/ceph-tentacle.list
 apt-get update
 apt-get install -y git open-iscsi qemu-utils qemu-block-extra ceph-common python3-rbd jq \
