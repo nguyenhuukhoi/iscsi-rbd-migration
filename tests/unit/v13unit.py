@@ -4,7 +4,8 @@ R1 (gone() takes a 404 anywhere on a line that names the object), R3 (a destinat
 cannot read or delete is a WARN, not silence and not the end of the rollback), the wording of an application credential
 refused for a state scoped by its record, doctor's check of the map, the version, and the parity rule v13_rule. Runs
 the app in this process against the fake clouds (inproc.py), like v12unit.py. Test IDs T1-T24: the 1.2.0 design;
-T25-T28 and the '*' key in T3/T7/T23: its 1.2.1 appendix (the fallback key is '*', '__DEFAULT__' a type name).
+T25-T28 and the '*' key in T3/T7/T23: its 1.2.1 appendix (the fallback key is '*', '__DEFAULT__' a type name);
+T29 (the Ceph capacity of an ephemeral root disk) and T30 (doctor with a conf that does not parse): its 1.2.2 appendix.
 
     python3 v13unit.py <directory holding migratetool/>
 """
@@ -612,6 +613,99 @@ import migui  # noqa: E402
 ok("T28 version 1.2.1: migratetool, migui and pyproject agree",
    migratetool.__version__ == "1.2.1" and migui.__version__ == "1.2.1"
    and 'version = "1.2.1"' in (read(os.path.join(REPO, "pyproject.toml")) or ""), migratetool.__version__)
+
+# ================================ T29: the Ceph capacity counts the ephemeral root disk (1.2.2, S1) ================================
+GB = 1 << 30
+w = eph_world(disk=20)
+w["dst"]["ceph_pools"] = {"volumes": {"max_avail": 15 * GB, "stored": 0, "quota_bytes": 0}}
+r = app(w, [("plan", "eph01", PLAIN)], env=menv(""))
+ok("T29 ephemeral VM, root disk 20 GB, no volume, pool volumes 15 GB left: 'FAIL Ceph pool volumes: 20 GB needed, "
+   "15 GB left (MAX AVAIL)' (up to 1.2.1: no Ceph pool line at all); exit 1",
+   r.rc == [1] and "  FAIL  Ceph pool volumes: 20 GB needed, 15 GB left (MAX AVAIL)" in r.out
+   and r.out.count("Ceph pool ") == 1 and sum(1 for c in r.calls if c.startswith("ceph\t")) == 1, (r.rc, r.out[-1500:]))
+r = app(w, [("plan", "eph01", PLAIN + ["--ephemeral-as-image"])], env=menv(""))
+ok("T29 ... with --ephemeral-as-image (the root stays an image): no Ceph pool line, no 'ceph df', as before",
+   "Ceph pool" not in r.out and not has(r.calls, "ceph\t"), (r.rc, r.out[-1500:]))
+
+
+def eph_data_world(t=None):
+    """eph01 (root 20 GB) with one attached data volume of 2 GB (of source type t)."""
+    w = eph_world(disk=20)
+    w["src"]["volumes"]["vol-src-edata"] = {"name": "edata", "status": "in-use", "size": 2, "bootable": "false",
+                                            "encrypted": False, "multiattach": False}
+    if t:
+        w["src"]["volumes"]["vol-src-edata"]["type"] = t
+    w["src"]["servers"]["srv-src-eph01"]["volumes"] = [{"Volume ID": "vol-src-edata", "Device": "/dev/vdb"}]
+    return w
+
+
+r = app(eph_data_world(), [("plan", "eph01", PLAIN)], env=menv(""))
+ok("T29 ephemeral root 20 GB + a 2 GB data volume, both in pool volumes: one line 'OK Ceph pool volumes: 22 GB "
+   "needed'", "  OK    Ceph pool volumes: 22 GB needed, 1024 GB left (MAX AVAIL)" in r.out
+   and r.out.count("Ceph pool ") == 1, (r.rc, r.out[-1500:]))
+r = app(eph_data_world("ps-silver"), [("plan", "eph01", PLAIN)], env=menv(MAP + ",*:rbd-ssd"))
+ok("T29 with the map (ps-silver:rbd-hdd, *:rbd-ssd): the root counts in the pool of its volume (volumes-ssd 20 GB), "
+   "the data volume in its own (volumes 2 GB)",
+   "  OK    Ceph pool volumes-ssd: 20 GB needed, " in r.out
+   and "  OK    Ceph pool volumes: 2 GB needed, " in r.out and r.out.count("Ceph pool ") == 2, (r.rc, r.out[-1500:]))
+w = eph_world(disk=20)
+w["dst"]["quota"] = {"volumes": [10, 0, 0], "gigabytes": [1000, 0, 0], "instances": [10, 0, 0], "cores": [20, 0, 0],
+                     "ram": [51200, 0, 0], "ports": [50, 0, 0]}
+w["dst"]["ceph_pools"] = {"volumes": {"max_avail": 15 * GB, "stored": 0, "quota_bytes": 0}}
+r = app(w, [("plan", "eph01", PLAIN)], env=menv(""))
+ok("T29 the quota and the Ceph pool count the same root disk (gigabytes 20/1000 on the quota line, 20 GB in the pool)",
+   "  FAIL  Ceph pool volumes: 20 GB needed, 15 GB left (MAX AVAIL)" in r.out
+   and "gigabytes 20/1000" in r.out, (r.rc, r.out[-1500:]))
+
+
+# ================================ T30: doctor with a conf that does not parse (1.2.2, S5) ================================
+def conf_step(text, iscsi_env=None):
+    """The conf file holds text; MIG_ISCSI_IP comes from the environment only when iscsi_env is given."""
+    def step(_wf, root):
+        path = os.path.join(os.path.dirname(root), "migrate.conf")
+        with open(path, "w") as f:
+            f.write(text)
+        os.environ["MIG_CONF"] = path
+        if iscsi_env is None:
+            os.environ.pop("MIG_ISCSI_IP", None)
+        else:
+            os.environ["MIG_ISCSI_IP"] = iscsi_env
+    return step
+
+
+BADCONF = 'MIG_ISCSI_IP=127.0.0.1\nVOLUME_TYPE_MAP="a"\n'
+NOTLOADED = ("  INFO  conf %s not loaded: the checks below use the environment and the built-in defaults only; "
+             "fix the conf first")
+r = app(world(), [conf_step(BADCONF), ("doctor",)])
+cpath = os.path.join(r.dir, "migrate.conf")
+ok("T30 conf with MIG_ISCSI_IP and VOLUME_TYPE_MAP=\"a\": doctor exit 1, FAIL on the conf line, then the new INFO "
+   "line, 'INFO MIG_ISCSI_IP not checked: conf not loaded' and no 'FAIL MIG_ISCSI_IP is not set'; the other checks "
+   "still run",
+   r.rc == [1] and ("  FAIL  conf %s: VOLUME_TYPE_MAP: entry 'a' has no ':'" % cpath) in r.out
+   and (NOTLOADED % cpath) in r.out
+   and r.out.index("  FAIL  conf ") < r.out.index(NOTLOADED % cpath)
+   and "  INFO  MIG_ISCSI_IP not checked: conf not loaded" in r.out
+   and "MIG_ISCSI_IP is not set" not in r.out and "  OK    RBD access to pool" in r.out
+   and "Traceback" not in r.text, (r.rc, r.out[-2500:], r.err[-300:]))
+r = app(world(), [conf_step(BADCONF, iscsi_env="127.0.0.1"), ("doctor",)])
+ok("T30 ... MIG_ISCSI_IP from the environment is checked as usual (no 'not checked' line)",
+   r.rc == [1] and (NOTLOADED % os.path.join(r.dir, "migrate.conf")) in r.out
+   and "MIG_ISCSI_IP not checked" not in r.out and "MIG_ISCSI_IP 127.0.0.1" in r.out, (r.rc, r.out[-2000:]))
+r = app(world(), [conf_step("MIG_ISCSI_IP=127.0.0.1\n"), ("doctor",)])
+ok("T30 control: a conf that parses: 'OK conf <path>', no 'not loaded' line, MIG_ISCSI_IP from the conf checked",
+   ("  OK    conf %s" % os.path.join(r.dir, "migrate.conf")) in r.out and "not loaded" not in r.out
+   and "MIG_ISCSI_IP not checked" not in r.out and "MIG_ISCSI_IP is not set" not in r.out
+   and "MIG_ISCSI_IP 127.0.0.1" in r.out, (r.rc, r.out[-2000:]))
+r = app(world(), [conf_step(BADCONF), ("cli", ["doctor", "--json"])])
+try:
+    dj = json.loads(r.out)
+except ValueError:
+    dj = {}
+ok("T30 doctor --json: the two INFO lines are checks of level INFO, no FAIL naming MIG_ISCSI_IP",
+   {"level": "INFO", "text": "MIG_ISCSI_IP not checked: conf not loaded"} in dj.get("checks", [])
+   and {"level": "INFO", "text": (NOTLOADED % os.path.join(r.dir, "migrate.conf"))[8:]} in dj.get("checks", [])
+   and not [c for c in dj.get("checks", []) if c.get("level") == "FAIL" and "MIG_ISCSI_IP" in c.get("text", "")],
+   (r.rc, r.out[-1500:], r.err[-800:]))
 
 # ================================ config.parse_type_map and Options.type_for ================================
 from migratetool import config  # noqa: E402
