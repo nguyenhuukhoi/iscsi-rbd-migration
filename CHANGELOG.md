@@ -13,6 +13,23 @@ Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit 
 Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
 [archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
 
+## [1.2.2] — 2026-11-25 · branch `preflight-polish` · Ceph capacity counts the ephemeral root; doctor says when the conf did not load
+
+Thiết kế: phụ lục 1.2.2 của thiết kế 1.2 (S1, S5 từ backlog của review độc lập 1.2.0). Test: `bash tests/unit/run.sh --parity` (`tests/unit/v13unit.py` thêm T29, T30; T28 → 1.2.2): trên mig-host `ALL pass=1090 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 84, ui 193, parity 205); `tests/ui/run.sh` 193/0; UI guards 130/0. Parity không đổi (dòng `OK/WARN Ceph pool` đã nằm trong rule bỏ qua từ 7.2). Báo cáo: `TEST-REPORT-1.2.2.md` (labkit). Commit chính: `dfc4806` (S1), `47939f0` (S5), `0df9340` (test), `9f1fdc5` (docs). Đường copy và rollback không đổi.
+
+### Thêm
+
+- `migrate doctor` khi conf không parse được: ngay sau dòng `FAIL conf <path>: ...` in `INFO conf <path> not loaded: the checks below use the environment and the built-in defaults only; fix the conf first`. `MIG_ISCSI_IP` rỗng trong trường hợp đó thành `INFO MIG_ISCSI_IP not checked: conf not loaded` (giá trị có thể nằm trong conf chưa nạp); có trong biến môi trường thì vẫn kiểm như thường. Các kiểm khác giữ nguyên. Doctor vẫn trả 1 vì dòng FAIL của conf.
+
+### Sửa
+
+- **S1** Dung lượng Ceph của preflight không cộng root disk ephemeral: VM ephemeral (root thành volume, không `--ephemeral-as-image`) không có dòng `Ceph pool` nào khi không có volume, hoặc thiếu đúng phần root khi có. Nay cộng flavor disk của root vào pool của volume root, cùng quy tắc quota `gigabytes` đã cộng. Ví dụ: root 20 GB, pool còn 15 GB → `FAIL Ceph pool volumes: 20 GB needed, 15 GB left (MAX AVAIL)`; root 20 GB + volume data 2 GB cùng pool → `22 GB needed`. `--ephemeral-as-image` và `migrate volume` không đổi.
+- **S5** `migrate doctor` với conf hỏng (ví dụ `VOLUME_TYPE_MAP="a"`) báo thêm `FAIL MIG_ISCSI_IP is not set` dù conf có đặt: lỗi giả, che lỗi thật. Nay là dòng INFO ở trên.
+
+### Biết trước
+
+- Như 1.2.1. Dung lượng root ephemeral tính theo flavor disk; virtual size lớn hơn của image chỉ biết khi download (như quota); flavor disk 0 hoặc không đọc được thì không cộng gì (preflight đã WARN `free space not checked`).
+
 ## [1.2.1] — 2026-11-25 · branch `type-map-star` · VOLUME_TYPE_MAP fallback key `*`; `__DEFAULT__` is a real type name
 
 Thiết kế: phụ lục 1.2.1 của thiết kế 1.2 (từ L2 của review độc lập 1.2.0: Cinder đặt tên type mặc định thật là `__DEFAULT__`, trùng khóa fallback của 1.2.0, trong khi `RBD_POOL_MAP` đã hiểu `__DEFAULT__` là tên type thật). Test: `bash tests/unit/run.sh --parity` (`tests/unit/v13unit.py` T3/T7/T23 đổi sang `*`, thêm T25–T28): trên mig-host `ALL pass=1081 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 75, ui 193, parity 205); UI guards 130/0. Parity không đổi (`v13_rule` không khớp câu WARN). Báo cáo: `TEST-REPORT-1.2.1.md` (labkit). Commit chính: `1cb9107` (map), `3dd3ff2` (test), `372a6c1` (docs).
