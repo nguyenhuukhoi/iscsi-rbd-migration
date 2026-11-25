@@ -13,6 +13,27 @@ Repo công khai được khởi tạo lại ngày 22/11/2026 với một commit 
 Cách thêm một mục mới: xem [DEVELOPING.md](DEVELOPING.md). Tài liệu lịch sử được giữ nguyên trong
 [archive/docs/](archive/docs/); các liên kết gốc trong mục 7.x trở xuống được giữ theo bản ghi lịch sử.
 
+## [1.2.3] — 2026-11-25 · branch `install-constraints` · one install path: the `[host]` extra under OpenStack upper-constraints
+
+Thiết kế: phụ lục 1.2.3 của thiết kế 1.2 (sự cố cài trên host Ubuntu 22.04/Python 3.10: `pip install -r requirements-host.txt` dừng ở `Could not find a version that satisfies the requirement cliff==4.17.0`, vì bộ pin đóng băng từ Python 3.12 mà cliff ≥ 4.15 đòi Python ≥ 3.11). Test: `bash tests/unit/run.sh --parity` trên mig-host `ALL pass=1088 fail=2` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 84, ui 191, parity 205): 2 FAIL là F-10b/F-10c, race đã biết của runner (S4, chưa sửa; `migui/runner.py` không đổi trong bản này); `tests/ui/run.sh` chạy ngay sau đó 193/0; UI guards 130/0; `./release.sh` build wheel OK. Gate lab thật với venv mới cài theo README bước 2 (constraints 2026.1, OSC 9.0.1): e2e 50/0, failure-injection 17/0. Báo cáo: `TEST-REPORT-1.2.3.md` (labkit). Commit chính: `3495bda` (cài đặt), `9ed68b2` (docs), `4ae29b8` (version). Mã migrate/rollback không đổi; chỉ đổi câu gợi ý của doctor khi brick không chạy.
+
+### Đổi hành vi
+
+- **Một cách cài duy nhất**, dùng chung cho checkout và wheel: `pip install -c https://releases.openstack.org/constraints/upper/<release> "<checkout hoặc wheel>[host]"` rồi `pip check`; `<release>` là release OpenStack của cloud đích (README bước 2, DEPLOY mục 2 và 2.1). Bản client do file constraints của release quyết định, nên cài được trên mọi Python mà release đó hỗ trợ (DEPLOY 2.1 có bảng release ↔ Python tối thiểu: 2025.1–2026.1 ≥ 3.10, 2026.2 ≥ 3.11). Cách A (bộ pin cứng) và lựa chọn A/B bị bỏ.
+- Nâng cấp (README mục Nâng cấp, DEPLOY 7): `pip install --no-deps` chỉ thay tool, client trong venv giữ nguyên; đổi bộ client là cài venv mới theo bước 2 và nghiệm thu lại.
+- Sau `ln -sfn … /usr/local/bin/migrate`, README bước 2 và DEPLOY 2 chạy `hash -r` và `type -a migrate`: host OpenStack hay có `/usr/bin/migrate` của gói `python3-migrate` (sqlalchemy-migrate), và khi nó đứng trước thì `migrate --version` in `Invalid command --version` của sqlalchemy-migrate (gặp trên host 22.04 thật). DEPLOY 8 thêm dòng xử lý.
+- `migrate doctor` khi brick không chạy: `brick cannot start (...): install the 'host' extra into this venv with the release constraints (DEPLOY.md section 2.1)`.
+
+### Bỏ
+
+- `requirements-host.txt` (pip freeze của venv lab trên Python 3.12).
+- Pin `==` trong extra `host` của `pyproject.toml`: extra giờ chỉ liệt kê 7 gói (`python-openstackclient`, `openstacksdk`, `os-brick`, `python-cinderclient`, `keystoneauth1`, `oslo.concurrency`, `oslo.config`), là nơi duy nhất ghi danh sách này.
+
+### Biết trước
+
+- Bộ client đi theo release constraints, nên host khác release/Python/OS có bộ client khác. Tool đọc chữ OSC in ra (ví dụ câu "không tìm thấy" của rollback), vì vậy **host mới phải nghiệm thu** (doctor, plan, migrate + rollback một VM thử) trước khi dùng thật (DEPLOY 2.1). Bộ đã chạy gate lab (DEPLOY 2.1): constraints 2026.1 trên Python 3.12.3, `python-openstackclient` 9.0.1, `openstacksdk` 4.10.0, `os-brick` 7.0.0, `python-cinderclient` 9.9.0, `keystoneauth1` 5.13.1, `oslo.concurrency` 7.4.1, `oslo.config` 10.3.0 (bộ pin cũ: OSC 10.5.0, SDK 4.22.0, os-brick 7.1.1).
+- Ubuntu 22.04 chưa chứng minh bằng cài thật: lab không có image 22.04. Chỉ kiểm mức resolve (`pip install --dry-run --python-version 3.10 --only-binary=:all:`): constraints 2026.1 resolve được cho Python 3.10, 2026.2 thì không (gói đòi Python ≥ 3.11), bộ pin cũ tái hiện đúng lỗi `cliff==4.17.0`.
+
 ## [1.2.2] — 2026-11-25 · branch `preflight-polish` · Ceph capacity counts the ephemeral root; doctor says when the conf did not load
 
 Thiết kế: phụ lục 1.2.2 của thiết kế 1.2 (S1, S5 từ backlog của review độc lập 1.2.0). Test: `bash tests/unit/run.sh --parity` (`tests/unit/v13unit.py` thêm T29, T30; T28 → 1.2.2): trên mig-host `ALL pass=1090 fail=0` (checks 2, unit 66, p5unit 45, p6unit 63, v72unit 84, v73unit 106, v1unit 144, v11unit 36, v12unit 62, v13unit 84, ui 193, parity 205); `tests/ui/run.sh` 193/0; UI guards 130/0. Parity không đổi (dòng `OK/WARN Ceph pool` đã nằm trong rule bỏ qua từ 7.2). Báo cáo: `TEST-REPORT-1.2.2.md` (labkit). Commit chính: `dfc4806` (S1), `47939f0` (S5), `0df9340` (test), `9f1fdc5` (docs). Đường copy và rollback không đổi.
