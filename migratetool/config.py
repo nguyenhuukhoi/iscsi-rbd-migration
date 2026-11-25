@@ -54,6 +54,7 @@ class Config:
     values: dict = field(default_factory=dict)   # CONF_VARS (+ SYS_PY) after precedence/defaults
     multipath_set: bool = False                  # MIG_MULTIPATH was set at all (bash exports it then)
     exported: dict = field(default_factory=dict)  # other 'export X=...' lines of the conf file
+    conf_failed: bool = False                    # 1.2.2 (S5): doctor fell back to env + defaults (conf did not parse)
 
     def __getattr__(self, name):
         try:

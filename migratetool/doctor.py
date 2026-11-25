@@ -71,12 +71,17 @@ def check_conf(c):
         cfg = config.load()
     except Die as e:
         c.failed("conf %s: %s" % (path, e))
+        # 1.2.2 (S5): say once that the checks below do not see the conf, so a FAIL among them is read as such.
+        out("  INFO  conf %s not loaded: the checks below use the environment and the built-in defaults only; "
+            "fix the conf first" % path)
         env = dict(os.environ, MIG_CONF="/nonexistent")
         try:
-            return config.load(env)
+            cfg = config.load(env)
         except Die:  # 1.2.0: a malformed VOLUME_TYPE_MAP in the environment (said above): the other checks still run
             env["VOLUME_TYPE_MAP"] = ""
-            return config.load(env)
+            cfg = config.load(env)
+        cfg.conf_failed = True
+        return cfg
     if os.path.isfile(path) and os.access(path, os.R_OK):
         out("  OK    conf %s" % path)
     else:
@@ -245,7 +250,9 @@ def check_iscsi_ip(c, cfg, env):
     v4 = [a for a in (have or []) if "." in a and not a.startswith("127.")]
     listing = ", ".join(v4) if v4 else "none found"
     ip = cfg.MIG_ISCSI_IP.strip()
-    if not ip:
+    if not ip and getattr(cfg, "conf_failed", False):  # 1.2.2 (S5): the value may well be in the conf not loaded
+        out("  INFO  MIG_ISCSI_IP not checked: conf not loaded")
+    elif not ip:
         c.failed("MIG_ISCSI_IP is not set: set it in the conf to this host's address on the iSCSI network "
                  "(addresses of this host: %s)" % listing)
     elif have is None:
