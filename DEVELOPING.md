@@ -92,7 +92,7 @@ node tests/ui/guards.mjs .
 | `tests/unit/v1unit.py` | Review IDs; real blocksync với fake device/librbd, ownership/delete/A6/locks/deadline/prune/JSON |
 | `tests/unit/v11unit.py` | 1.1.0 (A20): rollback hỏi nguồn trước, nguồn mất hoặc không đọc được thì không xóa gì ở đích |
 | `tests/unit/v12unit.py` | 1.1.1 (A21, P2-a, P2-b): `gone()` chỉ tin câu nêu đúng ID, probe đích trước lần xóa đầu, scope rollback từ record, dòng type/pool preflight; unit của `v12_rule` |
-| `tests/unit/v13unit.py` | 1.2.0: `VOLUME_TYPE_MAP` (type/pool từng volume cold/live/ephemeral/volume đơn, parse, capacity/quota theo pool/type, doctor), R1 `gone()` 404, R3 WARN port/image khi rollback, câu application credential; unit của `v13_rule`; 1.2.1: khóa fallback `*`, `__DEFAULT__` là tên type (T25–T28) |
+| `tests/unit/v13unit.py` | 1.2.0: `VOLUME_TYPE_MAP` (type/pool từng volume cold/live/ephemeral/volume đơn, parse, capacity/quota theo pool/type, doctor), R1 `gone()` 404, R3 WARN port/image khi rollback, câu application credential; unit của `v13_rule`; 1.2.1: khóa fallback `*`, `__DEFAULT__` là tên type (T25–T28); 1.2.2: dung lượng Ceph cộng root ephemeral (T29), doctor khi conf không nạp được (T30) |
 | `tests/unit/inproc.py` | App trong process với world giả; thay proc và child để nhanh |
 | `tests/unit/scenarios.py`, `parity.py` | Chạy Bash reference và app qua stubs/Glance giả, so sáu chiều |
 | `tests/ui/run.sh` | security, functional, passwd, install_audit, v1ui, v11ui, v12ui, v13ui và SEC-7 grep; stack thật với CLI giả |
