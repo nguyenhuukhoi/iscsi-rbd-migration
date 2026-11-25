@@ -4,8 +4,10 @@
 #   ./release.sh [OUTDIR]      default OUTDIR: dist/ of the checkout
 #
 # Needs a python3 with pip (and network or a local index for 'setuptools' when it is not installed). The wheel holds
-# the package only; install it on the convert host with the pinned dependencies:
-#   /opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-<version>-py3-none-any.whl
+# the package only; install it on the convert host with its 'host' extra under the upper-constraints of the OpenStack
+# release of the destination cloud (DEPLOY.md section 2):
+#   /opt/mig-venv/bin/pip install -c https://releases.openstack.org/constraints/upper/<release> \
+#     "dist/migratetool-<version>-py3-none-any.whl[host]"
 # Refuses a dirty tree: a release is a commit.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)

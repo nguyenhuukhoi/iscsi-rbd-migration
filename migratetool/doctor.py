@@ -53,8 +53,8 @@ def check_pythons(c, cfg, env):
     if res.rc == 0 and res.stdout.strip() == "ok":
         out("  OK    brick: os-brick, cinderclient, keystoneauth1, oslo import")
     else:
-        c.failed("brick cannot start (%s): install os-brick and python-cinderclient into this venv (DEPLOY.md "
-                 "section 2)" % ((res.stderr.strip().splitlines() or ["exit %d" % res.rc])[-1]))
+        c.failed("brick cannot start (%s): install the 'host' extra into this venv with the release constraints "
+                 "(DEPLOY.md section 2.1)" %((res.stderr.strip().splitlines() or ["exit %d" % res.rc])[-1]))
     res = proc.run([cfg.SYS_PY, "-I", "-c", "import rados, rbd"], env=env, capture=True, stderr=proc.CAPTURE)
     if res.rc == 0:
         out("  OK    librbd python bindings for SYS_PY=%s" % cfg.SYS_PY)

@@ -10,18 +10,20 @@ readme = "README.md"
 requires-python = ">=3.10"
 # The package itself only needs the standard library. What the convert host runs it with (openstackclient for the
 # 'openstack' commands, os-brick + cinderclient + keystoneauth1 + oslo.* for brick, openstacksdk for 'migrate volume')
-# is the 'host' extra; requirements-host.txt pins every package of the lab venv (C15).
+# is the 'host' extra, the one list of these packages. It is not pinned: the versions come from the upper-constraints
+# of the OpenStack release of the destination cloud (DEPLOY.md section 2.1):
+#   pip install -c https://releases.openstack.org/constraints/upper/<release> "<checkout>[host]"
 dependencies = []
 
 [project.optional-dependencies]
 host = [
-    "python-openstackclient==10.5.0",
-    "openstacksdk==4.22.0",
-    "os-brick==7.1.1",
-    "python-cinderclient==9.10.0",
-    "keystoneauth1==5.18.1",
-    "oslo.concurrency==7.6.1",
-    "oslo.config==10.8.0",
+    "python-openstackclient",
+    "openstacksdk",
+    "os-brick",
+    "python-cinderclient",
+    "keystoneauth1",
+    "oslo.concurrency",
+    "oslo.config",
 ]
 
 [project.scripts]
