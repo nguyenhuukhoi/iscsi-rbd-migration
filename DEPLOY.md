@@ -1,6 +1,6 @@
 # Triển khai Migrate
 
-Mục tiêu: convert host Linux giữa OpenStack 2023.1/PowerStore iSCSI và OpenStack 2026.1/Ceph 19 hoặc 20. Bộ pin được lấy từ Ubuntu 24.04, Python 3.12.3. Package yêu cầu Python ≥ 3.10; pin dependency trên Python/OS khác vẫn cần nghiệm thu. UI cần systemd hỗ trợ các directive trong units, hướng triển khai là systemd ≥ 250.
+Mục tiêu: convert host Linux giữa OpenStack 2023.1/PowerStore iSCSI và OpenStack 2026.1/Ceph 19 hoặc 20. OpenStack CLI/SDK cài theo upper-constraints của release cloud đích (mục 2.1); gate lab chạy trên Ubuntu 24.04, Python 3.12. Package yêu cầu Python ≥ 3.10; host có release, Python hoặc OS khác phải nghiệm thu theo mục 2.1. UI cần systemd hỗ trợ các directive trong units, hướng triển khai là systemd ≥ 250.
 
 Thực hiện bằng root trên host chuyên dụng. Không đặt openrc, keyring, token hoặc log chưa scrub trong repository. Các địa chỉ `192.0.2.x`/`198.51.100.x` chỉ là ví dụ.
 
@@ -42,19 +42,24 @@ Checkout lấy bằng `git clone --branch <tag> --depth 1 https://github.com/ngu
 
 Script kiểm version engine với pyproject, từ chối thay đổi chưa commit dưới migratetool/ hoặc pyproject; build wheel không dependency, in SHA256 và short commit. Nó không tự chạy tests và không kiểm dirty toàn repo. UI version phải kiểm riêng. Quy trình đầy đủ ở [DEVELOPING.md](DEVELOPING.md).
 
-Chuyển wheel, `.sha256`, `requirements-host.txt` và checkout UI cùng release tới host. Xác nhận hash bằng kênh tin cậy của release:
+Chuyển wheel, `.sha256` và checkout UI cùng release tới host. Xác nhận hash bằng kênh tin cậy của release, rồi cài wheel cùng extra `[host]` theo upper-constraints của release cloud đích (`2026.1` là ví dụ, thay bằng release của bạn; mục 2.1):
 
 ```bash
 cd dist
 sha256sum -c migratetool-<version>-py3-none-any.whl.sha256
 cd ..
 python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -r requirements-host.txt dist/migratetool-<version>-py3-none-any.whl
+/opt/mig-venv/bin/pip install -U pip setuptools wheel
+/opt/mig-venv/bin/pip install -c https://releases.openstack.org/constraints/upper/2026.1 \
+  "dist/migratetool-<version>-py3-none-any.whl[host]"
+/opt/mig-venv/bin/pip check
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
-/opt/mig-venv/bin/migrate --version
+hash -r
+type -a migrate
+migrate --version
 ```
 
-Host không Internet: chuẩn bị wheelhouse của toàn bộ pin trên máy cùng platform/Python; cài bằng `--no-index --find-links /opt/mig-artifacts/wheels`. Không resolve dependency mới tùy ý trong cửa sổ thay đổi. Extra `host` trong pyproject chỉ pin dependency trực tiếp; release production dùng `requirements-host.txt` để pin cả tập đã ghi nhận.
+Đây là cùng lệnh với [README bước 2](README.md#cài-và-chạy-thử), chỉ thay checkout `/opt/mig-src` bằng wheel. Dòng đầu của `type -a migrate` phải là `/usr/local/bin/migrate`: host OpenStack hay có `/usr/bin/migrate` của gói `python3-migrate` (sqlalchemy-migrate, không phải tool này); PATH đặt `/usr/bin` trước thì sửa PATH hoặc gọi `/opt/mig-venv/bin/migrate` (mục 8). pip nhận extra ghi sau đường dẫn file wheel (`<file>.whl[host]`) nên một lệnh cài cả tool lẫn client. Host không Internet: mục 2.1 cuối. Không resolve dependency mới tùy ý trong cửa sổ thay đổi: wheelhouse và file constraints chuẩn bị trước, cài bằng `--no-index`.
 
 CLI tự đưa bin của venv lên PATH cho child. Entry point đã cài là đường vận hành chính thức. `python -m migratetool` từ checkout không bảo đảm child `-I` dùng cùng source tree.
 
@@ -69,67 +74,62 @@ Tool không dùng OpenStack client của hệ điều hành. Mọi gói client n
 | `os-brick`, `python-cinderclient` | Gắn volume nguồn qua iSCSI để copy |
 | `keystoneauth1`, `oslo.concurrency`, `oslo.config` | Xác thực và privsep cho os-brick |
 
-Lệnh `pip install -r requirements-host.txt` ở trên đã cài đủ các gói này. Khi chạy, `migrate` đặt `/opt/mig-venv/bin` lên đầu PATH của tiến trình con. Vì vậy lệnh `openstack` được dùng là `/opt/mig-venv/bin/openstack`, không phải bản cài bằng apt. Nếu venv thiếu `openstack`, tiến trình con sẽ rơi xuống bản trên PATH hệ thống, là bản chưa test. Đừng để xảy ra trường hợp này.
+Danh sách này chỉ nằm ở một chỗ: extra `host` trong `pyproject.toml`, không ghim bản. Bản cụ thể lấy từ file upper-constraints của release OpenStack. Lệnh cài ở [README bước 2](README.md#cài-và-chạy-thử) (checkout) và mục 2 (wheel), dạng `pip install -c https://releases.openstack.org/constraints/upper/<release> "<checkout hoặc wheel>[host]"`, cài đủ các gói này cùng mọi gói phụ thuộc, mỗi gói đúng bản release đó ghim. Khi chạy, `migrate` đặt `/opt/mig-venv/bin` lên đầu PATH của tiến trình con. Vì vậy lệnh `openstack` được dùng là `/opt/mig-venv/bin/openstack`, không phải bản cài bằng apt. Nếu venv thiếu `openstack`, tiến trình con sẽ rơi xuống bản trên PATH hệ thống, là bản chưa nghiệm thu. Đừng để xảy ra trường hợp này.
 
-Có hai cách cài:
+**Chọn release.** `<release>` là release OpenStack của cloud đích; doc dùng `2026.1` làm ví dụ, thay bằng release của bạn. File constraints ghim mỗi gói đúng một bản, nên pip không tự chọn bản mới nhất và hai host cùng release, cùng Python có cùng bộ client. Vài dòng trong file có marker `python_version` (ví dụ file 2026.1 có `numpy===2.2.6;python_version<"3.11"` và `numpy===2.3.5;python_version>="3.11"`): pip chỉ lấy dòng khớp Python của host. Mỗi release còn đòi Python tối thiểu, vì các gói nó ghim khai `Requires-Python`. Python của host thấp hơn thì pip dừng ở `Could not find a version that satisfies the requirement <gói>==<bản>`: chọn release mà Python của host chạy được (bảng dưới), không tháo ghim từng gói. Host ra Internet qua proxy thì đặt `HTTPS_PROXY` trước các lệnh `pip`, vì pip tải cả file constraints lẫn gói qua HTTPS.
 
-| Cách | Bản được cài | Dùng khi |
-|---|---|---|
-| A. Bộ đã test (mặc định) | Đúng bản ghi trong `requirements-host.txt`, ví dụ OSC 10.5.0, SDK 4.22.0, os-brick 7.1.1 | Production. Đây là bộ đã chạy gate lab |
-| B. Tự chọn theo release OpenStack | Bản trong upper-constraints của release bạn chọn | Muốn client cùng đời với cloud, hoặc tổ chức bắt buộc theo constraints |
+Bản trong upper-constraints, đọc ngày 25/11/2026. Cột Python: mức thấp nhất mà các gói trong file chạy được (marker trong file và `Requires-Python` trên PyPI), không thấp hơn 3.10 mà tool đòi:
 
-**Cách B: tự cài theo release.** Dùng venv mới: `python3 -m venv` không xóa gói đã cài sẵn trong thư mục cũ, nên cài cách B lên venv của cách A sẽ trộn hai bộ gói. Đổi cách cài trên host đang dùng thì làm lúc không có migrate nào chạy, đổi tên venv cũ để giữ đường lui (`mv /opt/mig-venv /opt/mig-venv.old`). Thay `2026.1` bằng release bạn chọn:
+| Release | Python của host | `python-openstackclient` | `openstacksdk` | `os-brick` | `python-cinderclient` | `keystoneauth1` |
+|---|---|---|---|---|---|---|
+| 2025.1 | ≥ 3.10 | 7.5.1 | 4.4.1 | 6.11.1 | 9.7.0 | 5.10.0 |
+| 2025.2 | ≥ 3.10 | 8.2.0 | 4.7.2 | 6.13.2 | 9.8.0 | 5.12.0 |
+| 2026.1 | ≥ 3.10 | 9.0.1 | 4.10.0 | 7.0.0 | 9.9.0 | 5.13.1 |
+| 2026.2 | ≥ 3.11 | 10.3.1 | 4.20.0 | 7.1.1 | 9.10.0 | 5.17.0 |
 
-```bash
-python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install --upgrade pip
-/opt/mig-venv/bin/pip install -c https://releases.openstack.org/constraints/upper/2026.1 \
-  python-openstackclient openstacksdk os-brick python-cinderclient keystoneauth1 oslo.concurrency oslo.config
-/opt/mig-venv/bin/pip install --no-deps dist/migratetool-<version>-py3-none-any.whl
-/opt/mig-venv/bin/pip check
-ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
-```
+Ví dụ: Ubuntu 22.04 có Python 3.10, nên dùng được 2026.1 trở xuống; với 2026.2 pip dừng vì `cliff` 4.16.0, `python-openstackclient` 10.3.1 và `os-brick` 7.1.1 đòi Python ≥ 3.11. Ubuntu 24.04 (Python 3.12) dùng được cả bốn release.
 
-Host ra Internet qua proxy thì đặt `HTTPS_PROXY` trước các lệnh `pip`, vì pip tải cả file constraints lẫn gói qua HTTPS. File constraints ghim mỗi gói đúng một bản, nên pip không tự chọn bản mới nhất. Wheel `migratetool` không khai báo dependency, nên `--no-deps` không bỏ sót gói nào.
+**Nghiệm thu bắt buộc trên host mới.** Tool đọc chữ do lệnh `openstack` in ra. Ví dụ rollback chỉ coi một đối tượng đích là đã xóa khi OSC in câu "không tìm thấy" có đúng ID (bản mới in `No Server found for <id>`, bản cũ hơn `No server with a name or ID of '<id>' exists.`; các dạng tool nhận: mục 8). Bản OSC in câu khác thì rollback chờ hết hạn 600 giây hoặc dừng, thay vì xong trong vài phút. Mỗi host mới, và mỗi lần đổi release constraints, Python hoặc OS, chạy đủ các bước sau trên một VM thử trước khi dùng thật:
 
-Bản trong upper-constraints, đọc ngày 22/11/2026:
+1. `migrate doctor --write-check`: mọi dòng OK.
+2. `migrate plan <vm thử> --mode cold --ip same`: plan OK, không có dòng lạ.
+3. `migrate migrate <vm thử> --mode cold --ip same --yes`, rồi `migrate rollback <vm thử> --yes`: cả hai trả mã 0, rollback xong trong vài phút chứ không chờ hết hạn.
 
-| Release | `python-openstackclient` | `openstacksdk` | `os-brick` | `python-cinderclient` | `keystoneauth1` |
-|---|---|---|---|---|---|
-| 2025.1 | 7.5.1 | 4.4.1 | 6.11.1 | 9.7.0 | 5.10.0 |
-| 2025.2 (Python ≥ 3.10) | 8.2.0 | 4.7.2 | 6.13.2 | 9.8.0 | 5.12.0 |
-| 2026.1 | 9.0.1 | 4.10.0 | 7.0.0 | 9.9.0 | 5.13.1 |
-| Bộ đã test (cách A) | 10.5.0 | 4.22.0 | 7.1.1 | 9.10.0 | 5.18.1 |
+Có bước nào lỗi thì không dùng host đó cho chiến dịch: cài lại venv theo release của bộ đã chạy gate lab (dưới), hoặc gửi log cùng `openstack --version` cho người bảo trì tool.
 
-Bộ đã test mới hơn cả 2026.1. Cách B vì vậy luôn cài bản **chưa chạy gate lab**. Lý do cần cẩn thận: tool đọc chữ OSC in ra. Ví dụ OSC 10.5 báo xóa xong bằng câu `No Server found for <id>`, khác câu của bản cũ hơn. Trước khi tool nhận câu này, rollback chờ đủ 600 giây rồi mới dừng. Sau khi cài theo cách B, chạy đủ các bước sau trên một VM thử trước khi dùng thật:
+**Đổi bộ client trên host đang dùng** (đổi release constraints, hoặc venv cài từ bộ ghim cứng của các bản trước). Dùng venv mới: `python3 -m venv` không xóa gói đã có trong thư mục cũ, nên cài đè sẽ trộn hai bộ gói. Làm lúc không có migrate nào chạy. Đổi tên venv cũ để giữ đường lui (`mv /opt/mig-venv /opt/mig-venv.old`; quay lại thì `mv` về đúng tên cũ, vì script trong `bin/` của venv ghi cứng đường dẫn), cài lại theo README bước 2 (checkout) hoặc mục 2 (wheel), chạy lại `install.sh` của UI và nghiệm thu như trên. Nâng cấp tool mà giữ client: README mục Nâng cấp, mục 7.
 
-1. `migrate doctor`: mọi dòng OK.
-2. `migrate plan <vm thử>`: plan OK, không có dòng lạ.
-3. `migrate migrate <vm thử> --yes`, rồi `migrate rollback <vm thử> --yes`: cả hai trả mã 0, rollback xong trong vài phút chứ không chờ hết hạn.
-
-Có bước nào lỗi thì quay về cách A.
-
-**Kiểm tra bản đang cài**, áp dụng cho cả hai cách:
+**Kiểm tra bản đang cài:**
 
 ```bash
 /opt/mig-venv/bin/openstack --version
-/opt/mig-venv/bin/pip list 2>/dev/null | grep -Ei '^(python-openstackclient|openstacksdk|os-brick|python-cinderclient|keystoneauth1) '
+/opt/mig-venv/bin/pip list 2>/dev/null | grep -Ei '^(python-openstackclient|openstacksdk|os-brick|python-cinderclient|keystoneauth1|oslo\.concurrency|oslo\.config) '
 /opt/mig-venv/bin/pip check
 ```
 
-Kết quả mong đợi với cách A: dòng đầu in `openstack 10.5.0`, và `pip check` in `No broken requirements found.`
+Kết quả mong đợi: các bản khớp hàng của release đã chọn trong bảng trên (ví dụ 2026.1: dòng đầu in `openstack 9.0.1`), và `pip check` in `No broken requirements found.`
 
-**Host không có Internet.** Trên một máy cùng hệ điều hành và cùng bản Python, tải trước wheel theo đúng cách đã chọn:
+**Host không có Internet.** Trên một máy có Internet, cùng hệ điều hành và cùng bản Python với host, tải trước wheel của mọi gói, wheel tool (build bằng `release.sh`, mục 2) và file constraints. Dùng pip của một venv: Ubuntu không có `pip` hệ thống khi chưa cài `python3-pip`.
 
 ```bash
-# cách A
-pip download -r requirements-host.txt -d /opt/mig-artifacts/wheels
-# cách B
-pip download -c https://releases.openstack.org/constraints/upper/2026.1 -d /opt/mig-artifacts/wheels \
-  python-openstackclient openstacksdk os-brick python-cinderclient keystoneauth1 oslo.concurrency oslo.config
+python3 -m venv /tmp/dl && /tmp/dl/bin/pip install -U pip
+/tmp/dl/bin/pip download -d /opt/mig-artifacts/wheels pip setuptools wheel
+/tmp/dl/bin/pip download -c https://releases.openstack.org/constraints/upper/2026.1 -d /opt/mig-artifacts/wheels \
+  "dist/migratetool-<version>-py3-none-any.whl[host]"
+curl -fsSL -o /opt/mig-artifacts/upper-constraints-2026.1.txt https://releases.openstack.org/constraints/upper/2026.1
 ```
 
-Chép thư mục `wheels` sang host. Khi cài, thay `-c <url>` bằng `-c <file constraints đã tải về>` và thêm `--no-index --find-links /opt/mig-artifacts/wheels` vào mỗi lệnh `pip install`.
+Lệnh `pip download` thứ hai chép cả wheel tool vào `wheels`. Chép thư mục `/opt/mig-artifacts` sang host, cùng đường dẫn, rồi cài không lấy gì từ mạng:
+
+```bash
+python3 -m venv /opt/mig-venv
+/opt/mig-venv/bin/pip install --no-index --find-links /opt/mig-artifacts/wheels -U pip setuptools wheel
+/opt/mig-venv/bin/pip install --no-index --find-links /opt/mig-artifacts/wheels \
+  -c /opt/mig-artifacts/upper-constraints-2026.1.txt "/opt/mig-artifacts/wheels/migratetool-<version>-py3-none-any.whl[host]"
+/opt/mig-venv/bin/pip check
+ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
+hash -r && type -a migrate
+```
 
 ## 3. Openrc hai cloud
 
@@ -320,12 +320,12 @@ JSON argv không qua shell, timeout 30 s. Kiểm `notify_rc` và log hook sau ca
 
 ## 7. Nâng cấp, hạ cấp, gỡ
 
-Host cài bằng `git clone` theo README thì nâng cấp theo [mục Nâng cấp của README](README.md#nâng-cấp); mục này cho host cài bằng wheel và pin (artifact, không lấy gói từ mạng).
+Host cài bằng `git clone` theo README thì nâng cấp theo [mục Nâng cấp của README](README.md#nâng-cấp); mục này cho host cài bằng wheel (artifact, không lấy gói từ mạng). Nâng cấp chỉ thay tool; OpenStack CLI/SDK trong venv giữ nguyên. Đổi bộ client là cài venv mới theo mục 2.1.
 
 1. Dừng nhận wave mới. Chờ CLI/UI idle, kiểm cả `migrate status --json` và processes; DETACHED có thể vẫn chạy.
-2. Lưu binary/version, wheel/hash, pin, conf/maps, state và job/audit vào nơi bảo mật. Giữ state nguyên quyền; không sửa marker.
+2. Lưu binary/version, wheel/hash, `pip freeze` của venv, conf/maps, state và job/audit vào nơi bảo mật. Giữ state nguyên quyền; không sửa marker.
 3. Sao lưu venv và UI đang chạy bằng bản copy giữ nguyên đường dẫn gốc: `cp -a /opt/mig-venv /opt/mig-venv.bak-<version>` và `cp -a /opt/migui /opt/migui.bak-<version>`. Venv không di chuyển được: script trong `bin/` ghi cứng đường dẫn Python của venv, nên **không** `mv` venv đang dùng sang tên khác.
-4. Cài pin và wheel mới vào `/opt/mig-venv`, không lấy gói từ mạng: `/opt/mig-venv/bin/pip install --no-index -r requirements-host.txt dist/migratetool-<version>-py3-none-any.whl` rồi `/opt/mig-venv/bin/pip check`. Thiếu một gói đã pin thì lệnh dừng, venv cũ vẫn nguyên.
+4. Cài wheel mới vào `/opt/mig-venv`, giữ client đang có, không lấy gói từ mạng: `/opt/mig-venv/bin/pip install --no-index --no-deps dist/migratetool-<version>-py3-none-any.whl` rồi `/opt/mig-venv/bin/pip check`. Wheel `migratetool` không khai báo dependency bắt buộc (client nằm ở extra `[host]`), nên `--no-deps` không bỏ sót gói nào.
 5. Chạy installer UI từ checkout tương ứng với `MIGRATE=/opt/mig-venv/bin/migrate`. Installer resolve path thật vào wrapper và copy lại `DEPLOY.md`.
 6. Kiểm version engine/UI, Doctor, write-check, canary và rollback. Ghi kết quả release.
 
@@ -346,10 +346,12 @@ Giữ jobs/accounts/audit để tra cứu. `--purge` xóa cả `/var/lib/migui`,
 | Error / dòng log | Kiểm và xử lý |
 |---|---|
 | `qemu-img: not found on PATH` | Cài qemu-utils/qemu-block-extra; kiểm PATH engine |
-| `No module named 'os_brick'` | Cài đủ requirements-host trong venv đang chạy; Doctor lại |
+| `No module named 'os_brick'` | Venv thiếu client: cài lại theo mục 2.1 (`[host]` với `-c` của release); Doctor lại |
+| `Could not find a version that satisfies the requirement <gói>==<bản>` khi cài | Python của host thấp hơn mức release constraints đòi (marker `python_version` trong file constraints, `Requires-Python` của gói). Chọn release hỗ trợ Python đó (bảng mục 2.1); không tháo ghim từng gói |
+| `migrate --version` in `Invalid command --version` hoặc usage liệt kê `db_version`, `upgrade`, `version_control` | Đó là `/usr/bin/migrate` của sqlalchemy-migrate (gói `python3-migrate`), không phải tool này. `type -a migrate` xem thứ tự; `hash -r`; tạo lại symlink `ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate`; PATH đặt `/usr/bin` trước thì sửa PATH hoặc gọi `/opt/mig-venv/bin/migrate` |
 | `openstack: not found on PATH` | Venv thiếu OSC: cài lại theo mục 2.1, rồi kiểm `/opt/mig-venv/bin/openstack --version` |
-| `pip check` báo xung đột sau khi tự cài | Gói cài từ hai nguồn khác nhau. Xóa venv, cài lại bằng đúng một cách của mục 2.1 |
-| Rollback chờ tới hết hạn (hoặc dừng `cannot read destination ...`) dù đối tượng đích đã bị xóa, sau khi đổi bản OSC | Tool nhận 4 dạng "không tìm thấy" có nêu đúng ID (`No <Kind> found for <id>`, `No <kind> with a name or ID of '<id>' exists`, `<id> could not be found`, dòng kết thúc bằng `(HTTP 404)`/`404`) và một dòng nêu đúng ID có `(HTTP 404)` ở bất kỳ đâu hoặc token `404` đứng riêng theo sau là `Not Found`/hết dòng. Bản OSC in dạng khác thì quay về bộ đã test (mục 2.1, cách A) |
+| `pip check` báo xung đột sau khi tự cài | Gói cài từ hai nguồn khác nhau (ví dụ cài đè lên venv của bộ client khác). Đổi tên venv, cài venv mới theo mục 2.1 |
+| Rollback chờ tới hết hạn (hoặc dừng `cannot read destination ...`) dù đối tượng đích đã bị xóa, sau khi đổi bản OSC | Tool nhận 4 dạng "không tìm thấy" có nêu đúng ID (`No <Kind> found for <id>`, `No <kind> with a name or ID of '<id>' exists`, `<id> could not be found`, dòng kết thúc bằng `(HTTP 404)`/`404`) và một dòng nêu đúng ID có `(HTTP 404)` ở bất kỳ đâu hoặc token `404` đứng riêng theo sau là `Not Found`/hết dòng. Bản OSC in dạng khác: cài lại venv theo release của bộ đã chạy gate lab (mục 2.1) và gửi dòng OSC in ra cùng `openstack --version` cho người bảo trì |
 | `this state was written by a run scoped with SRC_PROJECT=... DST_PROJECT=... (a password openrc); ... is an application credential, which cannot be rescoped` | Rollback state ghi bằng password openrc có scope mà openrc hiện tại là application credential: chạy rollback bằng đúng password openrc đã migrate (không cần đặt `SRC_PROJECT`/`DST_PROJECT`, tool lấy từ state) |
 | `WARN cannot read destination port <id> (...)` / `WARN cannot delete destination port <id> (...)` khi rollback | Rollback vẫn chạy tiếp và trả nguồn; port đích có thể còn giữ IP. Kiểm `openstack port show <id>` ở đích bằng quyền đủ rồi xóa tay |
 | `WARN cannot list destination images named mig-snap-<vm>: skipped` | Image tạm có thể còn trong pool đích; image đã ghi trong state vẫn bị xóa. Kiểm `openstack image list --name mig-snap-<vm>` ở đích rồi xóa tay |

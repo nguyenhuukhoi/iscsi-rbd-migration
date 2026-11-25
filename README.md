@@ -31,17 +31,21 @@ apt-get install -y git open-iscsi qemu-utils qemu-block-extra ceph-common python
 systemctl enable --now iscsid
 ```
 
-2. Lấy mã và cài tool vào venv (cài luôn OpenStack CLI và SDK đúng bộ đã test; chọn bản theo release OpenStack: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). `<tag>` là bản muốn cài, ví dụ tag mới nhất ở trang Releases trên GitHub (bỏ `--branch` để lấy `main`):
+2. Lấy mã và cài tool vào venv, cài luôn OpenStack CLI và SDK (extra `[host]`). Bản client lấy theo upper-constraints của release OpenStack của cloud đích: `2026.1` dưới đây là ví dụ, thay bằng release của bạn (release nào cần Python tối thiểu bao nhiêu: bảng ở [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). `<tag>` là bản muốn cài, ví dụ tag mới nhất ở trang Releases trên GitHub (bỏ `--branch` để lấy `main`). Host ra Internet qua proxy thì đặt `HTTPS_PROXY` trước các lệnh `pip` và `git`:
 
 ```bash
 git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git /opt/mig-src
 python3 -m venv /opt/mig-venv
-/opt/mig-venv/bin/pip install -r /opt/mig-src/requirements-host.txt /opt/mig-src
+/opt/mig-venv/bin/pip install -U pip setuptools wheel
+/opt/mig-venv/bin/pip install -c https://releases.openstack.org/constraints/upper/2026.1 "/opt/mig-src[host]"
+/opt/mig-venv/bin/pip check
 ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate
+hash -r
+type -a migrate
 migrate --version
 ```
 
-Host không ra Internet, hoặc cần wheel + SHA256 theo quy trình thay đổi: build bằng `release.sh` trên máy khác, xem [DEPLOY.md mục 2](DEPLOY.md#2-artifact-và-venv).
+`pip check` phải in `No broken requirements found.` Dòng đầu của `type -a migrate` phải là `/usr/local/bin/migrate`: host OpenStack hay có sẵn `/usr/bin/migrate` của gói `python3-migrate` (sqlalchemy-migrate, không phải tool này); PATH đặt `/usr/bin` trước thì sửa PATH hoặc gọi `/opt/mig-venv/bin/migrate`. `migrate --version` phải in `migrate <version>`. Tool đọc chữ do lệnh `openstack` in ra, nên host mới (release, Python hoặc OS khác lần trước) phải qua nghiệm thu ở bước 6, gồm cả một lần migrate + rollback VM thử: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk). Host không ra Internet, hoặc cần wheel + SHA256 theo quy trình thay đổi: build bằng `release.sh` trên máy khác, xem [DEPLOY.md mục 2](DEPLOY.md#2-artifact-và-venv).
 
 3. Openrc hai cloud, file root 0600, chỉ gồm các dòng `export OS_*` (không `read`, không prompt; mẫu password và application credential: [DEPLOY.md mục 3](DEPLOY.md#3-openrc-hai-cloud)):
 
@@ -100,12 +104,13 @@ Host đã cài theo các bước trên (`git clone` vào `/opt/mig-src`). `git c
 migrate status            # phải: không job nào đang chạy (CLI lẫn UI)
 mv /opt/mig-src /opt/mig-src.bak-$(migrate --version | awk '{print $NF}')
 git clone --branch <tag> --depth 1 https://github.com/nguyenhuukhoi/iscsi-rbd-migration.git /opt/mig-src
-/opt/mig-venv/bin/pip install -r /opt/mig-src/requirements-host.txt /opt/mig-src
+/opt/mig-venv/bin/pip install --no-deps /opt/mig-src
+/opt/mig-venv/bin/pip check
 migrate --version && migrate doctor
 sudo /opt/mig-src/migui/deploy/install.sh     # UI, chỉ khi không còn job
 ```
 
-Conf `/opt/mig/migrate.conf`, openrc và thư mục state không đổi: state của bản cũ vẫn rollback được bằng bản mới. Hạ cấp và cài bằng wheel/pin: [DEPLOY.md mục 7](DEPLOY.md#7-nâng-cấp-hạ-cấp-gỡ).
+`--no-deps` chỉ thay tool: OpenStack CLI/SDK trong venv giữ nguyên bản đang chạy. Đổi bộ client (ví dụ theo release mới của cloud đích) là cài venv mới theo bước 2 rồi nghiệm thu lại ([DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). Conf `/opt/mig/migrate.conf`, openrc và thư mục state không đổi: state của bản cũ vẫn rollback được bằng bản mới. Sao lưu venv, hạ cấp và nâng cấp bằng wheel: [DEPLOY.md mục 7](DEPLOY.md#7-nâng-cấp-hạ-cấp-gỡ).
 
 ## Đọc tài liệu
 
@@ -123,6 +128,6 @@ Conf `/opt/mig/migrate.conf`, openrc và thư mục state không đổi: state c
 
 ## Tương thích và trạng thái production
 
-Mục tiêu triển khai: nguồn OpenStack **2023.1 + PowerStore iSCSI**, đích **2026.1 + Ceph 19/20**. Lab dùng LVM/LIO iSCSI. Convert host Linux có systemd, Python **≥ 3.10**, quyền root, IQN riêng, đường tới API hai cloud, iSCSI nguồn và Ceph đích. Ubuntu 24.04/Python 3.12 là môi trường pin dependency. Cần `qemu-img` có RBD, os-brick trong venv và `python3-rbd` của Python hệ thống. PowerStore dùng single-path có chủ đích; phải đối chiếu WWN ở canary.
+Mục tiêu triển khai: nguồn OpenStack **2023.1 + PowerStore iSCSI**, đích **2026.1 + Ceph 19/20**. Lab dùng LVM/LIO iSCSI. Convert host Linux có systemd, Python **≥ 3.10**, quyền root, IQN riêng, đường tới API hai cloud, iSCSI nguồn và Ceph đích. OpenStack CLI/SDK cài theo upper-constraints của release cloud đích; gate lab chạy trên Ubuntu 24.04/Python 3.12 (bộ client đã chạy gate: [DEPLOY.md mục 2.1](DEPLOY.md#21-openstack-cli-và-sdk)). Cần `qemu-img` có RBD, os-brick trong venv và `python3-rbd` của Python hệ thống. PowerStore dùng single-path có chủ đích; phải đối chiếu WWN ở canary.
 
 Gate lab 1.0.0 chạy ngày 22/11/2026 trên hai cloud lab 2026.1 (nguồn LVM/LIO iSCSI, đích Ceph RBD) đạt toàn bộ; chi tiết và các gate chưa chạy ở [RELEASE-1.0.0.md](RELEASE-1.0.0.md) mục 5, số liệu từng bản ở [CHANGELOG.md](CHANGELOG.md). Lab không phải PowerStore: canary trên đúng hạ tầng 2023.1 + PowerStore chưa chạy, chưa tuyên bố đạt production. Rollback xóa bản đích và quay về nguồn; mọi ghi mới ở đích sau cutover không được đồng bộ ngược. Duyệt RPO trước chiến dịch. Rollback hỏi nguồn trước: VM/volume nguồn không tìm thấy (đã xóa, hoặc credentials/scope/endpoint nguồn không thấy) hoặc không đọc được thì từ chối và không xóa gì ở đích, vì đích có thể là bản sao duy nhất còn lại. Rollback cũng phải đọc được đích trước lệnh xóa đầu tiên và chỉ coi một object đích là đã mất khi API nêu đúng ID của nó; lỗi endpoint/404 trần thì dừng, không đụng nguồn. Rollback dùng cùng loại openrc với lần migrate: state ghi bằng password openrc (record có project) rollback bằng application credential bị từ chối `this state was written by a run scoped with ... (a password openrc)`, vì application credential không rescope được; chạy rollback bằng đúng password openrc đã migrate.

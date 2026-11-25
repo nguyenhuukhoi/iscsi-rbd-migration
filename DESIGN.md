@@ -379,7 +379,7 @@ Doctor tiếp tục các nhóm kiểm sau FAIL. `Doctor found problems: fix the 
 | `<program>: not found on PATH` | FAIL | Thiếu executable |
 | `<program> <flag> exited <rc>: ...` | FAIL | Không chạy được version probe |
 | `brick: os-brick, cinderclient, keystoneauth1, oslo import` | OK | Import venv helper (`check_pythons`) |
-| `brick cannot start (...): install os-brick and python-cinderclient into this venv ...` | FAIL | Thiếu module/runtime |
+| `brick cannot start (...): install the 'host' extra into this venv with the release constraints (DEPLOY.md section 2.1)` | FAIL | Thiếu module/runtime |
 | `librbd python bindings for SYS_PY=...` | OK | Python hệ thống import được rados/rbd |
 | `SYS_PY=... cannot import rados, rbd ...` | FAIL | Binding không sẵn |
 | `blocksync present (...)` | OK/FAIL | File helper đọc được |
@@ -531,7 +531,7 @@ Doctor gate D3 chỉ nằm ở web cho inventory, list, plan và chạy batch VM
 | T14 Peer khác gọi runner | Socket 0660root:migui; SO_PEERCRED kiểm UID; 9 op whitelist | Không phải auth độc lập trước process đã chiếm UID migui (`peer_uid`, handler) |
 | T15 DoS | Body 64 KiB; API semaphore 8, chờ 10 s rồi 503; 2 SSE/phiên rồi 429; header 30 s; plan/item/log bounds | Login/SSE ngoài semaphore API; runner socket không có cùng semaphore; raw output/disk không cap (`web`, `Runner`) |
 | T16 Cache browser | Cache-Control no-store; không lưu credential ở localStorage | Chỉ theme `migui-theme` được giữ; máy/browser vẫn cần bảo vệ (`web`, app.js) |
-| T17 Dependency | UI Python stdlib + JS/CSS local, không build npm/CDN | Engine có dependency pin riêng; bảo trì Python hệ thống và wheel (`pyproject.toml`, requirements-host.txt) |
+| T17 Dependency | UI Python stdlib + JS/CSS local, không build npm/CDN | Engine không ghim client: extra `host` của `pyproject.toml` cài theo upper-constraints của release OpenStack (DEPLOY 2.1), host mới phải nghiệm thu; bảo trì Python hệ thống và wheel |
 
 Tài khoản trong `/var/lib/migui/users` root:migui 0640, tối đa 50 users/64 KiB. Password 12–128 ký tự printable, không bằng username; username lowercase tối đa 32. `migui-passwd` atomic replace và flock; không đưa password vào argv/env. Thay hash hoặc xóa user hủy phiên ở request không background kế tiếp. Background polling không revalidate credentials; stream kiểm cookie/expiry mỗi event. Đây không phải thu hồi tức thời mọi stream đang mở.
 

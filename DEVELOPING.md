@@ -155,9 +155,9 @@ node tests/ui/guards.mjs .
 ./release.sh
 ```
 
-Release script dùng `pip wheel --no-deps --no-build-isolation`, fallback build isolation nếu cần; output mặc định `dist/`, hoặc `./release.sh <OUTDIR>`. Nó chỉ kiểm dirty migratetool/pyproject, không thay review clean tree toàn bộ. Wheel không có UI, không có openrc/keyring và không gộp requirements-host.
+Release script dùng `pip wheel --no-deps --no-build-isolation`, fallback build isolation nếu cần; output mặc định `dist/`, hoặc `./release.sh <OUTDIR>`. Nó chỉ kiểm dirty migratetool/pyproject, không thay review clean tree toàn bộ. Wheel không có UI, không có openrc/keyring và không gộp OpenStack client: client là extra `[host]`, bản do upper-constraints của release quyết định lúc cài (DEPLOY.md mục 2.1).
 
-Ghi commit, SHA256 wheel, hash pin, suites, môi trường, test report và gap trong [RELEASE-1.0.0.md](RELEASE-1.0.0.md). Giữ artifact venv/version để rehearsal downgrade. Chỉ tag/publish sau gate và quyết định của chủ release; yêu cầu viết docs không phải yêu cầu publish.
+Ghi commit, SHA256 wheel, release constraints và `pip freeze` của venv gate, suites, môi trường, test report và gap trong [RELEASE-1.0.0.md](RELEASE-1.0.0.md). Giữ artifact venv/version để rehearsal downgrade. Chỉ tag/publish sau gate và quyết định của chủ release; yêu cầu viết docs không phải yêu cầu publish.
 
 ## 6. Chống leak
 

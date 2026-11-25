@@ -6,7 +6,7 @@ Mỗi wave có người điều khiển, chủ ứng dụng nghiệm thu và ng�
 
 | Gate | Bằng chứng phải lưu |
 |---|---|
-| Artifact | Commit, engine/UI version, wheel SHA256, requirements pin, thời gian cài |
+| Artifact | Commit, engine/UI version, wheel SHA256, release constraints và `pip freeze` của venv, thời gian cài |
 | Convert host | Doctor JSON và log, write-check trên mọi pool, disk headroom, NTP, IQN duy nhất |
 | Storage | Type→pool xác minh bằng Cinder UUID và RBD image; caps mig-xfer; single-path/blacklist đúng |
 | PowerStore | WWN của clone đang attach khớp volume clone trên mảng; portal/owner đã kiểm |
