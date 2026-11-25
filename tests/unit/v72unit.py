@@ -710,7 +710,7 @@ ok("D3 ephemeral (7.3 D3b): the Glance snapshot/download/upload is copy time, na
 ok("D3 boot-from-volume: no glance bracket", "(glance" not in app(world(), [("migrate", "app01", PLAIN)]).out)
 
 # --- D4: version ---------------------------------------------------------------------------------------------
-ok("D4 version 1.2.3 (v1 bumped it, fix-1.0.1, 1.1.0, 1.1.1, 1.2.0, 1.2.1, 1.2.2 and 1.2.3 again)", migratetool.__version__ == "1.2.3", migratetool.__version__)
+ok("D4 version 1.2.4 (v1 bumped it, fix-1.0.1, 1.1.0, 1.1.1, 1.2.0, 1.2.1, 1.2.2, 1.2.3 and 1.2.4 again)", migratetool.__version__ == "1.2.4", migratetool.__version__)
 
 shutil.rmtree(WORK, ignore_errors=True)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))

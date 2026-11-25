@@ -166,5 +166,5 @@ ok("no arguments: usage, exit 2", p.returncode == 2 and "usage: migrate" in p.st
 p = subprocess.run([sys.executable, "-m", "migratetool", "plan", "vm", "--help"], env=env, capture_output=True, text=True, cwd="/")
 ok("plan vm --help", p.returncode == 0 and "--server-group NAME" in p.stdout)
 p = subprocess.run([sys.executable, "-m", "migratetool", "--version"], env=env, capture_output=True, text=True, cwd="/")
-ok("--version", p.returncode == 0 and "migrate 1.2.3" in p.stdout, p.stdout + p.stderr)
+ok("--version", p.returncode == 0 and "migrate 1.2.4" in p.stdout, p.stdout + p.stderr)
 print("TOTAL pass=%d fail=%d" % (PASS, FAIL))
