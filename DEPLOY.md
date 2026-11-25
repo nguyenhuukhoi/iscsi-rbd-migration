@@ -76,7 +76,7 @@ Tool không dùng OpenStack client của hệ điều hành. Mọi gói client n
 
 Danh sách này chỉ nằm ở một chỗ: extra `host` trong `pyproject.toml`, không ghim bản. Bản cụ thể lấy từ file upper-constraints của release OpenStack. Lệnh cài ở [README bước 2](README.md#cài-và-chạy-thử) (checkout) và mục 2 (wheel), dạng `pip install -c https://releases.openstack.org/constraints/upper/<release> "<checkout hoặc wheel>[host]"`, cài đủ các gói này cùng mọi gói phụ thuộc, mỗi gói đúng bản release đó ghim. Khi chạy, `migrate` đặt `/opt/mig-venv/bin` lên đầu PATH của tiến trình con. Vì vậy lệnh `openstack` được dùng là `/opt/mig-venv/bin/openstack`, không phải bản cài bằng apt. Nếu venv thiếu `openstack`, tiến trình con sẽ rơi xuống bản trên PATH hệ thống, là bản chưa nghiệm thu. Đừng để xảy ra trường hợp này.
 
-**Chọn release.** `<release>` là release OpenStack của cloud đích; doc dùng `2026.1` làm ví dụ, thay bằng release của bạn. File constraints ghim mỗi gói đúng một bản, nên pip không tự chọn bản mới nhất và hai host cùng release, cùng Python có cùng bộ client. Vài dòng trong file có marker `python_version` (ví dụ file 2026.1 có `numpy===2.2.6;python_version<"3.11"` và `numpy===2.3.5;python_version>="3.11"`): pip chỉ lấy dòng khớp Python của host. Mỗi release còn đòi Python tối thiểu, vì các gói nó ghim khai `Requires-Python`. Python của host thấp hơn thì pip dừng ở `Could not find a version that satisfies the requirement <gói>==<bản>`: chọn release mà Python của host chạy được (bảng dưới), không tháo ghim từng gói. Host ra Internet qua proxy thì đặt `HTTPS_PROXY` trước các lệnh `pip`, vì pip tải cả file constraints lẫn gói qua HTTPS.
+**Chọn release.** `<release>` là release OpenStack của cloud đích; doc dùng `2026.1` làm ví dụ, thay bằng release của bạn. File constraints ghim mỗi gói đúng một bản, nên pip không tự chọn bản mới nhất và hai host cùng release, cùng Python có cùng bộ client. Vài dòng trong file có marker `python_version` (ví dụ file 2026.1 có `numpy===2.2.6;python_version<"3.11"` và `numpy===2.3.5;python_version>="3.11"`): pip chỉ lấy dòng khớp Python của host. Mỗi release còn đòi Python tối thiểu, vì các gói nó ghim khai `Requires-Python`. Python của host thấp hơn thì pip dừng, với `-c` là `ResolutionImpossible` kèm `some packages in these conflicts have no matching distributions available for your environment` (bộ ghim cứng cũ báo `Could not find a version that satisfies the requirement <gói>==<bản>`): chọn release mà Python của host chạy được (bảng dưới), không tháo ghim từng gói. Host ra Internet qua proxy thì đặt `HTTPS_PROXY` trước các lệnh `pip`, vì pip tải cả file constraints lẫn gói qua HTTPS.
 
 Bản trong upper-constraints, đọc ngày 25/11/2026. Cột Python: mức thấp nhất mà các gói trong file chạy được (marker trong file và `Requires-Python` trên PyPI), không thấp hơn 3.10 mà tool đòi:
 
@@ -96,6 +96,14 @@ Ví dụ: Ubuntu 22.04 có Python 3.10, nên dùng được 2026.1 trở xuống
 3. `migrate migrate <vm thử> --mode cold --ip same --yes`, rồi `migrate rollback <vm thử> --yes`: cả hai trả mã 0, rollback xong trong vài phút chứ không chờ hết hạn.
 
 Có bước nào lỗi thì không dùng host đó cho chiến dịch: cài lại venv theo release của bộ đã chạy gate lab (dưới), hoặc gửi log cùng `openstack --version` cho người bảo trì tool.
+
+**Bộ đã chạy gate lab** (25/11/2026; hai cloud lab 2026.1; Ubuntu 24.04, Python 3.12.3; cài đúng README bước 2 với `-c https://releases.openstack.org/constraints/upper/2026.1`; gate e2e 50/0 và failure-injection 17/0, gồm migrate, rollback và rollback sau copy hỏng), đọc từ `pip list`:
+
+| `python-openstackclient` | `openstacksdk` | `os-brick` | `python-cinderclient` | `keystoneauth1` | `oslo.concurrency` | `oslo.config` |
+|---|---|---|---|---|---|---|
+| 9.0.1 | 4.10.0 | 7.0.0 | 9.9.0 | 5.13.1 | 7.4.1 | 10.3.0 |
+
+Với bộ này OSC báo đối tượng đã xóa bằng `No Server found for <id>` (`No Volume …`, `No Port …` tương tự), là dạng tool nhận; rollback trong gate xong trong khoảng 1,5 phút.
 
 **Đổi bộ client trên host đang dùng** (đổi release constraints, hoặc venv cài từ bộ ghim cứng của các bản trước). Dùng venv mới: `python3 -m venv` không xóa gói đã có trong thư mục cũ, nên cài đè sẽ trộn hai bộ gói. Làm lúc không có migrate nào chạy. Đổi tên venv cũ để giữ đường lui (`mv /opt/mig-venv /opt/mig-venv.old`; quay lại thì `mv` về đúng tên cũ, vì script trong `bin/` của venv ghi cứng đường dẫn), cài lại theo README bước 2 (checkout) hoặc mục 2 (wheel), chạy lại `install.sh` của UI và nghiệm thu như trên. Nâng cấp tool mà giữ client: README mục Nâng cấp, mục 7.
 
@@ -347,7 +355,7 @@ Giữ jobs/accounts/audit để tra cứu. `--purge` xóa cả `/var/lib/migui`,
 |---|---|
 | `qemu-img: not found on PATH` | Cài qemu-utils/qemu-block-extra; kiểm PATH engine |
 | `No module named 'os_brick'` | Venv thiếu client: cài lại theo mục 2.1 (`[host]` với `-c` của release); Doctor lại |
-| `Could not find a version that satisfies the requirement <gói>==<bản>` khi cài | Python của host thấp hơn mức release constraints đòi (marker `python_version` trong file constraints, `Requires-Python` của gói). Chọn release hỗ trợ Python đó (bảng mục 2.1); không tháo ghim từng gói |
+| Khi cài: `ResolutionImpossible` với `The user requested (constraint) <gói>===<bản>` và `no matching distributions available for your environment`, hoặc `Could not find a version that satisfies the requirement <gói>==<bản>` | Python của host thấp hơn mức release constraints đòi (marker `python_version` trong file constraints, `Requires-Python` của gói). Chọn release hỗ trợ Python đó (bảng mục 2.1); không tháo ghim từng gói |
 | `migrate --version` in `Invalid command --version` hoặc usage liệt kê `db_version`, `upgrade`, `version_control` | Đó là `/usr/bin/migrate` của sqlalchemy-migrate (gói `python3-migrate`), không phải tool này. `type -a migrate` xem thứ tự; `hash -r`; tạo lại symlink `ln -sfn /opt/mig-venv/bin/migrate /usr/local/bin/migrate`; PATH đặt `/usr/bin` trước thì sửa PATH hoặc gọi `/opt/mig-venv/bin/migrate` |
 | `openstack: not found on PATH` | Venv thiếu OSC: cài lại theo mục 2.1, rồi kiểm `/opt/mig-venv/bin/openstack --version` |
 | `pip check` báo xung đột sau khi tự cài | Gói cài từ hai nguồn khác nhau (ví dụ cài đè lên venv của bộ client khác). Đổi tên venv, cài venv mới theo mục 2.1 |

@@ -17,7 +17,7 @@ Nova đích <----------------------- volume + port mới; state giữ để roll
 
 ## Cài và chạy thử
 
-Chạy bằng root trên host convert Ubuntu 24.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (23/11/2026).
+Chạy bằng root trên host convert Ubuntu 24.04, thấy được API hai cloud, portal iSCSI nguồn và Ceph public network đích. Sáu bước dưới đã chạy nguyên văn trên lab (23/11/2026; bước 2 theo upper-constraints: 25/11/2026).
 
 1. Gói hệ thống. Client Ceph lấy từ repo Ceph Tentacle: `ceph-common` 19.x của Ubuntu không đọc được key `aes256k` của cụm Tentacle ≥ 20.2.4.
 
